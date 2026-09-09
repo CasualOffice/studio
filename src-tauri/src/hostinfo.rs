@@ -10,6 +10,11 @@ pub const RESERVED_GIB: f32 = 3.5;
 /// Never let a download take the volume below this.
 const DISK_HEADROOM_GIB: f32 = 6.0;
 
+/// Cores left alone so the machine stays usable while a model runs. MLX does
+/// the heavy work on the GPU, but tokenizers and PyTorch will otherwise take
+/// every core and make the UI stutter.
+const RESERVED_CORES: usize = 2;
+
 #[derive(Serialize, Clone, Debug)]
 pub struct HostInfo {
     pub chip: String,
@@ -21,18 +26,30 @@ pub struct HostInfo {
     pub total_disk_gib: f32,
     pub disk_headroom_gib: f32,
     pub apple_silicon: bool,
+    /// Hard ceiling handed to MLX. Allocations past this fail with an error
+    /// instead of pushing the whole machine into swap.
+    pub memory_budget_gib: f32,
+    /// Threads the engine may use for CPU-side work.
+    pub worker_threads: usize,
+    pub total_cores: usize,
 }
 
 impl HostInfo {
     pub fn probe(paths: &AppPaths) -> Self {
+        Self::probe_for(&paths.hf_home())
+    }
+
+    /// Probe against a specific directory, so a model store on an external
+    /// volume reports that volume's free space rather than the boot disk's.
+    pub fn probe_for(target: &std::path::Path) -> Self {
         let mut sys = System::new();
         sys.refresh_memory();
         let total_ram_gib = sys.total_memory() as f32 / 1024.0 / 1024.0 / 1024.0;
 
         let disks = Disks::new_with_refreshed_list();
-        // Pick the disk whose mount point is the longest prefix of our root:
+        // Pick the disk whose mount point is the longest prefix of the target:
         // that is the volume a download will actually land on.
-        let root = paths.root.to_string_lossy().to_string();
+        let root = target.to_string_lossy().to_string();
         let mut best: Option<(usize, u64, u64)> = None;
         for d in disks.list() {
             let mp = d.mount_point().to_string_lossy().to_string();
@@ -45,8 +62,17 @@ impl HostInfo {
         }
         let (_, avail, total) = best.unwrap_or((0, 0, 0));
 
+        let total_cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+
         let arch = std::env::consts::ARCH.to_string();
         Self {
+            // Slightly under `usable` so MLX refuses before the system starts
+            // paging; the difference is the app's own working set.
+            memory_budget_gib: (total_ram_gib - RESERVED_GIB - 0.5).max(1.0),
+            worker_threads: total_cores.saturating_sub(RESERVED_CORES).max(1),
+            total_cores,
             chip: cpu_brand(),
             apple_silicon: arch == "aarch64",
             arch,

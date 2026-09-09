@@ -107,6 +107,14 @@ pub struct Manifest {
     pub created_at: String,
 }
 
+/// Content digest used for deduplication.
+pub fn content_hash(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn derive_kek(passphrase: &str, kdf: &KdfParams) -> Result<[u8; 32], VaultError> {
     use argon2::{Algorithm, Argon2, Params, Version};
     let salt = B64.decode(&kdf.salt).map_err(|e| VaultError::Corrupt(e.to_string()))?;
@@ -127,6 +135,12 @@ fn derive_kek(passphrase: &str, kdf: &KdfParams) -> Result<[u8; 32], VaultError>
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct VaultItem {
     pub id: String,
+    /// SHA-256 of the plaintext. Lets an import recognise a file already in the
+    /// vault instead of storing a second copy, and lets a rebuilt index tell
+    /// whether two blobs hold the same picture. Optional so indexes written
+    /// before hashing existed still load.
+    #[serde(default)]
+    pub content_hash: Option<String>,
     /// "generate" | "edit" | "upscale" | "import" | "doc"
     pub kind: String,
     pub name: String,
@@ -314,7 +328,7 @@ impl Vault {
     }
 
     fn finish_unlock(&self, dek: [u8; 32], via_biometry: bool) -> Result<(), VaultError> {
-        let index = self.read_index(&dek)?;
+        let index = self.read_index_with_fallback(&dek)?;
         *self.inner.write().unwrap() = Some(Unlocked {
             dek,
             index,
@@ -384,14 +398,49 @@ impl Vault {
         serde_json::from_slice(&plain).map_err(|e| VaultError::Corrupt(e.to_string()))
     }
 
+    /// Write the index, keeping one previous copy.
+    ///
+    /// The index is the only record of what every blob *is*: lose it and the
+    /// content is still decryptable but anonymous. Rotating a `.bak` costs one
+    /// rename and turns a corrupt write from total metadata loss into the loss
+    /// of whatever changed since the last save.
     fn write_index(&self, dek: &[u8; 32], index: &Index) -> Result<(), VaultError> {
         let mut plain = serde_json::to_vec(index).map_err(|e| VaultError::Corrupt(e.to_string()))?;
         let sealed = crypto::seal(dek, &plain);
         plain.zeroize();
-        let tmp = self.index_path().with_extension("enc.tmp");
+
+        let path = self.index_path();
+        let tmp = path.with_extension("enc.tmp");
         std::fs::write(&tmp, &sealed)?;
-        std::fs::rename(&tmp, self.index_path())?;
+
+        if path.exists() {
+            let backup = path.with_extension("enc.bak");
+            // A failed backup must not block the write; the new index is still
+            // strictly better than no write at all.
+            let _ = std::fs::rename(&path, &backup);
+        }
+        std::fs::rename(&tmp, &path)?;
         Ok(())
+    }
+
+    fn read_index_with_fallback(&self, dek: &[u8; 32]) -> Result<Index, VaultError> {
+        match self.read_index(dek) {
+            Ok(i) => Ok(i),
+            Err(primary) => {
+                let backup = self.index_path().with_extension("enc.bak");
+                if !backup.exists() {
+                    return Err(primary);
+                }
+                // The live index is unreadable. The previous one loses only the
+                // most recent change, which beats losing every name and prompt.
+                let sealed = std::fs::read(&backup)?;
+                let plain = crypto::open(dek, &sealed)?;
+                let index: Index = serde_json::from_slice(&plain)
+                    .map_err(|e| VaultError::Corrupt(e.to_string()))?;
+                eprintln!("vault: index was unreadable ({primary}); recovered the backup");
+                Ok(index)
+            }
+        }
     }
 
     fn with_unlocked<T>(&self, f: impl FnOnce(&Unlocked) -> Result<T, VaultError>) -> Result<T, VaultError> {
@@ -462,23 +511,51 @@ impl Vault {
     }
 
     /// Record an already-sealed blob that the engine wrote into place.
-    pub fn commit_slot(&self, item: VaultItem) -> Result<(), VaultError> {
+    pub fn commit_slot(&self, mut item: VaultItem) -> Result<(), VaultError> {
         let mut guard = self.inner.write().unwrap();
         let u = guard.as_mut().ok_or(VaultError::Locked)?;
         if !self.blob_path(&item.id).exists() {
             return Err(VaultError::NoSuchItem(item.id));
         }
+        // Hash generated output too: an exported copy re-imported later should
+        // be recognised rather than stored twice.
+        if item.content_hash.is_none() {
+            if let Ok(sealed) = std::fs::read(self.blob_path(&item.id)) {
+                if let Ok(plain) = crypto::open(&u.dek, &sealed) {
+                    item.content_hash = Some(content_hash(&plain));
+                }
+            }
+        }
         u.index.items.push(item);
         let index = u.index.clone();
         let dek = u.dek;
-        drop(guard);
         self.write_index(&dek, &index)
     }
 
     /// Seal and store plaintext bytes the host already holds.
-    pub fn put(&self, plaintext: &[u8], item: VaultItem) -> Result<String, VaultError> {
+    ///
+    /// Returns the existing id when the same content is already stored, so
+    /// importing a file twice does not fill the vault with copies.
+    ///
+    /// The lock is held across the index write. Cloning the index and
+    /// releasing first let two concurrent writers interleave, so the later
+    /// write clobbered the earlier one's entry and orphaned its blob.
+    pub fn put(&self, plaintext: &[u8], mut item: VaultItem) -> Result<String, VaultError> {
         let mut guard = self.inner.write().unwrap();
         let u = guard.as_mut().ok_or(VaultError::Locked)?;
+
+        let hash = content_hash(plaintext);
+        if let Some(existing) = u
+            .index
+            .items
+            .iter()
+            .find(|i| i.content_hash.as_deref() == Some(hash.as_str()))
+        {
+            // Same bytes already stored; hand back what is already there.
+            return Ok(existing.id.clone());
+        }
+        item.content_hash = Some(hash);
+
         let sealed = crypto::seal(&u.dek, plaintext);
         std::fs::create_dir_all(self.blobs())?;
         std::fs::write(self.blob_path(&item.id), &sealed)?;
@@ -487,7 +564,6 @@ impl Vault {
         u.index.items.push(item);
         let index = u.index.clone();
         let dek = u.dek;
-        drop(guard);
         self.write_index(&dek, &index)?;
         Ok(id)
     }
@@ -509,7 +585,6 @@ impl Vault {
         u.index.items.retain(|i| i.id != id);
         let index = u.index.clone();
         let dek = u.dek;
-        drop(guard);
         let _ = std::fs::remove_file(self.blob_path(id));
         self.write_index(&dek, &index)
     }

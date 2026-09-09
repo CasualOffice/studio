@@ -157,3 +157,10 @@ export interface ResolvedModel {
   /** Smallest Mac memory configuration that would run it, if not this one. */
   required_ram_gib: number | null;
 }
+
+export interface StorageInfo {
+  models_root: string;
+  models_bytes: number;
+  volume_free_gib: number;
+  is_external: boolean;
+}

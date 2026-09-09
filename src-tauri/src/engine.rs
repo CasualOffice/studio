@@ -70,8 +70,17 @@ impl Engine {
             ));
         }
 
-        let mut cmd = tokio::process::Command::new(paths.venv_python());
-        cmd.arg("-u") // unbuffered: progress must arrive as it happens
+        // Resource policy: the engine must not be able to take the machine
+        // down with it. `nice` keeps the window server and the UI ahead of it,
+        // the thread caps leave cores free, and MLX gets a hard memory ceiling
+        // so an oversized request fails loudly instead of swapping.
+        let host = crate::hostinfo::HostInfo::probe(paths);
+
+        let mut cmd = tokio::process::Command::new("/usr/bin/nice");
+        cmd.arg("-n")
+            .arg("5")
+            .arg(paths.venv_python())
+            .arg("-u") // unbuffered: progress must arrive as it happens
             .arg(script)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -81,7 +90,13 @@ impl Engine {
             .env("PYTHONUNBUFFERED", "1")
             // MLX picks its own limits; keep tokenizers from forking threads
             // that would fight the generation for a 16 GB machine's cores.
-            .env("TOKENIZERS_PARALLELISM", "false");
+            .env("TOKENIZERS_PARALLELISM", "false")
+            .env("MODELSTUDIO_MEMORY_BUDGET_GIB", host.memory_budget_gib.to_string())
+            .env("OMP_NUM_THREADS", host.worker_threads.to_string())
+            .env("MKL_NUM_THREADS", host.worker_threads.to_string())
+            .env("VECLIB_MAXIMUM_THREADS", host.worker_threads.to_string())
+            .env("NUMEXPR_NUM_THREADS", host.worker_threads.to_string())
+            .env("MODELSTUDIO_IDLE_UNLOAD_SECONDS", "600");
 
         let mut child = cmd.spawn()?;
         let stdin = child.stdin.take().ok_or_else(|| AppError::msg("no stdin"))?;
@@ -127,6 +142,14 @@ impl Engine {
         // stderr: diagnostics only, mirrored to a log file.
         {
             let logfile = paths.logs().join("engine.log");
+            // Rotate before appending. PyTorch and tokenizers are chatty
+            // enough that an unbounded log quietly grows without limit.
+            const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
+            if let Ok(meta) = std::fs::metadata(&logfile) {
+                if meta.len() > MAX_LOG_BYTES {
+                    let _ = std::fs::rename(&logfile, logfile.with_extension("log.1"));
+                }
+            }
             let app = app.clone();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();

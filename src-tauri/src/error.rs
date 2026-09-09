@@ -12,6 +12,9 @@ pub enum AppError {
     Engine(String),
     #[error("the vault is locked")]
     VaultLocked,
+    /// Not a failure: the file was already stored, so nothing was duplicated.
+    #[error("that image is already in your vault")]
+    AlreadyInVault(String),
     #[error("{0}")]
     Vault(#[from] crate::vault::VaultError),
     #[error("io: {0}")]
@@ -38,6 +41,7 @@ impl Serialize for AppError {
             AppError::EngineDown => "engine_down",
             AppError::Engine(_) => "engine",
             AppError::VaultLocked => "vault_locked",
+            AppError::AlreadyInVault(_) => "already_in_vault",
             AppError::Vault(crate::vault::VaultError::Locked) => "vault_locked",
             AppError::Vault(crate::vault::VaultError::Absent) => "vault_absent",
             AppError::Vault(crate::vault::VaultError::BadPassphrase) => "bad_passphrase",

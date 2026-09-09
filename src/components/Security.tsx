@@ -3,14 +3,16 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api, errText } from "../lib/api";
 import type { VaultStatus } from "../lib/types";
 import { MIN_PASSPHRASE } from "../lib/passphrase";
+import Storage from "./Storage";
 
 export default function Security({
-  status, onStatus, notify, onImported,
+  status, onStatus, notify, onImported, onStorageMoved,
 }: {
   status: VaultStatus;
   onStatus: (s: VaultStatus) => void;
   notify: (m: string, bad?: boolean) => void;
   onImported: () => void;
+  onStorageMoved: () => void;
 }) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -66,6 +68,8 @@ export default function Security({
           </button>
         </div>
       </div>
+
+      <Storage notify={notify} onMoved={onStorageMoved} />
 
       <div className="panel">
         <h2>Touch ID</h2>

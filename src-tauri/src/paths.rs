@@ -1,32 +1,64 @@
 use crate::error::{AppError, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Everything the app installs at runtime lives under one directory so the
 /// user can reclaim the whole footprint by deleting a single folder.
 #[derive(Clone, Debug)]
 pub struct AppPaths {
     pub root: PathBuf,
+    /// Where downloaded weights live. Separable from `root` so multi-gigabyte
+    /// models can sit on an external drive while keys, the vault and the
+    /// runtime stay on the internal one.
+    models_root: PathBuf,
+}
+
+/// Persisted alongside the vault, not inside it: the app has to know where the
+/// models are before anything is unlocked.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct StoredConfig {
+    models_root: Option<String>,
 }
 
 impl AppPaths {
     pub fn resolve() -> Result<Self> {
         // An override makes the runtime bootstrap testable against a scratch
         // directory instead of the user's real installation.
-        if let Ok(custom) = std::env::var("MODELSTUDIO_HOME") {
-            if !custom.trim().is_empty() {
-                return Ok(Self { root: PathBuf::from(custom) });
+        let root = if let Ok(custom) = std::env::var("MODELSTUDIO_HOME") {
+            if custom.trim().is_empty() {
+                default_root()?
+            } else {
+                PathBuf::from(custom)
             }
-        }
-        let home = std::env::var("HOME")
-            .map_err(|_| AppError::msg("HOME is not set"))?;
-        let root = PathBuf::from(home)
-            .join("Library/Application Support/com.melp.modelstudio");
-        Ok(Self { root })
+        } else {
+            default_root()?
+        };
+        Ok(Self::at(root))
     }
 
     pub fn at(root: PathBuf) -> Self {
-        Self { root }
+        let models_root = read_config(&root)
+            .models_root
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| root.join("models"));
+        Self { root, models_root }
     }
+
+    /// Move model storage somewhere else, e.g. an external drive.
+    pub fn set_models_root(&mut self, new_root: PathBuf) -> Result<()> {
+        std::fs::create_dir_all(new_root.join("hub"))?;
+        let cfg = StoredConfig {
+            models_root: Some(new_root.to_string_lossy().to_string()),
+        };
+        let tmp = self.config_path().with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&cfg)?)?;
+        std::fs::rename(&tmp, self.config_path())?;
+        self.models_root = new_root;
+        Ok(())
+    }
+
+    pub fn models_root(&self) -> &PathBuf { &self.models_root }
+    fn config_path(&self) -> PathBuf { self.root.join("config.json") }
 
     pub fn runtime(&self) -> PathBuf { self.root.join("runtime") }
     pub fn python_dir(&self) -> PathBuf { self.runtime().join("python") }
@@ -37,7 +69,7 @@ impl AppPaths {
 
     /// Hugging Face cache. Kept inside our root so the disk meter tells the
     /// truth and "delete model" actually reclaims space.
-    pub fn hf_home(&self) -> PathBuf { self.root.join("models") }
+    pub fn hf_home(&self) -> PathBuf { self.models_root.clone() }
     pub fn hf_hub(&self) -> PathBuf { self.hf_home().join("hub") }
 
     /// The encrypted vault. There is deliberately no plaintext output
@@ -101,4 +133,16 @@ impl AppPaths {
                 .join("\n  ")
         )))
     }
+}
+
+fn default_root() -> Result<PathBuf> {
+    let home = std::env::var("HOME").map_err(|_| AppError::msg("HOME is not set"))?;
+    Ok(PathBuf::from(home).join("Library/Application Support/com.melp.modelstudio"))
+}
+
+fn read_config(root: &Path) -> StoredConfig {
+    std::fs::read_to_string(root.join("config.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }

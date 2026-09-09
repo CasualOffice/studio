@@ -3,6 +3,7 @@ import { api, errText, fmtDuration, newJobId, onEngineProgress, vaultUrl } from 
 import type { EngineProgress, ModelStatus } from "../lib/types";
 import { autoPick, estimateSeconds, humanDuration, QUALITY_LABEL, SHAPES, stepsFor, type Quality } from "../lib/presets";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
+import { loadPref, savePref } from "../lib/prefs";
 
 export type Mode = "generate" | "edit";
 
@@ -42,14 +43,14 @@ export default function Studio({
     [models]
   );
 
-  const [advanced, setAdvanced] = useState(false);
+  const [advanced, setAdvanced] = useState(() => loadPref("advanced", false));
   const [modelId, setModelId] = useState<string>("");
   const [autoModel, setAutoModel] = useState(true);
 
   const [prompt, setPrompt] = useState("");
   const [negative, setNegative] = useState("");
-  const [shape, setShape] = useState(0);
-  const [quality, setQuality] = useState<Quality>("balanced");
+  const [shape, setShape] = useState(() => loadPref(`shape:${mode}`, 0));
+  const [quality, setQuality] = useState<Quality>(() => loadPref("quality", "balanced" as Quality));
   const [steps, setSteps] = useState(8);
   const [guidance, setGuidance] = useState(1);
   const [seed, setSeed] = useState(0);
@@ -106,6 +107,10 @@ export default function Studio({
   useEffect(() => {
     if (model && !advanced) setSteps(stepsFor(model, quality));
   }, [quality, model, advanced]);
+
+  useEffect(() => { savePref("advanced", advanced); }, [advanced]);
+  useEffect(() => { savePref(`shape:${mode}`, shape); }, [shape, mode]);
+  useEffect(() => { savePref("quality", quality); }, [quality]);
 
   // Distilled and Turbo checkpoints reject guidance above 1.0 outright.
   const fixedGuidance = (model?.guidance_max ?? 1) <= 1;

@@ -99,6 +99,36 @@ fn dir_size(p: &Path) -> u64 {
 
 /// A snapshot counts as installed only if it holds real weight files, so a
 /// half-finished or cancelled download does not masquerade as complete.
+/// Public wrapper so callers outside this module can size a directory without
+/// duplicating the symlink handling.
+pub fn dir_size_of(p: &Path) -> u64 {
+    dir_size(p)
+}
+
+/// Copy a directory tree, preserving symlinks as symlinks.
+///
+/// The Hugging Face cache links snapshots at blobs; following those links
+/// would duplicate every weight file and double the space used.
+pub fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        let md = std::fs::symlink_metadata(&src)?;
+        if md.is_symlink() {
+            let target = std::fs::read_link(&src)?;
+            let _ = std::fs::remove_file(&dst);
+            std::os::unix::fs::symlink(target, &dst)?;
+        } else if md.is_dir() {
+            copy_tree(&src, &dst)?;
+        } else {
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn is_installed(paths: &AppPaths, repo: &str) -> (bool, u64) {
     let dir = snapshot_dir(paths, repo);
     if !dir.exists() {

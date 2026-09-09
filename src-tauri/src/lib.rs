@@ -40,7 +40,6 @@ use paths::AppPaths;
 use std::sync::Arc;
 use tauri::http;
 use tauri::Manager;
-use tokio::sync::Mutex;
 use vault::Vault;
 
 /// Serve decrypted vault content to the WebView.
@@ -107,11 +106,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .register_uri_scheme_protocol("vault", |ctx, request| vault_protocol(ctx.app_handle(), request))
-        .manage(AppState {
-            paths,
-            vault,
-            engine: Mutex::new(None),
-        })
+        .manage(AppState::new(paths, vault))
         .invoke_handler(tauri::generate_handler![
             commands::host_info,
             commands::setup_state,
@@ -129,6 +124,8 @@ pub fn run() {
             commands::vault_export,
             commands::vault_import,
             commands::list_models,
+            commands::storage_info,
+            commands::set_models_location,
             commands::download_model,
             commands::delete_model,
             commands::resolve_model,

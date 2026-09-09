@@ -79,6 +79,38 @@ def clear_cancel(req_id: str) -> None:
 # Memory controls
 # --------------------------------------------------------------------------
 
+def apply_resource_policy() -> dict[str, Any]:
+    """Bound what this process may take from the machine.
+
+    Two separate limits:
+
+    * The memory limit is a hard ceiling. Past it MLX raises instead of letting
+      macOS swap, which is the difference between one failed generation and a
+      Mac that stops responding for minutes.
+    * The cache limit bounds only the free-buffer pool MLX keeps for reuse.
+
+    Both are deliberately below physical memory: the window server, the app and
+    Python's own working set all have to fit alongside.
+    """
+    import mlx.core as mx
+
+    applied: dict[str, Any] = {}
+    budget = os.environ.get("MODELSTUDIO_MEMORY_BUDGET_GIB")
+    if budget:
+        try:
+            gib = float(budget)
+            mx.set_memory_limit(int(gib * (1024 ** 3)))
+            applied["memory_limit_gib"] = round(gib, 1)
+            # A quarter of the budget for reusable buffers, capped at 2 GiB.
+            cache = min(2.0, max(0.5, gib / 4))
+            mx.set_cache_limit(int(cache * (1024 ** 3)))
+            applied["cache_limit_gib"] = round(cache, 2)
+        except Exception as exc:
+            applied["error"] = str(exc)
+    applied["threads"] = os.environ.get("OMP_NUM_THREADS", "default")
+    return applied
+
+
 def set_cache_limit(gb: float | None) -> dict[str, Any]:
     """Cap MLX's free-buffer cache.
 
@@ -211,6 +243,43 @@ class ModelCache:
 
 CACHE = ModelCache()
 
+# The policy is applied once per process, at the first load.
+_POLICY_APPLIED = False
+
+# Drop resident weights after this long with no work. A model held for hours
+# while the user does something else is several gigabytes the rest of the
+# machine could be using. Reloading costs about ten seconds.
+IDLE_UNLOAD_SECONDS = float(os.environ.get("MODELSTUDIO_IDLE_UNLOAD_SECONDS", "600"))
+
+_LAST_USED = time.time()
+
+
+def _touch() -> None:
+    global _LAST_USED
+    _LAST_USED = time.time()
+
+
+def _idle_reaper() -> None:
+    """Release resident models once the engine has been quiet long enough."""
+    while True:
+        time.sleep(15)
+        if IDLE_UNLOAD_SECONDS <= 0:
+            continue
+        idle = time.time() - _LAST_USED
+        if idle < IDLE_UNLOAD_SECONDS:
+            continue
+        with _CANCEL_LOCK:
+            busy = bool(_ACTIVE)
+        if busy:
+            continue
+        if CACHE.loaded is not None or _ASSIST.get("model") is not None:
+            freed = CACHE.label or _ASSIST.get("key")
+            CACHE.unload()
+            _unload_assistant()
+            emit({"id": "idle", "type": "log", "level": "info",
+                  "message": f"released {freed} after {idle / 60:.0f} min idle"})
+            _touch()
+
 
 
 @contextlib.contextmanager
@@ -254,6 +323,12 @@ def _load_model(req_id: str, model: str, quantize: int | None,
     if cached is not None:
         log(req_id, f"reusing resident model ({CACHE.label})")
         return cached, 0.0
+
+    # Bound the process before any weights are allocated.
+    global _POLICY_APPLIED
+    if not _POLICY_APPLIED:
+        _POLICY_APPLIED = True
+        log(req_id, f"resource policy: {apply_resource_policy()}")
 
     # Free the old model *before* pulling the new one into memory.
     CACHE.unload()
@@ -698,6 +773,8 @@ def op_ping(req_id: str, _req: dict[str, Any]) -> dict[str, Any]:
         "mlxgen": mlxgen_version,
         "mlx": getattr(mx, "__version__", "unknown"),
         "resident_model": CACHE.label,
+        "threads": os.environ.get("OMP_NUM_THREADS", "default"),
+        "memory_budget_gib": os.environ.get("MODELSTUDIO_MEMORY_BUDGET_GIB"),
         "active_bytes": active,
         "peak_bytes": peak,
     }
@@ -1167,6 +1244,7 @@ def handle(req: dict[str, Any]) -> None:
     op = req.get("op", "")
     with _CANCEL_LOCK:
         _ACTIVE.add(req_id)
+    _touch()
     fn = OPS.get(op)
     if fn is None:
         emit({"id": req_id, "type": "error", "error": f"unknown op: {op}",
@@ -1192,6 +1270,7 @@ def handle(req: dict[str, Any]) -> None:
         emit(payload)
     finally:
         clear_cancel(req_id)
+        _touch()
         with _CANCEL_LOCK:
             _ACTIVE.discard(req_id)
 
@@ -1212,6 +1291,7 @@ def main() -> None:
 
     worker_thread = threading.Thread(target=worker, daemon=True)
     worker_thread.start()
+    threading.Thread(target=_idle_reaper, daemon=True).start()
 
     def drain(timeout: float) -> None:
         # Let queued work finish rather than dropping it silently; the host is

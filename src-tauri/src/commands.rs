@@ -12,9 +12,30 @@ use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 
 pub struct AppState {
-    pub paths: AppPaths,
+    /// Behind a lock because model storage can be relocated at runtime, and
+    /// every later path lookup must see the new location without a restart.
+    paths_inner: std::sync::RwLock<AppPaths>,
     pub vault: Arc<Vault>,
     pub engine: Mutex<Option<Arc<Engine>>>,
+}
+
+impl AppState {
+    pub fn new(paths: AppPaths, vault: Arc<Vault>) -> Self {
+        Self {
+            paths_inner: std::sync::RwLock::new(paths),
+            vault,
+            engine: Mutex::new(None),
+        }
+    }
+
+    /// A snapshot of the current paths. Cheap: `AppPaths` is two `PathBuf`s.
+    pub fn paths(&self) -> AppPaths {
+        self.paths_inner.read().expect("paths lock poisoned").clone()
+    }
+
+    fn replace_paths(&self, paths: AppPaths) {
+        *self.paths_inner.write().expect("paths lock poisoned") = paths;
+    }
 }
 
 impl AppState {
@@ -32,8 +53,8 @@ impl AppState {
             }
             *guard = None;
         }
-        let script = self.paths.worker_script(app)?;
-        let engine = Engine::spawn(app, &self.paths, &script).await?;
+        let script = self.paths().worker_script(app)?;
+        let engine = Engine::spawn(app, &self.paths(), &script).await?;
         *guard = Some(engine.clone());
         Ok(engine)
     }
@@ -60,17 +81,17 @@ fn hex(b: &[u8]) -> String {
 
 #[tauri::command]
 pub fn host_info(state: State<'_, AppState>) -> HostInfo {
-    HostInfo::probe(&state.paths)
+    HostInfo::probe(&state.paths())
 }
 
 #[tauri::command]
 pub fn setup_state(state: State<'_, AppState>) -> SetupState {
-    setup::state(&state.paths)
+    setup::state(&state.paths())
 }
 
 #[tauri::command]
 pub async fn run_setup(app: AppHandle, state: State<'_, AppState>, force: bool) -> Result<()> {
-    let paths = state.paths.clone();
+    let paths = state.paths();
     tauri::async_runtime::spawn(async move {
         let _ = setup::run(app, paths, force).await;
     });
@@ -209,6 +230,7 @@ pub fn vault_import(state: State<'_, AppState>, source: String, kind: String) ->
 
     let item = VaultItem {
         id: uuid::Uuid::new_v4().to_string(),
+        content_hash: None,
         kind: if mime.starts_with("image/") { "import".into() } else { "doc".into() },
         name,
         mime: mime.into(),
@@ -224,17 +246,111 @@ pub fn vault_import(state: State<'_, AppState>, source: String, kind: String) ->
         created_at: chrono::Local::now().to_rfc3339(),
         duration_ms: 0,
     };
-    Ok(state.vault.put(&bytes, item)?)
+    let before = state.vault.list()?.len();
+    let id = state.vault.put(&bytes, item)?;
+    let deduplicated = state.vault.list()?.len() == before;
+    if deduplicated {
+        return Err(AppError::AlreadyInVault(id));
+    }
+    Ok(id)
 }
 
 // ---------------------------------------------------------------------------
 // Models
 // ---------------------------------------------------------------------------
 
+#[derive(serde::Serialize)]
+pub struct StorageInfo {
+    pub models_root: String,
+    pub models_bytes: u64,
+    pub volume_free_gib: f32,
+    pub is_external: bool,
+}
+
+#[tauri::command]
+pub fn storage_info(state: State<'_, AppState>) -> StorageInfo {
+    let root = state.paths().models_root().clone();
+    let host = HostInfo::probe_for(&root);
+    StorageInfo {
+        models_bytes: models::dir_size_of(&root),
+        volume_free_gib: host.free_disk_gib,
+        is_external: root.starts_with("/Volumes/"),
+        models_root: root.to_string_lossy().to_string(),
+    }
+}
+
+/// Move model storage to another location, e.g. an external drive.
+///
+/// Copying rather than renaming, because the destination is usually a
+/// different filesystem where rename cannot work. The originals are only
+/// removed once every byte has landed.
+#[tauri::command]
+pub async fn set_models_location(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    move_existing: bool,
+) -> Result<StorageInfo> {
+    let dest = std::path::PathBuf::from(path.trim());
+    if !dest.is_absolute() {
+        return Err(AppError::msg("Choose a folder, not a relative path."));
+    }
+    std::fs::create_dir_all(&dest)?;
+
+    // Refuse to move onto a volume that cannot hold what is already stored.
+    let current = state.paths().models_root().clone();
+    let needed = models::dir_size_of(&current);
+    if move_existing && needed > 0 {
+        let host = HostInfo::probe_for(&dest);
+        let free = (host.free_disk_gib * 1024.0 * 1024.0 * 1024.0) as u64;
+        if needed + 2 * 1024 * 1024 * 1024 > free {
+            return Err(AppError::msg(format!(
+                "That volume has {:.1} GB free but the models need {:.1} GB.",
+                host.free_disk_gib,
+                needed as f32 / 1024.0 / 1024.0 / 1024.0
+            )));
+        }
+    }
+
+    // The engine holds the old location in its environment.
+    {
+        let mut guard = state.engine.lock().await;
+        if let Some(engine) = guard.take() {
+            engine.shutdown().await;
+        }
+    }
+
+    if move_existing && current.exists() && current != dest {
+        let from = current.clone();
+        let to = dest.clone();
+        tauri::async_runtime::spawn_blocking(move || models::copy_tree(&from, &to))
+            .await
+            .map_err(|e| AppError::msg(format!("move task failed: {e}")))??;
+        let _ = std::fs::remove_dir_all(&current);
+    }
+
+    let mut paths = state.paths();
+    paths.set_models_root(dest)?;
+    state.replace_paths(paths.clone());
+    let _ = app;
+    Ok(storage_info_for(&paths))
+}
+
+fn storage_info_for(paths: &AppPaths) -> StorageInfo {
+    let root = paths.models_root().clone();
+    let host = HostInfo::probe_for(&root);
+    StorageInfo {
+        models_bytes: models::dir_size_of(&root),
+        volume_free_gib: host.free_disk_gib,
+        is_external: root.starts_with("/Volumes/"),
+        models_root: root.to_string_lossy().to_string(),
+    }
+}
+
 #[tauri::command]
 pub fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelStatus>> {
-    let host = HostInfo::probe(&state.paths);
-    models::list(&state.paths, &host)
+    let host = HostInfo::probe(&state.paths());
+    models::list(&state.paths(), &host)
 }
 
 #[tauri::command]
@@ -244,8 +360,8 @@ pub async fn download_model(
     model_id: String,
     job_id: String,
 ) -> Result<serde_json::Value> {
-    let host = HostInfo::probe(&state.paths);
-    let entry = models::find(&state.paths, &host, &model_id)
+    let host = HostInfo::probe(&state.paths());
+    let entry = models::find(&state.paths(), &host, &model_id)
         .ok_or_else(|| AppError::msg(format!("unknown model: {model_id}")))?;
 
     if !entry.installed {
@@ -287,10 +403,10 @@ pub async fn download_model(
 
 #[tauri::command]
 pub fn delete_model(state: State<'_, AppState>, model_id: String) -> Result<u64> {
-    let host = HostInfo::probe(&state.paths);
-    let entry = models::find(&state.paths, &host, &model_id)
+    let host = HostInfo::probe(&state.paths());
+    let entry = models::find(&state.paths(), &host, &model_id)
         .ok_or_else(|| AppError::msg(format!("unknown model: {model_id}")))?;
-    models::delete(&state.paths, &entry.repo)
+    models::delete(&state.paths(), &entry.repo)
 }
 
 /// Accept anything that identifies a Hugging Face repo: a bare `owner/name`,
@@ -359,7 +475,7 @@ pub async fn resolve_model(
         .await?;
 
     // Judge it against this machine before a single byte is spent.
-    let host = HostInfo::probe(&state.paths);
+    let host = HostInfo::probe(&state.paths());
     let bytes = resolved["bytes"].as_u64().unwrap_or(0);
     let package_gib = bytes as f32 / 1024.0 / 1024.0 / 1024.0;
     let (fit, reason) = models::judge_uninstalled(package_gib, &host);
@@ -391,7 +507,7 @@ pub fn add_custom_model(
     // A stable id derived from the repo keeps re-adding idempotent.
     let id = format!("custom:{}", repo.replace('/', "--"));
     models::add_custom(
-        &state.paths,
+        &state.paths(),
         CustomModel {
             id,
             name: if name.trim().is_empty() { repo.clone() } else { name },
@@ -407,7 +523,7 @@ pub fn add_custom_model(
 
 #[tauri::command]
 pub fn remove_custom_model(state: State<'_, AppState>, model_id: String) -> Result<()> {
-    models::remove_custom(&state.paths, &model_id)
+    models::remove_custom(&state.paths(), &model_id)
 }
 
 #[tauri::command]
@@ -465,8 +581,8 @@ async fn run_job(
 ) -> Result<Vec<String>> {
     state.require_unlocked()?;
 
-    let host = HostInfo::probe(&state.paths);
-    let entry = models::find(&state.paths, &host, &args.model_id)
+    let host = HostInfo::probe(&state.paths());
+    let entry = models::find(&state.paths(), &host, &args.model_id)
         .ok_or_else(|| AppError::msg(format!("unknown model: {}", args.model_id)))?;
 
     if let Some(reason) = entry.broken.as_deref() {
@@ -589,6 +705,7 @@ async fn run_job(
     for (i, id) in produced.iter().enumerate() {
         state.vault.commit_slot(VaultItem {
             id: id.clone(),
+            content_hash: None,
             kind: op.to_string(),
             name: format!("{}-{}.png", op, chrono::Local::now().format("%Y%m%d-%H%M%S")),
             mime: "image/png".into(),
@@ -613,7 +730,7 @@ async fn run_job(
         let generate_ms = result["generate_ms"].as_u64().unwrap_or(elapsed);
         let load_ms = result["load_ms"].as_u64().unwrap_or(0);
         let _ = crate::timings::record(
-            &state.paths,
+            &state.paths(),
             &entry.id,
             args.steps,
             args.width,
@@ -663,8 +780,8 @@ pub async fn upscale(
     low_ram: bool,
 ) -> Result<Vec<String>> {
     state.require_unlocked()?;
-    let host = HostInfo::probe(&state.paths);
-    let entry = models::find(&state.paths, &host, &model_id)
+    let host = HostInfo::probe(&state.paths());
+    let entry = models::find(&state.paths(), &host, &model_id)
         .ok_or_else(|| AppError::msg(format!("unknown model: {model_id}")))?;
     if !entry.installed {
         return Err(AppError::msg(format!("{} is not downloaded yet.", entry.name)));
@@ -717,6 +834,7 @@ pub async fn upscale(
     for (i, id) in produced.iter().enumerate() {
         state.vault.commit_slot(VaultItem {
             id: id.clone(),
+            content_hash: None,
             kind: "upscale".into(),
             name: format!("upscale-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S")),
             mime: "image/png".into(),
@@ -749,8 +867,8 @@ pub async fn assist_prompt(
 ) -> Result<serde_json::Value> {
     state.require_unlocked()?;
 
-    let host = HostInfo::probe(&state.paths);
-    let assistant = models::find(&state.paths, &host, "qwen2-vl-2b-4bit")
+    let host = HostInfo::probe(&state.paths());
+    let assistant = models::find(&state.paths(), &host, "qwen2-vl-2b-4bit")
         .ok_or_else(|| AppError::msg("the prompt assistant is missing from the catalog"))?;
     if !assistant.installed {
         return Err(AppError::msg(

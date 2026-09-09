@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   EngineProgress, GenerateArgs, HostInfo, ModelStatus,
-  ResolvedModel, SetupProgress, SetupState, VaultItem, VaultStatus,
+  ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus,
 } from "./types";
 
 /** Tauri rejects with our structured error; normalise it to a message. */
@@ -20,6 +20,9 @@ export const api = {
   runSetup: (force = false) => invoke<void>("run_setup", { force }),
 
   listModels: () => invoke<ModelStatus[]>("list_models"),
+  storageInfo: () => invoke<StorageInfo>("storage_info"),
+  setModelsLocation: (path: string, moveExisting: boolean) =>
+    invoke<StorageInfo>("set_models_location", { path, moveExisting }),
   downloadModel: (modelId: string, jobId: string) =>
     invoke<unknown>("download_model", { modelId, jobId }),
   deleteModel: (modelId: string) => invoke<number>("delete_model", { modelId }),

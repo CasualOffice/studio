@@ -304,6 +304,7 @@ export default function App() {
               onStatus={setVault}
               notify={notify}
               onImported={refreshItems}
+              onStorageMoved={refreshModels}
             />
           )}
         </div>

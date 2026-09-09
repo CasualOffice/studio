@@ -9,6 +9,8 @@ interface Health {
   resident_model?: string | null;
   active_bytes?: number | null;
   peak_bytes?: number | null;
+  threads?: string;
+  memory_budget_gib?: string | null;
 }
 
 /**
@@ -70,6 +72,16 @@ export default function Activity({ notify }: { notify: (m: string, bad?: boolean
               <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
                 {health.resident_model ?? "none — the next run will load one"}
               </div>
+            </div>
+            <div className="notice" style={{ marginTop: 12, marginBottom: 12 }}>
+              <strong>
+                Limited to {health.memory_budget_gib ?? "?"} GB of memory
+                {health.threads ? ` and ${health.threads} threads` : ""}
+              </strong>
+              Past that ceiling MLX refuses the allocation instead of letting
+              macOS swap, and the engine runs at lower priority so the rest of
+              the machine stays responsive. Models are released after 10 minutes
+              idle.
             </div>
             {(health.active_bytes ?? 0) > 0 && (
               <div className="stats" style={{ display: "flex", gap: 18 }}>
