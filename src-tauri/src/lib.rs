@@ -120,9 +120,11 @@ pub fn run() {
             commands::vault_disable_biometry,
             commands::vault_change_passphrase,
             commands::vault_list,
+            commands::vault_repair,
             commands::vault_delete,
             commands::vault_export,
             commands::vault_import,
+            commands::vault_import_bytes,
             commands::list_models,
             commands::storage_info,
             commands::set_models_location,
@@ -137,6 +139,7 @@ pub fn run() {
             commands::generate,
             commands::edit_image,
             commands::upscale,
+            commands::generate_video,
             commands::assist_prompt,
         ])
         .on_window_event(|window, event| {

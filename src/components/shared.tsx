@@ -121,7 +121,13 @@ export function ImageDrop({
   const pick = async () => {
     const sel = await open({
       multiple: true,
-      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "tif", "tiff", "bmp"] }],
+      filters: [{
+        name: "Images",
+        extensions: [
+          "png", "jpg", "jpeg", "jpe", "webp", "avif",
+          "heic", "heif", "tif", "tiff", "bmp", "gif",
+        ],
+      }],
     });
     if (!sel) return;
     await add(Array.isArray(sel) ? sel : [sel]);
@@ -133,7 +139,9 @@ export function ImageDrop({
     setPicking(true);
     if (vaultItems === null) {
       try {
-        setVaultItems((await api.vaultList()).filter((i) => i.mime.startsWith("image/")));
+        setVaultItems((await api.vaultList()).filter(
+          (i) => i.mime.startsWith("image/") && i.kind !== "mask"
+        ));
       } catch (e) {
         onError(errText(e));
         setVaultItems([]);

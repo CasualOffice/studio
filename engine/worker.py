@@ -38,6 +38,25 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+
+def _register_image_formats() -> None:
+    """Teach PIL the formats a Mac user actually has.
+
+    Pillow reads PNG, JPEG, WebP, AVIF, TIFF and BMP on its own, but not HEIC —
+    which is what every iPhone photo is. Registering the opener here means the
+    rest of the engine can treat any supported file as just an image.
+    """
+    try:
+        import pillow_heif
+
+        pillow_heif.register_heif_opener()
+    except Exception:
+        # HEIC support is a nicety; everything else still works without it.
+        pass
+
+
+_register_image_formats()
+
 # Keep third-party chatter off stdout: stdout is the protocol channel.
 _STDOUT = sys.stdout
 sys.stdout = sys.stderr
@@ -209,7 +228,13 @@ def call_tolerant(req_id: str, fn: Any, base: dict[str, Any],
 # --------------------------------------------------------------------------
 
 class ModelCache:
-    """Holds at most one loaded model. 16 GB Macs cannot afford two."""
+    """Holds at most one loaded model.
+
+    This is a hard invariant, not an optimisation. Every model this app can run
+    is measured in gigabytes, and two resident at once on a 16 GB machine means
+    paging — which does not fail loudly, it just makes the whole Mac crawl.
+    Anything that needs a different model evicts the current one first.
+    """
 
     def __init__(self) -> None:
         self.key: str | None = None
@@ -330,8 +355,12 @@ def _load_model(req_id: str, model: str, quantize: int | None,
         _POLICY_APPLIED = True
         log(req_id, f"resource policy: {apply_resource_policy()}")
 
-    # Free the old model *before* pulling the new one into memory.
+    # Free whatever is resident *before* pulling the new one into memory --
+    # including the assistant, which competes for the same budget.
     CACHE.unload()
+    if _ASSIST.get("model") is not None:
+        log(req_id, "releasing the prompt assistant to make room for the model")
+        _unload_assistant()
     log(req_id, f"loading {model} (quantize={quantize})")
     emit({"id": req_id, "type": "progress", "phase": "load", "progress": 0.0,
           "message": f"Loading {model}"})
@@ -442,6 +471,34 @@ def _stage_dir() -> str:
     return _STAGE_ROOT
 
 
+# Formats a model's own image loader can be trusted with. Anything else is
+# converted on the way in, so an iPhone HEIC or a WebP is usable everywhere.
+_MODEL_SAFE_FORMATS = {"PNG", "JPEG"}
+
+
+def _to_model_readable(path: str) -> str:
+    """Convert a staged image to PNG unless it is already a safe format.
+
+    The alternative -- teaching every model loader about HEIC and AVIF -- is not
+    available: they open files themselves. Normalising here is lossless and
+    happens once per run on an already-decrypted temporary file.
+    """
+    from PIL import Image
+
+    try:
+        with Image.open(path) as img:
+            fmt = (img.format or "").upper()
+            if fmt in _MODEL_SAFE_FORMATS:
+                return path
+            converted = f"{path}.png"
+            # Drop alpha and exotic modes: model loaders expect RGB.
+            img.convert("RGB").save(converted, format="PNG")
+        return converted
+    except Exception:
+        # If it cannot be opened here it will fail later with a better message.
+        return path
+
+
 def _stage_vault_inputs(inputs: list[dict[str, Any]]) -> list[str]:
     """Decrypt sealed source images so mlx-gen, which loads by path, can read them.
 
@@ -457,11 +514,16 @@ def _stage_vault_inputs(inputs: list[dict[str, Any]]) -> list[str]:
         for entry in inputs:
             sealed = open(entry["path"], "rb").read()
             plain = vc.open_with_file_key(bytes.fromhex(entry["key"]), sealed)
-            dest = os.path.join(_stage_dir(), f"{entry['id']}.png")
+            # Keep the original extension so PIL can sniff the format.
+            suffix = entry.get("ext") or "png"
+            dest = os.path.join(_stage_dir(), f"{entry['id']}.{suffix}")
             fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "wb") as f:
                 f.write(plain)
-            staged.append(dest)
+            readable = _to_model_readable(dest)
+            if readable != dest:
+                staged.append(dest)
+            staged.append(readable)
     except BaseException:
         _discard_staged(staged)
         raise
@@ -509,15 +571,21 @@ def _seal_results(req_id: str, results: Any, slots: list[dict[str, Any]],
 # Prompt assistance
 # --------------------------------------------------------------------------
 
-# The assistant is small enough (~1.5 GiB at 4-bit) to stay resident beside a
-# 4-5 GiB image model, so it gets its own slot rather than evicting the
-# generator every time someone asks for help with a prompt.
+# The assistant obeys the same one-model rule as everything else. It was
+# briefly given its own slot on the theory that 2.6 GiB would sit happily
+# beside a 5.6 GiB image model; on a 16 GB machine that combination paged, and
+# a prompt rewrite that should take two seconds took minutes.
 _ASSIST: dict[str, Any] = {"key": None, "model": None, "processor": None, "config": None}
 
 
 def _load_assistant(req_id: str, repo: str) -> tuple[Any, Any, Any]:
     if _ASSIST["key"] == repo and _ASSIST["model"] is not None:
         return _ASSIST["model"], _ASSIST["processor"], _ASSIST["config"]
+
+    # One model resident, always: give up the generator before taking memory.
+    if CACHE.loaded is not None:
+        log(req_id, f"releasing {CACHE.label} to make room for the assistant")
+        CACHE.unload()
 
     from mlx_vlm import load
     from mlx_vlm.utils import load_config
@@ -675,14 +743,6 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     raw_staged = _stage_vault_inputs(req.get("vault_inputs") or [])
     staged = _downscale_for_assist(raw_staged)
     try:
-        if req.get("exclusive"):
-            # On a 16 GB machine the image model and the assistant together sit
-            # right at the ceiling, and the resulting paging makes everything
-            # slow. Give up the image model rather than thrash.
-            if CACHE.loaded is not None:
-                log(req_id, "releasing the image model to make room for the assistant")
-                CACHE.unload()
-
         model, processor, config = _load_assistant(req_id, repo)
 
         editing = mode == "edit" and bool(staged)
@@ -778,6 +838,20 @@ def op_ping(req_id: str, _req: dict[str, Any]) -> dict[str, Any]:
         "active_bytes": active,
         "peak_bytes": peak,
     }
+
+
+def op_image_formats(req_id: str, _req: dict[str, Any]) -> dict[str, Any]:
+    """Which image extensions this install can actually decode."""
+    from PIL import Image
+
+    Image.init()
+    exts = sorted({e.lstrip(".").lower() for e in Image.EXTENSION})
+    # Only offer what is both decodable and sensible to edit.
+    useful = [e for e in exts if e in {
+        "png", "jpg", "jpeg", "jpe", "webp", "avif", "heic", "heif",
+        "tif", "tiff", "bmp", "gif", "ppm", "tga", "ico", "jp2", "j2k",
+    }]
+    return {"extensions": useful, "heic": "heic" in useful}
 
 
 def op_capabilities(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
@@ -1276,6 +1350,101 @@ def op_upscale(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             "sizes": [len(png)], "model": repo}
 
 
+
+# --------------------------------------------------------------------------
+# Video
+# --------------------------------------------------------------------------
+
+def op_video(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
+    """Generate a clip, optionally starting from a picture.
+
+    Frame count is the only real cost lever. `fps` is written into the file as
+    playback metadata and changes the clip's duration, not the work done: the
+    same 49 frames tagged 16fps or 24fps cost exactly the same to produce.
+    Attention is quadratic in sequence length, so halving frames saves more
+    than half the memory.
+
+    Every low-RAM knob the route exposes is on by default. On unified memory
+    these bound the working set rather than dodging a bus, which is the only
+    thing that makes a video model fit at all on a 16 GB machine.
+    """
+    slots = req.get("vault_slots") or []
+    if not slots:
+        raise ValueError("video generation needs a vault slot to write into")
+
+    frames = int(req.get("frames", 33))
+    if frames < 5:
+        raise ValueError("a clip needs at least 5 frames")
+
+    staged = _stage_vault_inputs(req.get("vault_inputs") or [])
+    try:
+        loaded, load_ms = _load_model(
+            req_id,
+            req["model"],
+            req.get("quantize"),
+            req.get("model_path"),
+            image_count=1 if staged else 0,
+            release_text_encoder=True,
+        )
+
+        base: dict[str, Any] = {
+            "seed": int(req.get("seed", 0)),
+            "prompt": req.get("prompt", ""),
+            "num_frames": frames,
+            "fps": int(req.get("fps", 16)),
+            "width": int(req.get("width", 480)),
+            "height": int(req.get("height", 320)),
+            "num_inference_steps": int(req.get("steps", 20)),
+            "progress_callback": _make_progress_handler(req_id),
+            # The layer-boundary levers, which for video are not optional.
+            "clear_cache_each_step": True,
+            "clear_cache_each_transformer_block": True,
+            "release_denoisers_before_decode": True,
+        }
+        optional: dict[str, Any] = {}
+        if staged:
+            # A first frame turns text-to-video into image-to-video.
+            optional["image_path"] = staged[0]
+        if req.get("negative_prompt"):
+            optional["negative_prompt"] = req["negative_prompt"]
+        if req.get("guidance") is not None:
+            optional["guidance"] = req["guidance"]
+
+        target = getattr(loaded, "model", loaded)
+        gen_started = time.time()
+        video = call_tolerant(req_id, target.generate_video, base, optional)
+        generate_ms = (time.time() - gen_started) * 1000.0
+
+        # MP4 needs a container writer, so unlike images this cannot be encoded
+        # purely in memory. It is written to the private staging directory and
+        # removed as soon as it has been sealed.
+        import vaultcrypto as vc
+
+        tmp = os.path.join(_stage_dir(), f"{slots[0]['id']}.mp4")
+        emit({"id": req_id, "type": "progress", "phase": "save",
+              "progress": None, "message": "Encoding the clip"})
+        video.save(path=tmp, export_json_metadata=False)
+        try:
+            with open(tmp, "rb") as f:
+                data = f.read()
+            slot = slots[0]
+            vc.write_sealed(
+                slot["path"], bytes.fromhex(slot["key"]),
+                bytes.fromhex(slot["file_id"]), data,
+            )
+            log(req_id, f"sealed {len(data)} bytes of video into {slot['id']}")
+        finally:
+            _discard_staged([tmp])
+    finally:
+        _discard_staged(staged)
+        # Video weights are the largest thing this app loads; do not keep them.
+        CACHE.unload()
+
+    return {"outputs": [slots[0]["id"]], "sealed": True, "sizes": [len(data)],
+            "model": req["model"], "frames": frames,
+            "load_ms": round(load_ms), "generate_ms": round(generate_ms)}
+
+
 def op_unload(req_id: str, _req: dict[str, Any]) -> dict[str, Any]:
     CACHE.unload()
     _unload_assistant()
@@ -1295,11 +1464,13 @@ def op_set_memory(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
 OPS = {
     "ping": op_ping,
     "capabilities": op_capabilities,
+    "image_formats": op_image_formats,
     "resolve": op_resolve,
     "download": op_download,
     "generate": op_generate,
     "edit": op_edit,
     "upscale": op_upscale,
+    "video": op_video,
     "unload": op_unload,
     "assist": op_assist,
     "unload_assistant": op_unload_assistant,

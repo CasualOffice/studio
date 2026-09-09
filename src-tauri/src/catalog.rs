@@ -356,6 +356,47 @@ pub const CATALOG: &[ModelEntry] = &[
         notes: "Good latent restyle. The published -4bit repo is mislabelled q8; avoid it.",
         broken: None,
     },
+    // ---- Video -----------------------------------------------------------
+    ModelEntry {
+        id: "wan21-vace-1.3b",
+        repo: "Wan-AI/Wan2.1-VACE-1.3B-diffusers",
+        name: "Wan 2.1 VACE 1.3B — video",
+        family: Some("wan"),
+        tasks: &[Task::Video],
+        quantize: Some(8),
+        package_gib: 17.7,
+        // No published benchmark. Estimated from the 1.3B class, where Bernini
+        // measured 9.1-9.5 GiB at small sizes with low-RAM mode on.
+        peak_gib: 9.5,
+        peak_estimated: true,
+        steps_default: 20,
+        max_edit_images: 1,
+        guidance_default: 4.0,
+        guidance_max: 10.0,
+        notes: "The smallest Wan that can run here. Text-to-video and latent \
+                video. Keep clips short: attention cost is quadratic in frames.",
+        broken: None,
+    },
+    ModelEntry {
+        id: "bernini-r-1.3b",
+        repo: "ByteDance/Bernini-R-1.3B-Diffusers",
+        name: "Bernini-R 1.3B — image to video",
+        family: Some("wan"),
+        tasks: &[Task::Video],
+        quantize: None,
+        package_gib: 16.4,
+        peak_gib: 9.5,
+        peak_estimated: false,
+        steps_default: 20,
+        max_edit_images: 8,
+        guidance_default: 4.5,
+        guidance_max: 10.0,
+        notes: "Measured at 9.12-9.45 GiB for 17 frames at 320x192. Animates a \
+                still picture. BF16 only; MLX-Gen reports its visual quality \
+                gate as failing, so treat output as experimental.",
+        broken: None,
+    },
+
     // ---- Documented but out of reach on 16 GB ---------------------------
     ModelEntry {
         id: "fibo-8bit",

@@ -343,6 +343,8 @@ pub async fn bootstrap(report: Reporter<'_>, paths: &AppPaths, force: bool) -> R
         // conflicts with MLX-Gen's <0.32 cap, but it runs correctly on 0.31.2;
         // pip will warn about the mismatch and that warning is expected.
         "mlx-vlm",
+        // iPhone photos are HEIC, which Pillow cannot read on its own.
+        "pillow-heif",
     ]);
     // Keep pip's own cache inside our root so the disk meter stays honest.
     pip.env("PIP_CACHE_DIR", paths.root.join("pipcache"));

@@ -2,4 +2,4 @@ pub mod crypto;
 #[cfg(target_os = "macos")]
 pub mod keychain;
 pub mod store;
-pub use store::{Vault, VaultError, VaultItem, VaultStatus};
+pub use store::{RepairReport, Vault, VaultError, VaultItem, VaultStatus};

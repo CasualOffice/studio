@@ -52,6 +52,11 @@ export default function Security({
         <div style={{ fontSize: 10.5, color: "var(--text-faint)", userSelect: "text", marginBottom: 12 }}>
           {status.root}
         </div>
+        <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginBottom: 10, lineHeight: 1.6 }}>
+          Every stored file carries its own identifier, so if the index is ever
+          lost the content can be identified and re-listed. <b>Check and repair</b>
+          reconciles the two.
+        </div>
         <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
           <button className="btn small" disabled={busy} onClick={importFiles}>
             Import files…
@@ -65,6 +70,23 @@ export default function Security({
             })}
           >
             Lock now
+          </button>
+          <button
+            className="btn small"
+            disabled={busy}
+            title="Reconcile the index against what is actually stored"
+            onClick={() => wrap(async () => {
+              const r = await api.vaultRepair();
+              onImported();
+              notify(
+                r.recovered || r.dropped || r.unreadable
+                  ? `Recovered ${r.recovered}, removed ${r.dropped} dead entries` +
+                    (r.unreadable ? `, ${r.unreadable} unreadable` : "")
+                  : "Everything already consistent."
+              );
+            })}
+          >
+            Check and repair
           </button>
         </div>
       </div>

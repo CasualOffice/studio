@@ -187,6 +187,54 @@ pub struct Vault {
     inner: RwLock<Option<Unlocked>>,
 }
 
+/// Read the vault lock, recovering if a previous holder panicked.
+///
+/// `unwrap()` on a poisoned lock turns one unrelated panic into a permanently
+/// unusable vault: every later operation panics too, and the only escape is
+/// quitting the app. Poisoning here means some other thread failed partway
+/// through, not that the guarded data is unreadable, so recovering is both
+/// safe and the difference between one lost operation and all of them.
+macro_rules! read_guard {
+    ($lock:expr) => {
+        $lock.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+    };
+}
+
+macro_rules! write_guard {
+    ($lock:expr) => {
+        $lock.write().unwrap_or_else(|poisoned| poisoned.into_inner())
+    };
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct RepairReport {
+    /// Blobs that had no index entry and were identified and re-listed.
+    pub recovered: usize,
+    /// Index entries whose blob is gone.
+    pub dropped: usize,
+    /// Files in the blob directory this vault's key cannot open.
+    pub unreadable: usize,
+}
+
+/// Identify content from its leading bytes, since a recovered blob has no
+/// filename or stored metadata to go on.
+fn sniff_mime(bytes: &[u8]) -> &'static str {
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => "image/png",
+        [0xFF, 0xD8, 0xFF, ..] => "image/jpeg",
+        [b'G', b'I', b'F', b'8', ..] => "image/gif",
+        [b'%', b'P', b'D', b'F', ..] => "application/pdf",
+        _ if bytes.len() > 12 && &bytes[4..8] == b"ftyp" => match &bytes[8..12] {
+            b"heic" | b"heix" | b"mif1" => "image/heic",
+            b"avif" => "image/avif",
+            _ => "video/mp4",
+        },
+        _ if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" =>
+            "image/webp",
+        _ => "application/octet-stream",
+    }
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct VaultStatus {
     pub exists: bool,
@@ -297,7 +345,7 @@ impl Vault {
 
         let index = Index::default();
         self.write_index(&dek, &index)?;
-        *self.inner.write().unwrap() = Some(Unlocked {
+        *write_guard!(self.inner) = Some(Unlocked {
             dek,
             index,
             since: Instant::now(),
@@ -329,7 +377,7 @@ impl Vault {
 
     fn finish_unlock(&self, dek: [u8; 32], via_biometry: bool) -> Result<(), VaultError> {
         let index = self.read_index_with_fallback(&dek)?;
-        *self.inner.write().unwrap() = Some(Unlocked {
+        *write_guard!(self.inner) = Some(Unlocked {
             dek,
             index,
             since: Instant::now(),
@@ -340,13 +388,13 @@ impl Vault {
 
     pub fn lock(&self) {
         // Dropping `Unlocked` zeroizes the data key.
-        *self.inner.write().unwrap() = None;
+        *write_guard!(self.inner) = None;
     }
 
     /// Add or replace the Touch ID unlock path. Requires the vault to be open,
     /// which means the caller has already proved they hold the passphrase.
     pub fn enable_biometry(&self) -> Result<(), VaultError> {
-        let guard = self.inner.read().unwrap();
+        let guard = read_guard!(self.inner);
         let u = guard.as_ref().ok_or(VaultError::Locked)?;
         let mut kek = provision_biometric_kek()?;
         let wrap = Wrap::seal(&kek, &u.dek);
@@ -444,7 +492,7 @@ impl Vault {
     }
 
     fn with_unlocked<T>(&self, f: impl FnOnce(&Unlocked) -> Result<T, VaultError>) -> Result<T, VaultError> {
-        let guard = self.inner.read().unwrap();
+        let guard = read_guard!(self.inner);
         let u = guard.as_ref().ok_or(VaultError::Locked)?;
         f(u)
     }
@@ -512,7 +560,7 @@ impl Vault {
 
     /// Record an already-sealed blob that the engine wrote into place.
     pub fn commit_slot(&self, mut item: VaultItem) -> Result<(), VaultError> {
-        let mut guard = self.inner.write().unwrap();
+        let mut guard = write_guard!(self.inner);
         let u = guard.as_mut().ok_or(VaultError::Locked)?;
         if !self.blob_path(&item.id).exists() {
             return Err(VaultError::NoSuchItem(item.id));
@@ -541,7 +589,7 @@ impl Vault {
     /// releasing first let two concurrent writers interleave, so the later
     /// write clobbered the earlier one's entry and orphaned its blob.
     pub fn put(&self, plaintext: &[u8], mut item: VaultItem) -> Result<String, VaultError> {
-        let mut guard = self.inner.write().unwrap();
+        let mut guard = write_guard!(self.inner);
         let u = guard.as_mut().ok_or(VaultError::Locked)?;
 
         let hash = content_hash(plaintext);
@@ -580,13 +628,83 @@ impl Vault {
     }
 
     pub fn delete(&self, id: &str) -> Result<(), VaultError> {
-        let mut guard = self.inner.write().unwrap();
+        let mut guard = write_guard!(self.inner);
         let u = guard.as_mut().ok_or(VaultError::Locked)?;
         u.index.items.retain(|i| i.id != id);
         let index = u.index.clone();
         let dek = u.dek;
         let _ = std::fs::remove_file(self.blob_path(id));
         self.write_index(&dek, &index)
+    }
+
+    /// Reconcile the index against what is actually on disk.
+    ///
+    /// Two failure modes this repairs. Blobs with no index entry -- orphaned by
+    /// a crash between writing content and saving the index -- are decrypted,
+    /// identified and re-listed rather than silently wasting space forever.
+    /// Index entries with no blob are dropped, since they can never be opened.
+    ///
+    /// This is possible at all because every blob carries its own file id in
+    /// its header, so a blob is self-describing given the data key.
+    pub fn repair(&self) -> Result<RepairReport, VaultError> {
+        let mut guard = write_guard!(self.inner);
+        let u = guard.as_mut().ok_or(VaultError::Locked)?;
+        let dek = u.dek;
+
+        let known: std::collections::HashSet<String> =
+            u.index.items.iter().map(|i| i.id.clone()).collect();
+
+        let mut recovered = Vec::new();
+        let mut unreadable = 0usize;
+        if let Ok(entries) = std::fs::read_dir(self.blobs()) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if known.contains(&name) || name.ends_with(".tmp") {
+                    continue;
+                }
+                let Ok(sealed) = std::fs::read(e.path()) else { continue };
+                match crypto::open(&dek, &sealed) {
+                    Ok(plain) => {
+                        let mime = sniff_mime(&plain);
+                        recovered.push(VaultItem {
+                            id: name.clone(),
+                            content_hash: Some(content_hash(&plain)),
+                            kind: "recovered".into(),
+                            name: format!("recovered-{}", &name[..8.min(name.len())]),
+                            mime: mime.into(),
+                            bytes: plain.len() as u64,
+                            model: String::new(),
+                            prompt: String::new(),
+                            seed: 0,
+                            width: None,
+                            height: None,
+                            steps: None,
+                            guidance: None,
+                            inputs: vec![],
+                            created_at: chrono::Local::now().to_rfc3339(),
+                            duration_ms: 0,
+                        });
+                    }
+                    // Not ours, or corrupt. Left alone rather than deleted:
+                    // destroying data during a repair is the wrong default.
+                    Err(_) => unreadable += 1,
+                }
+            }
+        }
+
+        let before = u.index.items.len();
+        u.index.items.retain(|i| self.blob_path(&i.id).exists());
+        let dropped = before - u.index.items.len();
+
+        let recovered_count = recovered.len();
+        u.index.items.extend(recovered);
+        let index = u.index.clone();
+        drop(guard);
+
+        if recovered_count > 0 || dropped > 0 {
+            self.write_index(&dek, &index)?;
+        }
+        Ok(RepairReport { recovered: recovered_count, dropped, unreadable })
     }
 
     /// The one sanctioned way plaintext leaves the vault.

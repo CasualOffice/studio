@@ -354,7 +354,7 @@ fn status_from_custom(m: &CustomModel, paths: &AppPaths, host: &HostInfo) -> Mod
         // the run only after the weights were already resident.
         guidance_default: 1.0,
         guidance_max: 1.0,
-        notes: format!("Added by you. Memory is estimated, not a published benchmark."),
+        notes: "Added by you. Memory is estimated, not a published benchmark.".to_string(),
         broken: None,
         custom: true,
         installed,

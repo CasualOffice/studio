@@ -4,7 +4,7 @@ use crate::hostinfo::HostInfo;
 use crate::models::{self, CustomModel, ModelStatus};
 use crate::paths::AppPaths;
 use crate::setup::{self, SetupState};
-use crate::vault::{Vault, VaultItem, VaultStatus};
+use crate::vault::{RepairReport, Vault, VaultItem, VaultStatus};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -177,6 +177,12 @@ pub fn vault_change_passphrase(
     Ok(())
 }
 
+/// Reconcile the index against the blobs on disk.
+#[tauri::command]
+pub fn vault_repair(state: State<'_, AppState>) -> Result<RepairReport> {
+    Ok(state.vault.repair()?)
+}
+
 #[tauri::command]
 pub fn vault_list(state: State<'_, AppState>) -> Result<Vec<VaultItem>> {
     Ok(state.vault.list()?)
@@ -191,6 +197,44 @@ pub fn vault_delete(state: State<'_, AppState>, id: String) -> Result<()> {
 #[tauri::command]
 pub fn vault_export(state: State<'_, AppState>, id: String, dest: String) -> Result<u64> {
     Ok(state.vault.export(&id, std::path::Path::new(&dest))?)
+}
+
+/// Store bytes the interface produced, such as a painted mask.
+///
+/// Masks are transient working data but still go through the vault: they are
+/// derived from a private image and would otherwise be the one thing written
+/// to disk in the clear.
+#[tauri::command]
+pub fn vault_import_bytes(
+    state: State<'_, AppState>,
+    data: Vec<u8>,
+    name: String,
+    mime: String,
+    kind: String,
+) -> Result<String> {
+    state.require_unlocked()?;
+    if data.is_empty() {
+        return Err(AppError::msg("nothing to store"));
+    }
+    let item = VaultItem {
+        id: uuid::Uuid::new_v4().to_string(),
+        content_hash: None,
+        kind,
+        name,
+        mime,
+        bytes: data.len() as u64,
+        model: String::new(),
+        prompt: String::new(),
+        seed: 0,
+        width: None,
+        height: None,
+        steps: None,
+        guidance: None,
+        inputs: vec![],
+        created_at: chrono::Local::now().to_rfc3339(),
+        duration_ms: 0,
+    };
+    Ok(state.vault.put(&data, item)?)
 }
 
 /// Bring an outside file in. The original is left untouched; only a sealed
@@ -214,16 +258,7 @@ pub fn vault_import(state: State<'_, AppState>, source: String, kind: String) ->
         .unwrap_or("")
         .to_lowercase();
 
-    let mime = match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "tif" | "tiff" => "image/tiff",
-        "bmp" => "image/bmp",
-        "pdf" => "application/pdf",
-        "txt" | "md" => "text/plain",
-        _ => "application/octet-stream",
-    };
+    let mime = mime_for(&ext);
     if kind == "image" && !mime.starts_with("image/") {
         return Err(AppError::msg(format!("{name} is not an image")));
     }
@@ -409,6 +444,47 @@ pub fn delete_model(state: State<'_, AppState>, model_id: String) -> Result<u64>
     models::delete(&state.paths(), &entry.repo)
 }
 
+/// Media type for an extension.
+///
+/// WKWebView renders HEIC, AVIF and WebP natively, so originals can be stored
+/// and displayed as they are rather than transcoded on the way in — the engine
+/// converts to PNG only when a model is about to read the file.
+/// Inverse of `mime_for`, for naming a staged temporary file.
+pub fn ext_for_mime(mime: &str) -> Option<&'static str> {
+    Some(match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/avif" => "avif",
+        "image/heic" => "heic",
+        "image/tiff" => "tif",
+        "image/bmp" => "bmp",
+        "image/gif" => "gif",
+        _ => return None,
+    })
+}
+
+pub fn mime_for(ext: &str) -> &'static str {
+    match ext {
+        "png" => "image/png",
+        "jpg" | "jpeg" | "jpe" => "image/jpeg",
+        "webp" => "image/webp",
+        "avif" | "avifs" => "image/avif",
+        "heic" | "heif" | "heics" => "image/heic",
+        "tif" | "tiff" => "image/tiff",
+        "bmp" | "dib" => "image/bmp",
+        "gif" => "image/gif",
+        "ico" => "image/x-icon",
+        "jp2" | "j2k" | "jpf" | "jpx" => "image/jp2",
+        "tga" => "image/x-tga",
+        "ppm" | "pgm" | "pbm" => "image/x-portable-anymap",
+        "pdf" => "application/pdf",
+        "txt" | "md" => "text/plain",
+        "json" => "application/json",
+        _ => "application/octet-stream",
+    }
+}
+
 /// Accept anything that identifies a Hugging Face repo: a bare `owner/name`,
 /// a full page URL, or a link to a file or tab inside the repo.
 fn normalize_repo(input: &str) -> Result<String> {
@@ -571,6 +647,12 @@ pub struct GenerateArgs {
     pub cache_limit_gb: Option<f32>,
     #[serde(default)]
     pub allow_over_budget: bool,
+    /// Vault id of a painted mask: white where the model may change the image.
+    pub mask: Option<String>,
+    /// CSS-like padding for outpainting, e.g. "10%,25%,10%,25%".
+    pub outpaint_padding: Option<String>,
+    /// How the added area is seeded before denoising.
+    pub outpaint_fill: Option<String>,
 }
 
 async fn run_job(
@@ -641,11 +723,18 @@ async fn run_job(
     let mut vault_inputs = Vec::new();
     for src_id in &args.images {
         let (file_id, key, path) = state.vault.input_key(src_id)?;
+        let ext = state
+            .vault
+            .get_item(src_id)
+            .ok()
+            .and_then(|i| ext_for_mime(&i.mime))
+            .unwrap_or("png");
         vault_inputs.push(json!({
             "id": src_id,
             "file_id": hex(&file_id),
             "key": hex(&key),
             "path": path.to_string_lossy(),
+            "ext": ext,
         }));
     }
 
@@ -677,6 +766,22 @@ async fn run_job(
     }
     if let Some(c) = args.cache_limit_gb {
         params["cache_limit_gb"] = json!(c);
+    }
+    if let Some(mask_id) = args.mask.as_ref() {
+        let (file_id, key, path) = state.vault.input_key(mask_id)?;
+        params["mask"] = json!({
+            "id": mask_id,
+            "file_id": hex(&file_id),
+            "key": hex(&key),
+            "path": path.to_string_lossy(),
+            "ext": "png",
+        });
+    }
+    if let Some(p) = args.outpaint_padding.as_ref().filter(|s| !s.trim().is_empty()) {
+        params["outpaint_padding"] = json!(p);
+        if let Some(f) = args.outpaint_fill.as_ref() {
+            params["outpaint_fill"] = json!(f);
+        }
     }
 
     let engine = state.engine(app).await?;
@@ -899,13 +1004,137 @@ pub async fn assist_prompt(
                 "prompt": prompt,
                 "mode": mode,
                 "vault_inputs": vault_inputs,
-                // Below roughly 14 GiB usable, holding the image model and the
-                // assistant at once pushes the machine into paging. Trading a
-                // reload for responsiveness is the better deal.
-                "exclusive": host.usable_ram_gib < 14.0,
             }),
         )
         .await
+}
+
+
+/// Generate a clip.
+///
+/// Frame count is the cost lever, not fps: fps is playback metadata written
+/// into the file, so the same frames tagged 16 or 24 cost the same to make.
+/// Attention is quadratic in sequence length, so frames are also where memory
+/// goes non-linear.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn generate_video(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+    model_id: String,
+    prompt: String,
+    negative_prompt: Option<String>,
+    width: u32,
+    height: u32,
+    frames: u32,
+    fps: u32,
+    steps: u32,
+    guidance: Option<f32>,
+    seed: i64,
+    first_frame: Option<String>,
+) -> Result<Vec<String>> {
+    state.require_unlocked()?;
+
+    let host = HostInfo::probe(&state.paths());
+    let entry = models::find(&state.paths(), &host, &model_id)
+        .ok_or_else(|| AppError::msg(format!("unknown model: {model_id}")))?;
+    if let Some(reason) = entry.broken.as_deref() {
+        return Err(AppError::msg(format!("{} cannot run. {}", entry.name, reason)));
+    }
+    if !entry.installed {
+        return Err(AppError::msg(format!(
+            "{} is not downloaded yet. Install it from the Models tab.",
+            entry.name
+        )));
+    }
+    if entry.hopeless {
+        return Err(AppError::msg(format!(
+            "{} needs more memory than this Mac has.",
+            entry.name
+        )));
+    }
+
+    let (slot_id, file_id, key, path) = state.vault.reserve_slot()?;
+
+    let mut vault_inputs = Vec::new();
+    if let Some(src) = first_frame.as_ref() {
+        let (fid, k, p) = state.vault.input_key(src)?;
+        let ext = state
+            .vault
+            .get_item(src)
+            .ok()
+            .and_then(|i| ext_for_mime(&i.mime))
+            .unwrap_or("png");
+        vault_inputs.push(json!({
+            "id": src, "file_id": hex(&fid), "key": hex(&k),
+            "path": p.to_string_lossy(), "ext": ext,
+        }));
+    }
+
+    let mut params = json!({
+        "model": entry.repo.clone(),
+        "quantize": entry.quantize,
+        "prompt": prompt,
+        "width": width,
+        "height": height,
+        "frames": frames,
+        "fps": fps,
+        "steps": steps,
+        "seed": seed,
+        "vault_inputs": vault_inputs,
+        "vault_slots": [{
+            "id": slot_id, "file_id": hex(&file_id),
+            "key": hex(&key), "path": path.to_string_lossy(),
+        }],
+    });
+    if let Some(g) = guidance {
+        params["guidance"] = json!(g);
+    }
+    if let Some(n) = negative_prompt.as_ref().filter(|s| !s.trim().is_empty()) {
+        params["negative_prompt"] = json!(n);
+    }
+
+    let engine = state.engine(&app).await?;
+    let started = std::time::Instant::now();
+    let result = match engine.request(&job_id, "video", params).await {
+        Ok(r) => r,
+        Err(e) => {
+            state.vault.discard_slots(&[slot_id]);
+            return Err(e);
+        }
+    };
+
+    let produced: Vec<String> = result["outputs"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let sizes: Vec<u64> = result["sizes"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_u64()).collect())
+        .unwrap_or_default();
+
+    for (i, id) in produced.iter().enumerate() {
+        state.vault.commit_slot(VaultItem {
+            id: id.clone(),
+            content_hash: None,
+            kind: "video".into(),
+            name: format!("clip-{}.mp4", chrono::Local::now().format("%Y%m%d-%H%M%S")),
+            mime: "video/mp4".into(),
+            bytes: sizes.get(i).copied().unwrap_or(0),
+            model: entry.name.to_string(),
+            prompt: prompt.clone(),
+            seed,
+            width: Some(width),
+            height: Some(height),
+            steps: Some(steps),
+            guidance,
+            inputs: first_frame.clone().into_iter().collect(),
+            created_at: chrono::Local::now().to_rfc3339(),
+            duration_ms: started.elapsed().as_millis() as u64,
+        })?;
+    }
+    Ok(produced)
 }
 
 

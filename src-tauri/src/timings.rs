@@ -54,6 +54,7 @@ pub fn get(paths: &AppPaths, model_id: &str) -> Option<Sample> {
 /// includes loading the model, so a first run legitimately reads slower than a
 /// warm one. Weighting recent runs more heavily lets the number settle on the
 /// warm case, which is what most runs will be.
+#[allow(clippy::too_many_arguments)] // one call site; a struct would only add indirection
 pub fn record(
     paths: &AppPaths,
     model_id: &str,

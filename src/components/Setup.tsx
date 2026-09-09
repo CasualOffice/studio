@@ -38,12 +38,12 @@ export default function Setup({
     return () => un?.();
   }, [onDone]);
 
-  const start = async () => {
+  const start = async (force = false) => {
     setErr(null);
     setRunning(true);
     logRef.current = [];
     try {
-      await api.runSetup(false);
+      await api.runSetup(force);
     } catch (e) {
       setErr(errText(e));
       setRunning(false);
@@ -125,10 +125,27 @@ export default function Setup({
             className="btn primary full"
             style={{ marginTop: 14 }}
             disabled={running || !!notSilicon}
-            onClick={start}
+            onClick={() => start(false)}
           >
             {running ? "Installing…" : err ? "Try again" : "Install runtime"}
           </button>
+          {err && !running && (
+            <button
+              className="btn full"
+              style={{ marginTop: 8 }}
+              onClick={() => start(true)}
+              title="Discard what was installed and start over"
+            >
+              Reinstall from scratch
+            </button>
+          )}
+          {err && !running && (
+            <div style={{ marginTop: 8, fontSize: 10.5, color: "var(--text-faint)", lineHeight: 1.6 }}>
+              &ldquo;Try again&rdquo; resumes and keeps whatever downloaded correctly.
+              Reinstalling throws that away, which is what you want if a previous
+              attempt left something half-written.
+            </div>
+          )}
           <div style={{ marginTop: 9, fontSize: 11, color: "var(--text-faint)" }}>
             Installs to <code style={{ userSelect: "text" }}>{state.root}</code>
           </div>

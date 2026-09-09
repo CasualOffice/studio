@@ -14,6 +14,10 @@ export default function Gallery({
 }) {
   const [open, setOpen] = useState<VaultItem | null>(null);
 
+  // Painted masks live in the vault so they are never written in the clear,
+  // but they are working data and would only clutter the library.
+  items = items.filter((i) => i.kind !== "mask");
+
   if (items.length === 0) {
     return (
       <div className="empty-state">
@@ -38,6 +42,7 @@ export default function Gallery({
   };
 
   const isImage = (i: VaultItem) => i.mime.startsWith("image/");
+  const isVideo = (i: VaultItem) => i.mime.startsWith("video/");
 
   if (open) {
     return (
@@ -99,9 +104,15 @@ export default function Gallery({
             </div>
           </div>
           <div className="canvas">
-            {isImage(open)
-              ? <img src={vaultUrl(open.id)} alt="" />
-              : <div className="empty"><span className="big">▤</span>{open.name}<br />No preview for this file type.</div>}
+            {isImage(open) ? (
+              <img src={vaultUrl(open.id)} alt="" />
+            ) : isVideo(open) ? (
+              <video src={vaultUrl(open.id)} controls loop autoPlay muted
+                style={{ maxWidth: "100%", maxHeight: "64vh", borderRadius: 6 }} />
+            ) : (
+              <div className="empty"><span className="big">▤</span>{open.name}<br />
+                No preview for this file type.</div>
+            )}
           </div>
         </div>
       </div>
@@ -114,6 +125,12 @@ export default function Gallery({
         <div className="gallery-card" key={it.id} onClick={() => setOpen(it)}>
           {isImage(it)
             ? <img src={vaultUrl(it.id)} alt="" loading="lazy" />
+            : isVideo(it)
+            ? <video src={vaultUrl(it.id)} muted loop
+                onMouseEnter={(e) => void (e.target as HTMLVideoElement).play()}
+                onMouseLeave={(e) => (e.target as HTMLVideoElement).pause()}
+                style={{ width: "100%", aspectRatio: "1", objectFit: "cover",
+                         display: "block", background: "#0b0d12" }} />
             : <div style={{
                 aspectRatio: "1", display: "flex", alignItems: "center",
                 justifyContent: "center", fontSize: 28, color: "var(--text-faint)",

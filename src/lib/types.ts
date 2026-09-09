@@ -133,6 +133,11 @@ export interface GenerateArgs {
   low_ram: boolean;
   cache_limit_gb: number | null;
   allow_over_budget: boolean;
+  /** Vault id of a painted mask: white where the model may change things. */
+  mask: string | null;
+  /** CSS-like padding for outpainting, e.g. "10%,25%,10%,25%". */
+  outpaint_padding: string | null;
+  outpaint_fill: string | null;
 }
 
 export interface AppErrorShape {
@@ -163,4 +168,10 @@ export interface StorageInfo {
   models_bytes: number;
   volume_free_gib: number;
   is_external: boolean;
+}
+
+export interface RepairReport {
+  recovered: number;
+  dropped: number;
+  unreadable: number;
 }

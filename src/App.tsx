@@ -7,15 +7,17 @@ import Models from "./components/Models";
 import Studio from "./components/Studio";
 import Gallery from "./components/Gallery";
 import Upscale from "./components/Upscale";
+import Video from "./components/Video";
 import Security from "./components/Security";
 import Activity from "./components/Activity";
 import { Toast } from "./components/shared";
 
-type Tab = "generate" | "edit" | "upscale" | "models" | "gallery" | "activity" | "security";
+type Tab = "generate" | "edit" | "video" | "upscale" | "models" | "gallery" | "activity" | "security";
 
 const TABS: [Tab, string, string][] = [
   ["generate", "✦", "Generate"],
   ["edit", "✎", "Edit"],
+  ["video", "▷", "Video"],
   ["upscale", "⤢", "Upscale"],
   ["models", "◍", "Models"],
   ["gallery", "▦", "Vault"],
@@ -282,6 +284,9 @@ export default function App() {
               images={editImages}
               onImagesChange={setEditImages}
             />
+          </div>
+          <div style={{ display: tab === "video" ? "block" : "none" }}>
+            <Video models={models} notify={notify} onProduced={refreshItems} />
           </div>
           <div style={{ display: tab === "upscale" ? "block" : "none" }}>
             <Upscale models={models} notify={notify} onProduced={refreshItems} />

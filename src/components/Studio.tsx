@@ -3,6 +3,7 @@ import { api, errText, fmtDuration, newJobId, onEngineProgress, vaultUrl } from 
 import type { EngineProgress, ModelStatus } from "../lib/types";
 import { autoPick, estimateSeconds, humanDuration, QUALITY_LABEL, SHAPES, stepsFor, type Quality } from "../lib/presets";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
+import MaskCanvas from "./MaskCanvas";
 import { loadPref, savePref } from "../lib/prefs";
 
 export type Mode = "generate" | "edit";
@@ -60,7 +61,13 @@ export default function Studio({
   const images = controlledImages ?? localImages;
   const setImages = onImagesChange ?? setLocalImages;
   const [strength, setStrength] = useState(0.6);
-  const [i2iMode, setI2iMode] = useState<"edit" | "latent">("edit");
+  // What kind of edit this is. Each maps to a different route in the engine.
+  type EditKind = "instruct" | "mask" | "expand" | "latent";
+  const [editKind, setEditKind] = useState<EditKind>("instruct");
+  const [maskBytes, setMaskBytes] = useState<Uint8Array | null>(null);
+  const [pad, setPad] = useState({ top: 0, right: 25, bottom: 0, left: 25 });
+  const [fill, setFill] = useState("auto");
+  const i2iMode: "edit" | "latent" = editKind === "latent" ? "latent" : "edit";
 
   const [lowRam, setLowRam] = useState(false);
   const [capCache, setCapCache] = useState(false);
@@ -143,6 +150,13 @@ export default function Studio({
     if (mode === "edit" && images.length === 0) {
       notify("Add an image to edit.", true); return;
     }
+    if (mode === "edit" && editKind === "mask" && !maskBytes) {
+      notify("Paint over the part you want changed first.", true); return;
+    }
+    if (mode === "edit" && editKind === "expand"
+        && pad.top + pad.right + pad.bottom + pad.left === 0) {
+      notify("Choose at least one side to extend.", true); return;
+    }
 
     const id = newJobId();
     const effectiveSeed = randomSeed ? Math.floor(Math.random() * 2_000_000_000) : seed;
@@ -151,6 +165,17 @@ export default function Studio({
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
     const t0 = performance.now();
     try {
+      // A painted mask is stored like any other content, then referenced by id.
+      let maskId: string | null = null;
+      if (editKind === "mask" && maskBytes) {
+        maskId = await api.vaultImportBytes(
+          maskBytes, "mask.png", "image/png", "mask"
+        );
+      }
+      const padding = editKind === "expand"
+        ? `${pad.top}%,${pad.right}%,${pad.bottom}%,${pad.left}%`
+        : null;
+
       const args = {
         job_id: id,
         model_id: model.id,
@@ -168,6 +193,9 @@ export default function Studio({
         low_ram: lowRam,
         cache_limit_gb: capCache ? cacheLimit : null,
         allow_over_budget: model.low_ram_may_help,
+        mask: maskId,
+        outpaint_padding: padding,
+        outpaint_fill: editKind === "expand" ? fill : null,
       };
       const res = mode === "edit" ? await api.editImage(args) : await api.generate(args);
       setResidentModel(model.name);
@@ -220,6 +248,32 @@ export default function Studio({
 
           {mode === "edit" && (
             <div className="field">
+              <label>What kind of edit?</label>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
+                {([
+                  ["instruct", "Change something"],
+                  ["mask", "Paint a region"],
+                  ["expand", "Extend the picture"],
+                  ["latent", "Reinterpret"],
+                ] as [EditKind, string][]).map(([k, label]) => (
+                  <button
+                    key={k}
+                    className={"btn small" + (editKind === k ? " primary" : "")}
+                    onClick={() => setEditKind(k)}
+                  >{label}</button>
+                ))}
+              </div>
+              <div style={{ fontSize: 10.5, color: "var(--text-faint)", lineHeight: 1.55 }}>
+                {editKind === "instruct" && "Describe one change; the rest is kept."}
+                {editKind === "mask" && "Paint over an area and only that area is regenerated."}
+                {editKind === "expand" && "Grow the canvas; the model invents what was outside the frame."}
+                {editKind === "latent" && "Reinterpret the whole picture, keeping its composition."}
+              </div>
+            </div>
+          )}
+
+          {mode === "edit" && (
+            <div className="field">
               <label>Your picture</label>
               <ImageDrop
                 images={images}
@@ -227,11 +281,51 @@ export default function Studio({
                 max={model?.max_edit_images ?? 1}
                 onError={(m) => notify(m, true)}
               />
-              {(model?.max_edit_images ?? 1) === 1 && (
+              {(model?.max_edit_images ?? 1) === 1 && editKind === "instruct" && (
                 <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5 }}>
                   {model?.name} edits one picture at a time.
                 </div>
               )}
+            </div>
+          )}
+
+          {mode === "edit" && editKind === "mask" && images.length > 0 && (
+            <div className="field">
+              <label>Paint what should change</label>
+              <MaskCanvas
+                sourceId={images[0]}
+                onMaskChange={setMaskBytes}
+                disabled={running}
+              />
+            </div>
+          )}
+
+          {mode === "edit" && editKind === "expand" && (
+            <div className="field">
+              <label>How much to add <em>percent of the original</em></label>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                {(["top", "right", "bottom", "left"] as const).map((side) => (
+                  <div key={side}>
+                    <label style={{ marginBottom: 3 }}>
+                      <span style={{ textTransform: "capitalize" }}>{side}</span>
+                      <em>{pad[side]}%</em>
+                    </label>
+                    <input
+                      type="range" min={0} max={100} step={5} value={pad[side]}
+                      onChange={(e) => setPad({ ...pad, [side]: +e.target.value })}
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="field" style={{ marginTop: 8 }}>
+                <label>How the new area starts out</label>
+                <select value={fill} onChange={(e) => setFill(e.target.value)}>
+                  <option value="auto">Choose for me</option>
+                  <option value="edge">Continue the edges outward</option>
+                  <option value="neutral">Flat colour, invent new subject matter</option>
+                  <option value="blur">Blurred copy of the original</option>
+                </select>
+              </div>
             </div>
           )}
 
@@ -389,17 +483,7 @@ export default function Studio({
 
               {mode === "edit" && (
                 <>
-                  <div className="field">
-                    <label>Edit mode</label>
-                    <select
-                      value={i2iMode}
-                      onChange={(e) => setI2iMode(e.target.value as "edit" | "latent")}
-                    >
-                      <option value="edit">Change one thing, keep the rest</option>
-                      <option value="latent">Reinterpret the whole image</option>
-                    </select>
-                  </div>
-                  {i2iMode === "latent" && (
+                  {editKind === "latent" && (
                     <div className="field">
                       <label>How far from the original <em>{strength.toFixed(2)}</em></label>
                       <input type="range" min={0.1} max={0.95} step={0.05} value={strength}

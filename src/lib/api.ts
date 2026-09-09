@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   EngineProgress, GenerateArgs, HostInfo, ModelStatus,
-  ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus,
+  RepairReport, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus,
 } from "./types";
 
 /** Tauri rejects with our structured error; normalise it to a message. */
@@ -45,6 +45,11 @@ export const api = {
   editImage: (args: GenerateArgs) => invoke<string[]>("edit_image", { args }),
   upscale: (jobId: string, modelId: string, image: string, resolution: string, lowRam: boolean) =>
     invoke<string[]>("upscale", { jobId, modelId, image, resolution, lowRam }),
+  generateVideo: (args: {
+    jobId: string; modelId: string; prompt: string; negativePrompt: string | null;
+    width: number; height: number; frames: number; fps: number; steps: number;
+    guidance: number | null; seed: number; firstFrame: string | null;
+  }) => invoke<string[]>("generate_video", args),
 
   vaultStatus: () => invoke<VaultStatus>("vault_status"),
   vaultCreate: (passphrase: string, enableBiometry: boolean) =>
@@ -58,11 +63,16 @@ export const api = {
   vaultChangePassphrase: (current: string, next: string) =>
     invoke<void>("vault_change_passphrase", { current, next }),
   vaultList: () => invoke<VaultItem[]>("vault_list"),
+  vaultRepair: () => invoke<RepairReport>("vault_repair"),
   vaultDelete: (id: string) => invoke<void>("vault_delete", { id }),
   vaultExport: (id: string, dest: string) =>
     invoke<number>("vault_export", { id, dest }),
   vaultImport: (source: string, kind: "image" | "any") =>
     invoke<string>("vault_import", { source, kind }),
+  vaultImportBytes: (data: Uint8Array, name: string, mime: string, kind: string) =>
+    invoke<string>("vault_import_bytes", {
+      data: Array.from(data), name, mime, kind,
+    }),
 };
 
 export const onSetupProgress = (cb: (p: SetupProgress) => void): Promise<UnlistenFn> =>
