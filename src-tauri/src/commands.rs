@@ -1,0 +1,823 @@
+use crate::engine::Engine;
+use crate::error::{AppError, Result};
+use crate::hostinfo::HostInfo;
+use crate::models::{self, CustomModel, ModelStatus};
+use crate::paths::AppPaths;
+use crate::setup::{self, SetupState};
+use crate::vault::{Vault, VaultItem, VaultStatus};
+use serde::Deserialize;
+use serde_json::json;
+use std::sync::Arc;
+use tauri::{AppHandle, State};
+use tokio::sync::Mutex;
+
+pub struct AppState {
+    pub paths: AppPaths,
+    pub vault: Arc<Vault>,
+    pub engine: Mutex<Option<Arc<Engine>>>,
+}
+
+impl AppState {
+    /// Lazily start the worker, replacing it if the previous one died.
+    ///
+    /// Reusing the cached handle unconditionally meant that once the Python
+    /// process exited -- an out-of-memory kill, a crash, or the user killing it
+    /// -- every later request wrote to a closed pipe and failed until the whole
+    /// app was restarted.
+    async fn engine(&self, app: &AppHandle) -> Result<Arc<Engine>> {
+        let mut guard = self.engine.lock().await;
+        if let Some(e) = guard.as_ref() {
+            if !e.is_dead() {
+                return Ok(e.clone());
+            }
+            *guard = None;
+        }
+        let script = self.paths.worker_script(app)?;
+        let engine = Engine::spawn(app, &self.paths, &script).await?;
+        *guard = Some(engine.clone());
+        Ok(engine)
+    }
+
+    fn require_unlocked(&self) -> Result<()> {
+        if !self.vault.is_unlocked() {
+            return Err(AppError::VaultLocked);
+        }
+        Ok(())
+    }
+}
+
+fn new_job_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+// ---------------------------------------------------------------------------
+// Host / setup
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn host_info(state: State<'_, AppState>) -> HostInfo {
+    HostInfo::probe(&state.paths)
+}
+
+#[tauri::command]
+pub fn setup_state(state: State<'_, AppState>) -> SetupState {
+    setup::state(&state.paths)
+}
+
+#[tauri::command]
+pub async fn run_setup(app: AppHandle, state: State<'_, AppState>, force: bool) -> Result<()> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = setup::run(app, paths, force).await;
+    });
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Vault
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn vault_status(state: State<'_, AppState>) -> VaultStatus {
+    state.vault.status()
+}
+
+#[tauri::command]
+pub fn vault_create(
+    state: State<'_, AppState>,
+    passphrase: String,
+    enable_biometry: bool,
+) -> Result<VaultStatus> {
+    state.vault.create(&passphrase, enable_biometry)?;
+    Ok(state.vault.status())
+}
+
+#[tauri::command]
+pub fn vault_unlock_passphrase(
+    state: State<'_, AppState>,
+    passphrase: String,
+) -> Result<VaultStatus> {
+    state.vault.unlock_with_passphrase(&passphrase)?;
+    Ok(state.vault.status())
+}
+
+/// Triggers the system Touch ID prompt. Runs on a blocking thread because the
+/// Keychain call is synchronous and shows UI.
+#[tauri::command]
+pub async fn vault_unlock_biometry(state: State<'_, AppState>) -> Result<VaultStatus> {
+    let vault = state.vault.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        vault.unlock_with_biometry().map(|()| vault.status())
+    })
+    .await
+    .map_err(|e| AppError::msg(format!("authentication task failed: {e}")))?;
+    Ok(res?)
+}
+
+#[tauri::command]
+pub async fn vault_lock(app: AppHandle, state: State<'_, AppState>) -> Result<VaultStatus> {
+    state.vault.lock();
+    // Locking should also drop model weights: leaving several GiB resident
+    // after the user deliberately locked would be the wrong default.
+    if let Ok(engine) = state.engine(&app).await {
+        let _ = engine.request(&new_job_id(), "unload", json!({})).await;
+    }
+    Ok(state.vault.status())
+}
+
+#[tauri::command]
+pub async fn vault_enable_biometry(state: State<'_, AppState>) -> Result<VaultStatus> {
+    let vault = state.vault.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        vault.enable_biometry().map(|()| vault.status())
+    })
+    .await
+    .map_err(|e| AppError::msg(format!("keychain task failed: {e}")))?;
+    Ok(res?)
+}
+
+#[tauri::command]
+pub fn vault_disable_biometry(state: State<'_, AppState>) -> Result<VaultStatus> {
+    state.vault.disable_biometry()?;
+    Ok(state.vault.status())
+}
+
+#[tauri::command]
+pub fn vault_change_passphrase(
+    state: State<'_, AppState>,
+    current: String,
+    next: String,
+) -> Result<()> {
+    state.vault.change_passphrase(&current, &next)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn vault_list(state: State<'_, AppState>) -> Result<Vec<VaultItem>> {
+    Ok(state.vault.list()?)
+}
+
+#[tauri::command]
+pub fn vault_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+    Ok(state.vault.delete(&id)?)
+}
+
+/// The single sanctioned path for plaintext to leave the vault.
+#[tauri::command]
+pub fn vault_export(state: State<'_, AppState>, id: String, dest: String) -> Result<u64> {
+    Ok(state.vault.export(&id, std::path::Path::new(&dest))?)
+}
+
+/// Bring an outside file in. The original is left untouched; only a sealed
+/// copy enters the vault.
+#[tauri::command]
+pub fn vault_import(state: State<'_, AppState>, source: String, kind: String) -> Result<String> {
+    state.require_unlocked()?;
+    let src = std::path::Path::new(&source);
+    if !src.exists() {
+        return Err(AppError::msg("that file no longer exists"));
+    }
+    let bytes = std::fs::read(src)?;
+    let name = src
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("imported")
+        .to_string();
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "tif" | "tiff" => "image/tiff",
+        "bmp" => "image/bmp",
+        "pdf" => "application/pdf",
+        "txt" | "md" => "text/plain",
+        _ => "application/octet-stream",
+    };
+    if kind == "image" && !mime.starts_with("image/") {
+        return Err(AppError::msg(format!("{name} is not an image")));
+    }
+
+    let item = VaultItem {
+        id: uuid::Uuid::new_v4().to_string(),
+        kind: if mime.starts_with("image/") { "import".into() } else { "doc".into() },
+        name,
+        mime: mime.into(),
+        bytes: bytes.len() as u64,
+        model: String::new(),
+        prompt: String::new(),
+        seed: 0,
+        width: None,
+        height: None,
+        steps: None,
+        guidance: None,
+        inputs: vec![],
+        created_at: chrono::Local::now().to_rfc3339(),
+        duration_ms: 0,
+    };
+    Ok(state.vault.put(&bytes, item)?)
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelStatus>> {
+    let host = HostInfo::probe(&state.paths);
+    models::list(&state.paths, &host)
+}
+
+#[tauri::command]
+pub async fn download_model(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    model_id: String,
+    job_id: String,
+) -> Result<serde_json::Value> {
+    let host = HostInfo::probe(&state.paths);
+    let entry = models::find(&state.paths, &host, &model_id)
+        .ok_or_else(|| AppError::msg(format!("unknown model: {model_id}")))?;
+
+    if !entry.installed {
+        let need = entry.package_gib;
+        let have = host.free_disk_gib - host.disk_headroom_gib;
+        if need > have {
+            return Err(AppError::msg(format!(
+                "{} needs {:.1} GiB but only {:.1} GiB is free after headroom. \
+                 Delete a model first.",
+                entry.name, need, have
+            )));
+        }
+    }
+
+    let engine = state.engine(&app).await?;
+    engine
+        .request(
+            &job_id,
+            "download",
+            json!({
+                "model": entry.repo.clone(),
+                // The catalog's published package size is a better progress
+                // denominator than the repository total: MLX-Gen fetches a
+                // weight/tokenizer subset, not every file in the repo.
+                "expected_bytes": (entry.package_gib as f64 * 1024.0 * 1024.0 * 1024.0) as u64,
+                // The prompt assistant is a VLM that MLX-Gen does not know
+                // about. `mlxgen download` exits 0 without fetching anything
+                // for an unrecognised repo, so it has to come through
+                // huggingface_hub directly.
+                "via": if entry.tasks.contains(&crate::catalog::Task::Assist) {
+                    "hf"
+                } else {
+                    "mlxgen"
+                },
+            }),
+        )
+        .await
+}
+
+#[tauri::command]
+pub fn delete_model(state: State<'_, AppState>, model_id: String) -> Result<u64> {
+    let host = HostInfo::probe(&state.paths);
+    let entry = models::find(&state.paths, &host, &model_id)
+        .ok_or_else(|| AppError::msg(format!("unknown model: {model_id}")))?;
+    models::delete(&state.paths, &entry.repo)
+}
+
+/// Accept anything that identifies a Hugging Face repo: a bare `owner/name`,
+/// a full page URL, or a link to a file or tab inside the repo.
+fn normalize_repo(input: &str) -> Result<String> {
+    let mut s = input.trim();
+
+    for prefix in [
+        "https://huggingface.co/", "http://huggingface.co/",
+        "https://www.huggingface.co/", "huggingface.co/", "hf.co/",
+    ] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest;
+            break;
+        }
+    }
+    // Drop a query string or fragment from a copied address-bar URL.
+    s = s.split(['?', '#']).next().unwrap_or(s).trim_matches('/');
+
+    // A link to some other site is not a repo id, and must not be mangled into
+    // one: "https://example.com" would otherwise parse as "https:/example.com".
+    if s.contains("://") || s.starts_with("www.") {
+        return Err(AppError::msg(
+            "That link is not on huggingface.co. Paste a Hugging Face model link, \
+             or type owner/name.",
+        ));
+    }
+
+    // Model pages carry extra path segments: /tree/main, /blob/..., /discussions.
+    let parts: Vec<&str> = s.split('/').filter(|p| !p.is_empty()).collect();
+    let repo = match parts.as_slice() {
+        // Some org pages are prefixed with a namespace kind.
+        ["models", owner, name, ..] => format!("{owner}/{name}"),
+        [owner, name, ..] => format!("{owner}/{name}"),
+        _ => {
+            return Err(AppError::msg(
+                "That does not look like a Hugging Face model. Paste a link such as \
+                 https://huggingface.co/owner/name, or just type owner/name.",
+            ))
+        }
+    };
+
+    let valid = |part: &str| {
+        !part.is_empty()
+            && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    if repo.matches('/').count() != 1 || !repo.split('/').all(valid) {
+        return Err(AppError::msg(
+            "Enter a Hugging Face repo as owner/name, or paste its page link.",
+        ));
+    }
+    Ok(repo)
+}
+
+/// Inspect a Hugging Face repo before offering to download it.
+#[tauri::command]
+pub async fn resolve_model(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    repo: String,
+) -> Result<serde_json::Value> {
+    let repo = normalize_repo(&repo)?;
+    let engine = state.engine(&app).await?;
+    let mut resolved = engine
+        .request(&new_job_id(), "resolve", json!({ "model": repo }))
+        .await?;
+
+    // Judge it against this machine before a single byte is spent.
+    let host = HostInfo::probe(&state.paths);
+    let bytes = resolved["bytes"].as_u64().unwrap_or(0);
+    let package_gib = bytes as f32 / 1024.0 / 1024.0 / 1024.0;
+    let (fit, reason) = models::judge_uninstalled(package_gib, &host);
+    let peak = models::estimate_peak_for(package_gib);
+
+    resolved["package_gib"] = json!(package_gib);
+    resolved["peak_gib"] = json!(peak);
+    resolved["fit"] = serde_json::to_value(fit)?;
+    resolved["fit_reason"] = json!(reason);
+    resolved["required_ram_gib"] = json!(models::required_ram_gib(peak));
+    Ok(resolved)
+}
+
+#[tauri::command]
+pub fn add_custom_model(
+    state: State<'_, AppState>,
+    repo: String,
+    name: String,
+    tasks: Vec<String>,
+    bytes: u64,
+    quantize: Option<u8>,
+) -> Result<()> {
+    let repo = normalize_repo(&repo)?;
+    if tasks.is_empty() {
+        return Err(AppError::msg(
+            "MLX-Gen cannot route this repository, so it cannot be generated from.",
+        ));
+    }
+    // A stable id derived from the repo keeps re-adding idempotent.
+    let id = format!("custom:{}", repo.replace('/', "--"));
+    models::add_custom(
+        &state.paths,
+        CustomModel {
+            id,
+            name: if name.trim().is_empty() { repo.clone() } else { name },
+            repo,
+            tasks,
+            quantize,
+            package_gib: bytes as f32 / 1024.0 / 1024.0 / 1024.0,
+            steps_default: 8,
+            added_at: chrono::Local::now().to_rfc3339(),
+        },
+    )
+}
+
+#[tauri::command]
+pub fn remove_custom_model(state: State<'_, AppState>, model_id: String) -> Result<()> {
+    models::remove_custom(&state.paths, &model_id)
+}
+
+#[tauri::command]
+pub async fn unload_model(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
+    let engine = state.engine(&app).await?;
+    engine.request(&new_job_id(), "unload", json!({})).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn engine_ping(app: AppHandle, state: State<'_, AppState>) -> Result<serde_json::Value> {
+    let engine = state.engine(&app).await?;
+    engine.request(&new_job_id(), "ping", json!({})).await
+}
+
+#[tauri::command]
+pub async fn cancel_job(app: AppHandle, state: State<'_, AppState>, job_id: String) -> Result<()> {
+    let engine = state.engine(&app).await?;
+    engine.cancel(&job_id).await
+}
+
+// ---------------------------------------------------------------------------
+// Generation
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Debug)]
+pub struct GenerateArgs {
+    pub job_id: String,
+    pub model_id: String,
+    pub prompt: String,
+    pub negative_prompt: Option<String>,
+    pub width: u32,
+    pub height: u32,
+    pub steps: u32,
+    pub guidance: Option<f32>,
+    pub seed: i64,
+    pub count: u32,
+    /// Vault item ids used as sources, never filesystem paths.
+    #[serde(default)]
+    pub images: Vec<String>,
+    pub image_strength: Option<f32>,
+    pub i2i_mode: Option<String>,
+    #[serde(default)]
+    pub low_ram: bool,
+    pub cache_limit_gb: Option<f32>,
+    #[serde(default)]
+    pub allow_over_budget: bool,
+}
+
+async fn run_job(
+    app: &AppHandle,
+    state: &AppState,
+    args: GenerateArgs,
+    op: &str,
+) -> Result<Vec<String>> {
+    state.require_unlocked()?;
+
+    let host = HostInfo::probe(&state.paths);
+    let entry = models::find(&state.paths, &host, &args.model_id)
+        .ok_or_else(|| AppError::msg(format!("unknown model: {}", args.model_id)))?;
+
+    if let Some(reason) = entry.broken.as_deref() {
+        return Err(AppError::msg(format!("{} cannot run. {}", entry.name, reason)));
+    }
+
+    if !entry.installed {
+        return Err(AppError::msg(format!(
+            "{} is not downloaded yet. Install it from the Models tab.",
+            entry.name
+        )));
+    }
+
+    if entry.peak_gib > host.usable_ram_gib {
+        if entry.hopeless {
+            return Err(AppError::msg(format!(
+                "{} cannot run here: its weights alone are ~{:.1} GiB against ~{:.1} GiB \
+                 usable. Low-RAM mode trims transient memory, not resident weights.",
+                entry.name,
+                models::weight_floor_gib(entry.package_gib),
+                host.usable_ram_gib
+            )));
+        }
+        if !args.allow_over_budget {
+            return Err(AppError::msg(format!(
+                "{} peaks around {:.1} GiB but this Mac can offer about {:.1} GiB. \
+                 Its ~{:.1} GiB weight floor does fit, so low-RAM mode may close the gap \
+                 — enable it and try anyway.",
+                entry.name,
+                entry.peak_gib,
+                host.usable_ram_gib,
+                models::weight_floor_gib(entry.package_gib)
+            )));
+        }
+    }
+
+    let count = args.count.max(1);
+    let seeds: Vec<i64> = (0..count as i64).map(|i| args.seed + i).collect();
+
+    // Reserve one sealed destination per image. The engine receives a key that
+    // opens only these slots; the vault's data key stays in this process.
+    let mut slots = Vec::new();
+    let mut slot_ids = Vec::new();
+    for _ in 0..count {
+        let (id, file_id, key, path) = state.vault.reserve_slot()?;
+        slot_ids.push(id.clone());
+        slots.push(json!({
+            "id": id,
+            "file_id": hex(&file_id),
+            "key": hex(&key),
+            "path": path.to_string_lossy(),
+        }));
+    }
+
+    // Source images are handed over the same way: one key per input blob.
+    let mut vault_inputs = Vec::new();
+    for src_id in &args.images {
+        let (file_id, key, path) = state.vault.input_key(src_id)?;
+        vault_inputs.push(json!({
+            "id": src_id,
+            "file_id": hex(&file_id),
+            "key": hex(&key),
+            "path": path.to_string_lossy(),
+        }));
+    }
+
+    let mut params = json!({
+        "model": entry.repo.clone(),
+        "quantize": entry.quantize,
+        "prompt": args.prompt,
+        "width": args.width,
+        "height": args.height,
+        "steps": args.steps,
+        "seeds": seeds,
+        "vault_slots": slots,
+        "vault_inputs": vault_inputs,
+    });
+    if let Some(g) = args.guidance {
+        params["guidance"] = json!(g);
+    }
+    if let Some(n) = args.negative_prompt.as_ref().filter(|s| !s.trim().is_empty()) {
+        params["negative_prompt"] = json!(n);
+    }
+    if let Some(s) = args.image_strength {
+        params["image_strength"] = json!(s);
+    }
+    if let Some(m) = args.i2i_mode.as_ref() {
+        params["i2i_mode"] = json!(m);
+    }
+    if args.low_ram {
+        params["low_ram"] = json!(true);
+    }
+    if let Some(c) = args.cache_limit_gb {
+        params["cache_limit_gb"] = json!(c);
+    }
+
+    let engine = state.engine(app).await?;
+    let started = std::time::Instant::now();
+    let result = engine.request(&args.job_id, op, params).await;
+    let elapsed = started.elapsed().as_millis() as u64;
+
+    // A failed or cancelled run must not leave orphaned blobs behind.
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => {
+            state.vault.discard_slots(&slot_ids);
+            return Err(e);
+        }
+    };
+
+    let produced: Vec<String> = result["outputs"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let sizes: Vec<u64> = result["sizes"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_u64()).collect())
+        .unwrap_or_default();
+
+    for (i, id) in produced.iter().enumerate() {
+        state.vault.commit_slot(VaultItem {
+            id: id.clone(),
+            kind: op.to_string(),
+            name: format!("{}-{}.png", op, chrono::Local::now().format("%Y%m%d-%H%M%S")),
+            mime: "image/png".into(),
+            bytes: sizes.get(i).copied().unwrap_or(0),
+            model: entry.name.to_string(),
+            prompt: args.prompt.clone(),
+            seed: seeds.get(i).copied().unwrap_or(args.seed),
+            width: Some(args.width),
+            height: Some(args.height),
+            steps: Some(args.steps),
+            guidance: args.guidance,
+            inputs: args.images.clone(),
+            created_at: chrono::Local::now().to_rfc3339(),
+            duration_ms: elapsed,
+        })?;
+    }
+
+    if !produced.is_empty() {
+        // Learn from the run so the next estimate comes from this machine.
+        // The engine separates loading from denoising; only the latter scales
+        // with steps and canvas size.
+        let generate_ms = result["generate_ms"].as_u64().unwrap_or(elapsed);
+        let load_ms = result["load_ms"].as_u64().unwrap_or(0);
+        let _ = crate::timings::record(
+            &state.paths,
+            &entry.id,
+            args.steps,
+            args.width,
+            args.height,
+            produced.len(),
+            generate_ms,
+            load_ms,
+        );
+    }
+
+    // Anything reserved but not produced is dead weight.
+    let unused: Vec<String> = slot_ids.into_iter().filter(|i| !produced.contains(i)).collect();
+    state.vault.discard_slots(&unused);
+
+    Ok(produced)
+}
+
+#[tauri::command]
+pub async fn generate(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    args: GenerateArgs,
+) -> Result<Vec<String>> {
+    run_job(&app, &state, args, "generate").await
+}
+
+#[tauri::command]
+pub async fn edit_image(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    args: GenerateArgs,
+) -> Result<Vec<String>> {
+    if args.images.is_empty() {
+        return Err(AppError::msg("add at least one source image to edit"));
+    }
+    run_job(&app, &state, args, "edit").await
+}
+
+#[tauri::command]
+pub async fn upscale(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+    model_id: String,
+    image: String,
+    resolution: String,
+    low_ram: bool,
+) -> Result<Vec<String>> {
+    state.require_unlocked()?;
+    let host = HostInfo::probe(&state.paths);
+    let entry = models::find(&state.paths, &host, &model_id)
+        .ok_or_else(|| AppError::msg(format!("unknown model: {model_id}")))?;
+    if !entry.installed {
+        return Err(AppError::msg(format!("{} is not downloaded yet.", entry.name)));
+    }
+
+    let (slot_id, file_id, key, path) = state.vault.reserve_slot()?;
+    let (in_file_id, in_key, in_path) = state.vault.input_key(&image)?;
+
+    let engine = state.engine(&app).await?;
+    let started = std::time::Instant::now();
+    let result = engine
+        .request(
+            &job_id,
+            "upscale",
+            json!({
+                "model": entry.repo.clone(),
+                "quantize": entry.quantize,
+                "resolution": resolution,
+                "low_ram": low_ram,
+                "seed": 0,
+                "vault_slots": [{
+                    "id": slot_id, "file_id": hex(&file_id),
+                    "key": hex(&key), "path": path.to_string_lossy(),
+                }],
+                "vault_inputs": [{
+                    "id": image, "file_id": hex(&in_file_id),
+                    "key": hex(&in_key), "path": in_path.to_string_lossy(),
+                }],
+            }),
+        )
+        .await;
+
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => {
+            state.vault.discard_slots(&[slot_id]);
+            return Err(e);
+        }
+    };
+
+    let produced: Vec<String> = result["outputs"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let sizes: Vec<u64> = result["sizes"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_u64()).collect())
+        .unwrap_or_default();
+
+    for (i, id) in produced.iter().enumerate() {
+        state.vault.commit_slot(VaultItem {
+            id: id.clone(),
+            kind: "upscale".into(),
+            name: format!("upscale-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S")),
+            mime: "image/png".into(),
+            bytes: sizes.get(i).copied().unwrap_or(0),
+            model: entry.name.to_string(),
+            prompt: format!("Upscale {resolution}"),
+            seed: 0,
+            width: None,
+            height: None,
+            steps: None,
+            guidance: None,
+            inputs: vec![image.clone()],
+            created_at: chrono::Local::now().to_rfc3339(),
+            duration_ms: started.elapsed().as_millis() as u64,
+        })?;
+    }
+    Ok(produced)
+}
+
+/// Rewrite a prompt with the local assistant. For an edit, it is shown the
+/// source image so it can name what to change and what to leave alone.
+#[tauri::command]
+pub async fn assist_prompt(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+    prompt: String,
+    mode: String,
+    images: Vec<String>,
+) -> Result<serde_json::Value> {
+    state.require_unlocked()?;
+
+    let host = HostInfo::probe(&state.paths);
+    let assistant = models::find(&state.paths, &host, "qwen2-vl-2b-4bit")
+        .ok_or_else(|| AppError::msg("the prompt assistant is missing from the catalog"))?;
+    if !assistant.installed {
+        return Err(AppError::msg(
+            "The prompt assistant is not installed yet. Add it from the Models tab \
+             \u{2014} it is a 1.5 GiB download and runs entirely on this Mac.",
+        ));
+    }
+
+    // Hand over per-image keys only, exactly as generation does.
+    let mut vault_inputs = Vec::new();
+    for id in &images {
+        let (file_id, key, path) = state.vault.input_key(id)?;
+        vault_inputs.push(json!({
+            "id": id,
+            "file_id": hex(&file_id),
+            "key": hex(&key),
+            "path": path.to_string_lossy(),
+        }));
+    }
+
+    let engine = state.engine(&app).await?;
+    engine
+        .request(
+            &job_id,
+            "assist",
+            json!({
+                "assistant": assistant.repo,
+                "prompt": prompt,
+                "mode": mode,
+                "vault_inputs": vault_inputs,
+                // Below roughly 14 GiB usable, holding the image model and the
+                // assistant at once pushes the machine into paging. Trading a
+                // reload for responsiveness is the better deal.
+                "exclusive": host.usable_ram_gib < 14.0,
+            }),
+        )
+        .await
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_repo;
+
+    #[test]
+    fn accepts_the_shapes_people_actually_paste() {
+        for input in [
+            "Qwen/Qwen-Image",
+            "  Qwen/Qwen-Image  ",
+            "https://huggingface.co/Qwen/Qwen-Image",
+            "http://huggingface.co/Qwen/Qwen-Image",
+            "https://huggingface.co/Qwen/Qwen-Image/tree/main",
+            "https://huggingface.co/Qwen/Qwen-Image/blob/main/config.json",
+            "https://huggingface.co/Qwen/Qwen-Image?library=diffusers",
+            "https://huggingface.co/Qwen/Qwen-Image#usage",
+            "huggingface.co/Qwen/Qwen-Image",
+            "hf.co/Qwen/Qwen-Image/",
+            "https://huggingface.co/models/Qwen/Qwen-Image",
+        ] {
+            assert_eq!(normalize_repo(input).unwrap(), "Qwen/Qwen-Image", "input: {input}");
+        }
+    }
+
+    #[test]
+    fn rejects_what_is_not_a_repo() {
+        for input in ["", "   ", "Qwen", "https://example.com"] {
+            assert!(normalize_repo(input).is_err(), "should reject: {input}");
+        }
+    }
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Model Studio",
+  "version": "0.1.0",
+  "identifier": "com.melp.modelstudio",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Model Studio",
+        "width": 1240,
+        "height": 840,
+        "minWidth": 960,
+        "minHeight": 640,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' vault: http://vault.localhost data: blob:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.icns"],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": false
+    },
+    "resources": {
+      "../engine/worker.py": "engine/worker.py",
+      "../engine/vaultcrypto.py": "engine/vaultcrypto.py"
+    }
+  }
+}
