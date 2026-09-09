@@ -1015,9 +1015,18 @@ def _run_generation(req_id: str, req: dict[str, Any], task: str,
         info = set_cache_limit(float(cache_limit))
         log(req_id, f"MLX cache limit: {info}")
 
+    # MLX-Gen exposes edit-reference as several capability rows -- plain,
+    # masked, reframe and outpaint -- and picks between them from these hints.
+    # They must be supplied at load time, not with the generation call.
     plan_kw: dict[str, Any] = {}
     if req.get("i2i_mode"):
         plan_kw["i2i_mode"] = req["i2i_mode"]
+    if req.get("mask"):
+        plan_kw["has_mask"] = True
+    if req.get("outpaint_padding"):
+        plan_kw["has_outpaint"] = True
+    if req.get("image_strength") is not None:
+        plan_kw["has_image_strength"] = True
 
     loaded, load_ms = _load_model(
         req_id, model, quantize, model_path, image_count,
@@ -1033,6 +1042,10 @@ def _run_generation(req_id: str, req: dict[str, Any], task: str,
     # run and removed in the `finally` below. This is the one moment plaintext
     # exists on disk, and it is bounded by a single generation.
     staged = _stage_vault_inputs(req.get("vault_inputs") or [])
+    # The mask is a separate sealed blob with its own key.
+    mask_staged = _stage_vault_inputs([req["mask"]] if req.get("mask") else [])
+    if mask_staged:
+        gen_kw["mask_path"] = mask_staged[0]
     try:
         return _generate_inner(
             req_id, req, task, loaded, gen_kw, optional_kw, slots, staged,
@@ -1040,6 +1053,7 @@ def _run_generation(req_id: str, req: dict[str, Any], task: str,
         )
     finally:
         _discard_staged(staged)
+        _discard_staged(mask_staged)
 
 
 def _generate_inner(req_id, req, task, loaded, gen_kw, optional_kw, slots,
@@ -1067,6 +1081,13 @@ def _generate_inner(req_id, req, task, loaded, gen_kw, optional_kw, slots,
     else:
         base["output"] = output
         base["save_kwargs"] = {"export_json_metadata": True}
+
+    outpaint_padding = req.get("outpaint_padding")
+    if outpaint_padding:
+        return _run_expand(
+            req_id, req, loaded, gen_kw, optional_kw, slots, images, seeds,
+            model, outpaint_padding, load_ms,
+        )
 
     gen_started = time.time()
     try:
@@ -1105,6 +1126,52 @@ def _generate_inner(req_id, req, task, loaded, gen_kw, optional_kw, slots,
             "load_ms": round(load_ms), "generate_ms": round(generate_ms)}
 
 
+
+def _run_expand(req_id, req, loaded, gen_kw, optional_kw, slots, images, seeds,
+                model, outpaint_padding, load_ms) -> dict[str, Any]:
+    """Grow the canvas beyond the original picture.
+
+    Outpaint is a separate pipeline in MLX-Gen: the source is pasted onto a
+    larger canvas and the model completes the added area. It takes no
+    width/height, since the canvas comes from the source plus the padding.
+
+    Reframe is deliberately not wired up. It is a sibling of outpaint with its
+    own session type and no public runner -- `run_outpaint` rejects it with
+    "Capability 'flux2.reframe' does not support outpaint" -- and it covers the
+    same user-facing need, so it buys nothing for the complexity.
+    """
+    from mflux.outpaint import run_outpaint
+
+    if not images:
+        raise ValueError("expanding needs a source image")
+
+    padding = outpaint_padding
+    kwargs = {k: v for k, v in {**gen_kw, **optional_kw}.items()
+              if k not in ("width", "height", "image_path", "image_paths", "mask_path")}
+
+    gen_started = time.time()
+    results = call_tolerant(
+        req_id,
+        run_outpaint,
+        {
+            "loaded": loaded,
+            "source_image": images[0],
+            "padding": padding,
+            "seeds": list(seeds),
+            "progress_callback": _make_progress_handler(req_id),
+            **kwargs,
+        },
+        # `fill` only applies to outpaint; reframe derives its own canvas.
+        {"fill": req["outpaint_fill"]} if req.get("outpaint_fill") else {},
+    )
+    generate_ms = (time.time() - gen_started) * 1000.0
+
+    out = _seal_results(req_id, results, slots, model, list(seeds))
+    out["load_ms"] = round(load_ms)
+    out["generate_ms"] = round(generate_ms)
+    return out
+
+
 def op_generate(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     return _run_generation(req_id, req, "text-to-image", image_count=0)
 
@@ -1117,7 +1184,12 @@ def op_edit(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     count = len(req.get("images") or []) + len(req.get("vault_inputs") or [])
     if count == 0:
         raise ValueError("edit requires at least one input image")
-    req.setdefault("i2i_mode", "edit")
+    if count == 1:
+        req.setdefault("i2i_mode", "edit")
+    else:
+        # Let the resolver choose multi-reference; pinning "edit" here selected
+        # the single-image row and made a second source an error.
+        req.pop("i2i_mode", None)
     return _run_generation(req_id, req, "image-to-image", image_count=count)
 
 
