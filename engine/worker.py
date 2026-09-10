@@ -1555,6 +1555,7 @@ def op_capabilities(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
 
     caps = get_model_capabilities(model=req["model"])
     modes = [c.mode for c in caps.capabilities]
+    modes += [c.mode for c in (getattr(caps, "restoration", None) or ())]
     return {"model": req["model"], "modes": modes}
 
 
@@ -1588,12 +1589,22 @@ def op_resolve(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                 raise
             caps = get_model_capabilities(model=repo, family=family)
         modes = [c.mode for c in caps.capabilities]
+        # Upscaling is not a generation capability. It lives in a separate
+        # `restoration` field, and reading only `capabilities` is what made
+        # SeedVR2 look like it had no modes at all -- which is how four
+        # working upscalers ended up marked broken.
+        modes += [c.mode for c in (getattr(caps, "restoration", None) or ())]
         # Map MLX-Gen's internal modes onto the app's four task buckets.
+        if any(m in ("restore-image", "restore-video") for m in modes):
+            tasks.append("upscale")
         if any(m in ("text-only", "text-to-image") for m in modes):
             tasks.append("text_to_image")
         if any(m in ("edit-reference", "multi-reference", "latent-img2img") for m in modes):
             tasks.append("edit")
-        if any("video" in m for m in modes):
+        # Generating a clip, not restoring one. "restore-video" contains the
+        # word and means the opposite: SeedVR2 upscales footage it is given
+        # and cannot generate a frame of its own.
+        if any("video" in m and not m.startswith("restore-") for m in modes):
             tasks.append("video")
     except Exception as exc:
         route_error = str(exc)
