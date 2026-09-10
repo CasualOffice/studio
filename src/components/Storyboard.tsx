@@ -199,7 +199,7 @@ export default function Storyboard({
   }
 
   return (
-    <div className="content split">
+    <div className="content split" style={{ padding: 0 }}>
       <div>
         <div className="panel">
           <h2>Picture board</h2>
