@@ -246,6 +246,82 @@ Downloads for this model go through `huggingface_hub`, not `mlxgen download`:
 MLX-Gen exits 0 without fetching anything for a repo it does not recognise,
 which looked exactly like a successful zero-byte download.
 
+## What it does
+
+| Tab | |
+| --- | --- |
+| **Generate** | Text to image. |
+| **Edit** | Five modes: instruction edit, masked inpaint, outpaint, latent restyle, and crop/rotate. |
+| **Video** | Text or image to video, with frame count as the control that matters. |
+| **Enlarge** | SeedVR2 super-resolution, currently blocked by a version conflict (below). |
+| **Models** | Curated catalog plus any Hugging Face repo, judged against this machine before download. |
+| **Vault** | Everything made or imported, encrypted, searchable, with the chain that produced each item. |
+| **Activity** | Engine versions, resident model, live memory, and every decision the engine made quietly. |
+| **Security** | Passphrase, Touch ID, model storage location, vault repair. |
+
+Work carries between tabs by id -- generate, edit that, animate the result --
+without ever writing plaintext to disk.
+
+### Editing
+
+Instruction edits, masked inpainting (paint the region, only that is
+regenerated), outpainting (grow the canvas past the original frame), latent
+restyle, and crop/rotate/straighten. The last of those runs in the browser: it
+never needed a diffusion model, and asking one to reframe a picture is both
+slow and lossy.
+
+Measured on an M4 at 512x512, 4 steps: inpaint 36s, outpaint 56s (512 to 768),
+multi-reference 51s.
+
+### Live previews
+
+Each denoise step is decoded through a published tiny autoencoder and sent to
+the interface as a small JPEG. A hundred-second generation was otherwise a
+progress bar and nothing else. Six steps cost 91 KB in total.
+
+Implemented against MLX-Gen's own `StepwiseHandler`, not its documentation,
+whose example calls an `unpack_latents` that no longer exists -- following it
+produced a handler that ran every step and silently failed on every one.
+
+### Prompt help
+
+A small vision-language model (~1.2 GiB) runs locally. It does not rewrite your
+request: it reports what the picture contains, and the instruction is assembled
+from your own words with those observations appended as context to preserve.
+
+    make it blue
+    -> make a beige ceramic teapot blue, preserving its smooth glazed
+       stoneware and soft daylight from the left, and leaving the crumpled
+       linen cloth and pale wall unchanged
+
+An earlier version let the model restate the instruction after seeing the
+picture. It folded the picture's details into the request and sometimes
+replaced it outright: "make it blue" came back as "remove the background".
+
+Observations that conflict with the request are dropped, so "put it on a dark
+table" does not also say "leaving the linen cloth unchanged".
+
+### Style adapters
+
+LoRA adapters install by repository id. The declared base model is shown before
+downloading, because an adapter trained for Klein 9B will not load against the
+4B and the file gives no hint. Adapters are part of the resident model's cache
+key: without that, switching between runs would reuse the loaded model and
+silently apply the wrong style, or none.
+
+## Resource policy
+
+The engine must not be able to take the machine down with it.
+
+- MLX gets a hard memory ceiling and refuses allocations past it rather than
+  letting macOS swap. A failed generation beats an unresponsive Mac.
+- Threads are capped, leaving cores free, and the worker runs `nice`d.
+- One model is resident at a time. This is an invariant, not an optimisation:
+  the prompt assistant briefly had its own slot on the theory that 2.6 GiB
+  would sit happily beside 5.6 GiB, and on 16 GB that combination paged badly
+  enough that a two-second rewrite took minutes.
+- Weights are released after ten minutes idle.
+
 ## Simple and Advanced
 
 Simple mode is the default and shows a prompt box, Shape, Effort, and one
@@ -286,11 +362,23 @@ and the memory controls.
 ## Tests
 
 ```sh
-cargo test --lib                                   # crypto, URL parsing
-cargo run --example vault_vectors > vectors.json   # cross-language vectors
+cargo test --lib                                   # crypto, URL parsing, engine liveness
+python engine/test_worker.py                       # 48 engine tests
+cargo run --example vault_vectors > vectors.json   # cross-language format vectors
+cargo run --example vault_lifecycle                # create, dedup, repair, export
+cargo run --example storage_move                   # relocation preserves symlinks
 cargo run --example keychain_probe                 # Touch ID capability
 cargo run --example setup_probe -- /tmp/scratch    # first-run bootstrap, headless
 ```
+
+CI runs all of these on macOS. Clippy warnings are failures: the codebase is at
+zero and the only way that stays true is if drift breaks the build.
+
+The probes cover the two paths that can destroy data and are otherwise only
+reachable through the interface. `vault_lifecycle` plants an orphaned blob and
+checks repair identifies it; `storage_move` checks a relocation preserves
+symlinks, since following them would duplicate every weight file and silently
+double the space used.
 
 `setup_probe` runs the real `setup::bootstrap` against a throwaway directory, so
 the first-run path can be verified without destroying a working installation.
