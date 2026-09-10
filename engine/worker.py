@@ -173,11 +173,28 @@ def _drop_named(opt: dict[str, Any], message: str) -> str | None:
     def norm(x: str) -> str:
         return x.replace("-", "_")
 
-    normalized_quoted = {norm(q) for q in quoted}
+    # Some routes name the remedy as well as the fault: "Wan VACE does not take
+    # image_path; pass reference_image_paths instead." Dropping the parameter
+    # the model just asked for is the opposite of what it said, and it is not
+    # a harmless mistake -- losing the image conditioning left video generation
+    # running as if no picture had been supplied at all.
+    # "do not pass X" is the opposite recommendation to "pass X", and reading
+    # one as the other protects exactly the parameter that should go.
+    suggested = {
+        norm(m) for m in re.findall(
+            r"(?<!not )(?<!n't )(?:pass|use|supply|provide|try)\s+"
+            r"['\"`]?([A-Za-z_][A-Za-z0-9_-]*)['\"`]?(?:\s+instead)?",
+            message,
+        )
+    }
+
+    normalized_quoted = {norm(q) for q in quoted} - suggested
     head_norm = norm(head)
 
     def matches(candidate: str) -> bool:
         c = norm(candidate)
+        if c in suggested:
+            return False
         # A quoted name is an explicit accusation; the head is the fallback.
         return c in normalized_quoted or c in head_norm
 
@@ -890,6 +907,40 @@ SCENE_DIRECTION_SYSTEM = (
     "MOOD: quiet and drowsy\n"
 )
 
+
+# The same job for a clip. A video model is steered by what *moves*: a still
+# scene description tells it nothing about motion, and the result drifts or
+# sits frozen. Camera and subject motion are the two levers that matter, and
+# both have to be gradual -- these models cover a second or two, so anything
+# that reads like a cut or a fast pan comes out as a smear.
+MOTION_DIRECTION_SYSTEM = (
+    "You are directing a short video clip, one or two seconds long, from a "
+    "brief idea.\n"
+    "Answer as labelled lines and nothing else. Each is a phrase, not a "
+    "sentence.\n"
+    "Describe only what a camera could record in that time. No cuts, no scene "
+    "changes, no dialogue, no story.\n"
+    "Motion must be gradual: drifting, settling, rising, swaying. Never "
+    "'suddenly', 'quickly' or 'explodes'.\n"
+    "Never write 'cinematic', 'stunning', 'high quality', '4k' or "
+    "'masterpiece' -- they carry no visual information.\n"
+    "If the idea does not imply a slot, write: skip\n\n"
+    "SUBJECT: the main thing, with its material, colour and condition\n"
+    "MOTION: how the subject moves during the clip, slowly and continuously\n"
+    "SETTING: where it is, and what moves in the background\n"
+    "LIGHT: the source, its direction, and how it changes across the clip\n"
+    "CAMERA: the shot, and any slow move -- a gentle push in, a slight drift\n"
+    "MOOD: the overall feeling, in two or three words\n\n"
+    "Example\n"
+    "User idea: a teapot\n"
+    "SUBJECT: a glazed stoneware teapot, steam curling from the spout\n"
+    "MOTION: steam rises and thins, drifting slowly to the right\n"
+    "SETTING: a linen cloth on a kitchen table, net curtain stirring behind\n"
+    "LIGHT: soft window light from the left, steady and cool\n"
+    "CAMERA: close shot, 50mm, a very slow push in\n"
+    "MOOD: calm and unhurried\n"
+)
+
 # Words that carry no intent, so their presence proves nothing about whether a
 # rewrite kept the user's meaning.
 _STOPWORDS = {
@@ -1050,7 +1101,7 @@ def _parse_scene(text: str) -> dict[str, str]:
         key = key.strip().strip("-*# ").upper()
         value = " ".join(value.split()).strip(" .")
         if key in ("SUBJECT", "SURFACE", "LIGHT", "SETTING",
-                   "ACTION", "CAMERA", "MOOD") and value:
+                   "ACTION", "MOTION", "CAMERA", "MOOD") and value:
             if value.lower() in ("unknown", "n/a", "none", "skip", "-"):
                 continue
             # Guard against an answer that turns into a paragraph.
@@ -1192,7 +1243,10 @@ def _compose_scene(user_prompt: str, slots: dict[str, str]) -> str:
     opening = ", ".join(
         p for p in (
             subject,
-            _strip_empty_modifiers(slots.get("ACTION", "")),
+            # A clip has MOTION where a still has ACTION; both answer "doing
+            # what", and only one of them is ever present.
+            _strip_empty_modifiers(slots.get("ACTION", ""))
+            or _strip_empty_modifiers(slots.get("MOTION", "")),
             _strip_empty_modifiers(slots.get("SETTING", "")),
         ) if p
     )
@@ -1261,8 +1315,10 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         else:
             emit({"id": req_id, "type": "progress", "phase": "denoise",
                   "progress": None, "message": "Writing the prompt"})
+            system = (MOTION_DIRECTION_SYSTEM if mode == "video"
+                      else SCENE_DIRECTION_SYSTEM)
             instruction = (
-                f"{SCENE_DIRECTION_SYSTEM}\nNow do the same here.\n"
+                f"{system}\nNow do the same here.\n"
                 f"User idea: {user_prompt}\n"
             )
             raw = ask(instruction, [], 220, 0.4)
@@ -2314,6 +2370,43 @@ def op_upscale(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
 # Video
 # --------------------------------------------------------------------------
 
+# How each video mode wants its picture. Video models disagree not just on the
+# parameter name but on what a picture *means*: a first frame to animate, a
+# subject to reference, or a source clip to transform. Sending the wrong one
+# is not a near miss -- a reference is a loose hint, so the result is an
+# unrelated clip rather than an obviously wrong one.
+_VIDEO_IMAGE_KWARG = {
+    "first-frame-i2v": "image_path",
+    "reference-video": "reference_image_paths",
+    "reference-video-edit": "reference_image_paths",
+}
+
+
+def _video_image_kwarg(req_id: str, model: str,
+                       family: str | None) -> tuple[str | None, list[str]]:
+    """Which parameter carries a still picture into this video model.
+
+    Returns the parameter name and the model's modes. `None` means this model
+    cannot start from a picture at all -- Wan VACE, for instance, transforms an
+    existing clip and takes no still. Asking beforehand is the difference
+    between refusing and quietly generating something unrelated.
+    """
+    from mlxgen import get_model_capabilities
+
+    try:
+        caps = (get_model_capabilities(model=model, family=family) if family
+                else get_model_capabilities(model=model))
+        modes = [c.mode for c in caps.capabilities]
+    except Exception as exc:
+        log(req_id, f"could not read video capabilities: {exc}", "warn")
+        return None, []
+
+    for mode in modes:
+        if mode in _VIDEO_IMAGE_KWARG:
+            return _VIDEO_IMAGE_KWARG[mode], modes
+    return None, modes
+
+
 def op_video(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     """Generate a clip, optionally starting from a picture.
 
@@ -2344,8 +2437,23 @@ def op_video(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         plan_kw: dict[str, Any] = {}
         if req.get("family"):
             plan_kw["family"] = req["family"]
+
+        image_kwarg: str | None = None
         if staged:
-            plan_kw["reference_image_count"] = len(staged)
+            image_kwarg, modes = _video_image_kwarg(
+                req_id, req["model"], req.get("family"))
+            if image_kwarg is None:
+                raise ValueError(
+                    f"This model cannot start from a picture. It supports "
+                    f"{', '.join(modes) or 'text prompts'} only. Generating "
+                    "anyway would ignore your image and return an unrelated "
+                    "clip, so nothing was run. Choose a model listed as image "
+                    "to video."
+                )
+            if image_kwarg == "reference_image_paths":
+                plan_kw["reference_image_count"] = len(staged)
+            else:
+                plan_kw["image_count"] = len(staged)
 
         loaded, load_ms = _load_model(
             req_id,
@@ -2372,12 +2480,16 @@ def op_video(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             "release_denoisers_before_decode": True,
         }
         optional: dict[str, Any] = {}
-        if staged:
-            # Same picture, two spellings: a first frame for Wan, an ordered
-            # reference set for Bernini. The tolerance layer drops whichever
-            # this route names as unsupported.
-            optional["reference_image_paths"] = list(staged)
-            optional["image_path"] = staged[0]
+        if staged and image_kwarg:
+            # Exactly the parameter this model declared, never both. Sending
+            # both and letting the tolerance layer sort it out is what broke
+            # this: Wan VACE answers "does not take image_path; pass
+            # reference_image_paths instead", both were dropped in turn, and
+            # the run continued as plain text-to-video with the picture
+            # silently discarded.
+            optional[image_kwarg] = (
+                list(staged) if image_kwarg.endswith("_paths") else staged[0]
+            )
         if req.get("negative_prompt"):
             optional["negative_prompt"] = req["negative_prompt"]
         if req.get("guidance") is not None:
@@ -2391,6 +2503,17 @@ def op_video(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         gen_started = time.time()
         video = call_tolerant(req_id, target.generate_video, base, optional)
         generate_ms = (time.time() - gen_started) * 1000.0
+
+        # `call_tolerant` drops what a route refuses, which is right for a
+        # quality knob and wrong for the picture the whole request was about.
+        # If it went, the clip that came back has nothing to do with what was
+        # asked for, so this fails rather than returning it.
+        if staged and image_kwarg and image_kwarg not in optional:
+            raise RuntimeError(
+                "This model refused the picture, so the clip it produced is "
+                "unrelated to it. Nothing was saved. Try a model listed as "
+                "image to video."
+            )
 
         # MP4 needs a container writer, so unlike images this cannot be encoded
         # purely in memory. It is written to the private staging directory and

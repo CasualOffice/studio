@@ -626,5 +626,59 @@ class MfluxBackendDetection(unittest.TestCase):
             "runwayml/stable-diffusion-v1-5", ["text-to-image"],
             ["v1-5-pruned.safetensors", "model_index.json"]))
 
+
+class SuggestedAlternatives(unittest.TestCase):
+    """A route that names the remedy must not have it taken away.
+
+    Wan VACE answers "does not take image_path; pass reference_image_paths
+    instead". Dropping the parameter it just asked for left video generation
+    running as though no picture had been supplied, so a photo produced a clip
+    with nothing to do with it.
+    """
+
+    def test_the_suggested_parameter_survives(self):
+        opt = {"reference_image_paths": ["/p.png"], "image_path": "/p.png"}
+        dropped = worker._drop_named(
+            opt, "Wan VACE does not take image_path; pass reference_image_paths instead.")
+        self.assertEqual(dropped, "image_path")
+        self.assertIn("reference_image_paths", opt)
+
+    def test_other_phrasings_of_a_suggestion(self):
+        for message in (
+            "image_path is unsupported; use reference_image_paths instead.",
+            "Do not pass image_path -- supply 'reference_image_paths'.",
+            "image_path rejected, try reference_image_paths",
+        ):
+            with self.subTest(message=message):
+                opt = {"reference_image_paths": ["/p.png"], "image_path": "/p.png"}
+                self.assertEqual(worker._drop_named(opt, message), "image_path")
+                self.assertIn("reference_image_paths", opt)
+
+    def test_a_plain_rejection_still_drops(self):
+        # Nothing suggested: the ordinary path must keep working.
+        opt = {"guidance": 3.5, "width": 512}
+        self.assertEqual(
+            worker._drop_named(opt, "'guidance' is not a parameter of this route."),
+            "guidance")
+
+
+class MotionDirection(unittest.TestCase):
+    """A clip is steered by what moves, which a still scene never describes."""
+
+    def test_motion_is_kept_when_parsed(self):
+        parsed = worker._parse_scene(
+            "SUBJECT: a glazed teapot\nMOTION: steam rises and drifts right\n"
+            "SETTING: a linen cloth\nLIGHT: soft window light\n")
+        self.assertEqual(parsed.get("MOTION"), "steam rises and drifts right")
+
+    def test_motion_takes_the_place_of_action(self):
+        out = worker._compose_scene("a teapot", {
+            "SUBJECT": "a glazed stoneware teapot",
+            "MOTION": "steam rises and thins, drifting slowly right",
+            "SETTING": "a linen cloth on a kitchen table",
+        })
+        self.assertIn("steam rises", out)
+        self.assertIn("teapot", out)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -61,6 +61,8 @@ pub struct ModelStatus {
     pub peak_estimated: bool,
     pub steps_default: u32,
     pub max_edit_images: u32,
+    /// Whether a video model can start from a still picture.
+    pub video_from_image: bool,
     pub guidance_default: f32,
     pub guidance_max: f32,
     pub notes: String,
@@ -363,6 +365,7 @@ fn status_from_entry(entry: &ModelEntry, paths: &AppPaths, host: &HostInfo) -> M
         peak_estimated: entry.peak_estimated,
         steps_default: entry.steps_default,
         max_edit_images: entry.max_edit_images,
+        video_from_image: entry.video_from_image,
         guidance_default: entry.guidance_default,
         guidance_max: entry.guidance_max,
         notes: entry.notes.into(),
@@ -408,6 +411,10 @@ fn status_from_custom(m: &CustomModel, paths: &AppPaths, host: &HostInfo) -> Mod
         steps_default: m.steps_default.max(2),
         // Unknown route: assume single-reference, the common case.
         max_edit_images: 1,
+        // A user-added video model is asked about at generation time; the
+        // engine refuses rather than silently ignoring a picture, so assume
+        // it can take one until it says otherwise.
+        video_from_image: true,
         // Unknown route: assume no classifier-free guidance, which every route
         // accepts. Offering a value a distilled checkpoint rejects would fail
         // the run only after the weights were already resident.
