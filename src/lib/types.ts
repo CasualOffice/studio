@@ -163,6 +163,12 @@ export interface ResolvedModel {
   routable: boolean;
   /** Router family, detected if the resolver could not infer it. */
   family: string | null;
+  /** Names an mflux backend for FLUX.1, which the unified router cannot place. */
+  backend: string | null;
+  /** "lora" when the repo is an adapter rather than a whole model. */
+  kind: string;
+  /** Gated, and no access token is stored: the download cannot start. */
+  needs_token: boolean;
   error: string | null;
   /** Verdict computed against this machine before anything is downloaded. */
   package_gib: number;

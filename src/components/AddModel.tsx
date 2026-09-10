@@ -26,9 +26,26 @@ export default function AddModel({
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [resolved, setResolved] = useState<ResolvedModel | null>(null);
+  const [token, setToken] = useState("");
 
   const reset = () => {
-    setRepo(""); setName(""); setResolved(null); setOpen(false);
+    setRepo(""); setName(""); setResolved(null); setToken(""); setOpen(false);
+  };
+
+  /** Save a token, then re-check: gating is the only thing that was in the way. */
+  const saveToken = async () => {
+    setBusy(true);
+    try {
+      await api.setHfToken(token);
+      notify("Token saved. Re-checking the model.");
+      const r = await api.resolveModel(repo);
+      setResolved(r);
+      if (!name.trim()) setName(repo.split("/").pop() ?? repo);
+    } catch (e) {
+      notify(errText(e), true);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const check = async () => {
@@ -49,7 +66,8 @@ export default function AddModel({
     setBusy(true);
     try {
       await api.addCustomModel(
-        resolved.model, name, resolved.tasks, resolved.bytes, null, resolved.family
+        resolved.model, name, resolved.tasks, resolved.bytes, null,
+        resolved.family, resolved.backend
       );
       notify(`Added ${name}. Download it from the list below.`);
       onAdded();
@@ -97,10 +115,10 @@ export default function AddModel({
                 <br />
               </>
             )}
-            It also has to be an architecture the engine knows: <b>FLUX.2</b>,
-            {" "}<b>Qwen-Image</b>, <b>Z-Image</b>, <b>ERNIE</b>, <b>FIBO</b>,
-            {" "}<b>Bonsai</b> or <b>Wan</b>. Stable Diffusion, SDXL and FLUX.1
-            are different architectures and will not run here.
+            It also has to be an architecture the engine knows: <b>FLUX.1</b> and
+            {" "}<b>FLUX.2</b>, <b>Qwen-Image</b>, <b>Z-Image</b>, <b>ERNIE</b>,
+            {" "}<b>FIBO</b>, <b>Bonsai</b> or <b>Wan</b>. Stable Diffusion and
+            SDXL are a different architecture and will not run here.
           </div>
         </div>
       </div>
@@ -110,9 +128,42 @@ export default function AddModel({
           className={"notice" + (!resolved.routable ? " bad" : runsHere ? "" : " warn")}
           style={{ marginBottom: 12 }}
         >
-          {!resolved.routable ? (
+          {resolved.kind === "lora" ? (
             <>
-              <strong>MLX-Gen cannot route this repository</strong>
+              <strong>This is a LoRA, not a model</strong>
+              An adapter refines a model you already have; it cannot generate on
+              its own. Add it on the <b>LoRAs</b> tab, using the same repo id.
+            </>
+          ) : resolved.needs_token ? (
+            <>
+              <strong>This model is gated</strong>
+              <span style={{ whiteSpace: "pre-wrap" }}>{resolved.error}</span>
+              <div style={{ marginTop: 9 }}>
+                <input
+                  type="password"
+                  value={token}
+                  spellCheck={false}
+                  placeholder="hf_..."
+                  style={{ width: "100%", marginBottom: 7 }}
+                  onChange={(e) => setToken(e.target.value)}
+                />
+                <button
+                  className="btn primary small"
+                  disabled={busy || !token.trim().startsWith("hf_")}
+                  onClick={saveToken}
+                >
+                  {busy ? "Saving…" : "Save token and re-check"}
+                </button>
+                <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 6 }}>
+                  Create one at huggingface.co/settings/tokens with read access.
+                  It is stored on this Mac only, readable by your account alone,
+                  and is sent to Hugging Face and nowhere else.
+                </div>
+              </div>
+            </>
+          ) : !resolved.routable ? (
+            <>
+              <strong>The engine cannot run this repository</strong>
               {resolved.error
                 ? <span style={{ whiteSpace: "pre-wrap" }}>{resolved.error}</span>
                 : "It reports no usable generation modes, so it cannot be generated from."}
@@ -134,7 +185,7 @@ export default function AddModel({
                 </div>
               )}
               {resolved.fit_reason}
-              {resolved.gated && " This repo is gated — accept its licence on Hugging Face first."}
+              {resolved.gated && " Gated, and your saved token has access."}
               {" "}Memory is estimated from the download size, not a published benchmark.
             </>
           )}

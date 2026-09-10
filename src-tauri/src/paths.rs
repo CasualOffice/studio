@@ -98,6 +98,14 @@ impl AppPaths {
         self.root.join("vault")
     }
     /// Models the user added by Hugging Face repo id.
+    /// Where the Hugging Face access token is kept. Gated repositories --
+    /// every official FLUX.1 model among them -- cannot be downloaded without
+    /// one, and it belongs to the user's account rather than to any model, so
+    /// it lives beside the app's own state rather than in the model cache.
+    pub fn hf_token(&self) -> PathBuf {
+        self.root.join("hf_token")
+    }
+
     pub fn custom_models(&self) -> PathBuf {
         self.root.join("custom_models.json")
     }

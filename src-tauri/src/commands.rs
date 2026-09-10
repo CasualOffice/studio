@@ -62,6 +62,18 @@ impl AppState {
         Ok(engine)
     }
 
+    /// Drop the running worker, so the next request starts a fresh one.
+    ///
+    /// Used when something the worker only reads at spawn has changed -- the
+    /// Hugging Face token, for instance. Nothing is killed mid-generation that
+    /// the user did not ask to change.
+    async fn stop_engine(&self) {
+        let mut guard = self.engine.lock().await;
+        if let Some(engine) = guard.take() {
+            engine.shutdown().await;
+        }
+    }
+
     fn require_unlocked(&self) -> Result<()> {
         if !self.vault.is_unlocked() {
             return Err(AppError::VaultLocked);
@@ -437,7 +449,15 @@ pub async fn download_model(
                 // about. `mlxgen download` exits 0 without fetching anything
                 // for an unrecognised repo, so it has to come through
                 // huggingface_hub directly.
-                "via": if entry.tasks.contains(&crate::catalog::Task::Assist) {
+                // `mlxgen download` exits 0 without fetching anything for a
+                // repo it does not recognise, which looks exactly like a
+                // successful zero-byte download. Two kinds of model are
+                // outside its registry: the prompt assistant, which is a VLM,
+                // and FLUX.1, which mflux runs. Both come through
+                // huggingface_hub directly.
+                "via": if entry.backend.is_some() {
+                    "mflux"
+                } else if entry.tasks.contains(&crate::catalog::Task::Assist) {
                     "hf"
                 } else {
                     "mlxgen"
@@ -586,20 +606,38 @@ pub async fn resolve_model(
     Ok(resolved)
 }
 
+/// What the resolver worked out about a repository, ready to be saved.
+///
+/// One struct rather than eight positional arguments: the list had grown to
+/// the point where two adjacent `Option<String>`s could be swapped silently.
+#[derive(serde::Deserialize)]
+pub struct NewModel {
+    pub repo: String,
+    pub name: String,
+    pub tasks: Vec<String>,
+    pub bytes: u64,
+    pub quantize: Option<u8>,
+    /// Router family, when the resolver had to identify it from the repo.
+    pub family: Option<String>,
+    /// Names an mflux backend for FLUX.1, which the unified router cannot place.
+    pub backend: Option<String>,
+}
+
 #[tauri::command]
-pub fn add_custom_model(
-    state: State<'_, AppState>,
-    repo: String,
-    name: String,
-    tasks: Vec<String>,
-    bytes: u64,
-    quantize: Option<u8>,
-    family: Option<String>,
-) -> Result<()> {
+pub fn add_custom_model(state: State<'_, AppState>, spec: NewModel) -> Result<()> {
+    let NewModel {
+        repo,
+        name,
+        tasks,
+        bytes,
+        quantize,
+        family,
+        backend,
+    } = spec;
     let repo = normalize_repo(&repo)?;
     if tasks.is_empty() {
         return Err(AppError::msg(
-            "MLX-Gen cannot route this repository, so it cannot be generated from.",
+            "The engine cannot route this repository, so it cannot be generated from.",
         ));
     }
     // A stable id derived from the repo keeps re-adding idempotent.
@@ -618,6 +656,7 @@ pub fn add_custom_model(
             quantize,
             package_gib: bytes as f32 / 1024.0 / 1024.0 / 1024.0,
             family,
+            backend,
             steps_default: 8,
             added_at: chrono::Local::now().to_rfc3339(),
         },
@@ -1249,7 +1288,7 @@ fn load_loras(paths: &AppPaths) -> Vec<Lora> {
         .unwrap_or_default()
         .into_iter()
         .map(|mut l| {
-            l.installed = models::is_installed(paths, &l.repo).0;
+            l.installed = models::is_installed(paths, &l.repo, 0.0).0;
             l
         })
         .collect()
@@ -1371,4 +1410,27 @@ mod tests {
             assert!(normalize_repo(input).is_err(), "should reject: {input}");
         }
     }
+}
+
+/// Whether a Hugging Face token is stored, without ever handing it back out.
+#[tauri::command]
+pub fn hf_token_status(state: State<'_, AppState>) -> Result<serde_json::Value> {
+    let token = models::hf_token(&state.paths());
+    Ok(json!({
+        "present": token.is_some(),
+        // Enough to recognise which token is stored, not enough to use it.
+        "hint": token.map(|t| format!("{}...{}", &t[..t.len().min(6)],
+                                      &t[t.len().saturating_sub(4)..])),
+    }))
+}
+
+/// Store or clear the Hugging Face access token.
+///
+/// The engine reads the token from its environment at spawn, so it is stopped
+/// afterwards; the next request starts a fresh one that can see the new value.
+#[tauri::command]
+pub async fn set_hf_token(state: State<'_, AppState>, token: String) -> Result<()> {
+    models::set_hf_token(&state.paths(), &token)?;
+    state.stop_engine().await;
+    Ok(())
 }

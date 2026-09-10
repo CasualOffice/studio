@@ -385,6 +385,137 @@ def _detect_family(repo: str) -> str | None:
     return None
 
 
+# FLUX.1 pipeline classes, and the mflux backend that runs each one. These are
+# a separate lineage from FLUX.2 and the unified router cannot place them, but
+# mflux can -- so they are supported, just through a different door.
+_MFLUX_PIPELINES = (
+    ("fluxkontextpipeline", "dev_kontext"),
+    ("fluxfillpipeline", "dev_fill"),
+    ("fluxpipeline", None),  # base FLUX.1: dev or schnell, decided below
+)
+
+
+# FLUX.1 weight filenames, which name the variant outright. Checked in order,
+# so the more specific ones win over the plain dev/schnell files.
+_MFLUX_WEIGHT_NAMES = (
+    ("flux1kontext", "dev_kontext"),
+    ("flux1fill", "dev_fill"),
+    ("flux1schnell", "schnell"),
+    ("flux1dev", "dev"),
+)
+
+
+def _hf_token() -> str | None:
+    """The Hugging Face access token, if the user has supplied one.
+
+    Gated repositories -- which includes every official FLUX.1 model -- need
+    one. The host passes it through the environment so it never has to be
+    written into this process's arguments or logs.
+    """
+    for var in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        tok = os.environ.get(var, "").strip()
+        if tok:
+            return tok
+    try:
+        from huggingface_hub import HfFolder
+
+        return HfFolder.get_token() or None
+    except Exception:
+        return None
+
+
+def _detect_mflux_backend(repo: str, tags: list[str] | None = None,
+                          files: list[str] | None = None) -> str | None:
+    """Identify a FLUX.1 repository and pick the mflux backend that runs it.
+
+    Returns None for anything that is not FLUX.1. Distinguishing dev from
+    schnell matters because schnell is guidance-distilled: run it with dev's
+    settings and every image comes out scorched.
+
+    Two sources of evidence, because the first is not always reachable: the
+    declared pipeline class, and failing that the weight filenames. The
+    official FLUX.1 repos are gated, so `model_index.json` needs a token that
+    the file listing does not -- and `flux1-schnell.safetensors` identifies the
+    variant just as definitively as the pipeline class does.
+    """
+    import json as _json
+
+    haystack = (repo + " " + " ".join(tags or [])).lower()
+    # FLUX.2 is a different architecture with its own router, which has already
+    # had its turn by the time this runs. Never claim one for mflux.
+    if "flux2" in haystack.replace(".", "").replace("-", "").replace("_", ""):
+        return None
+
+    declared = ""
+    for filename in ("model_index.json", "config.json"):
+        try:
+            from huggingface_hub import hf_hub_download
+
+            path = hf_hub_download(repo_id=repo, filename=filename,
+                                   token=_hf_token())
+            with open(path) as fh:
+                declared = str(_json.load(fh).get("_class_name", ""))
+            if declared:
+                break
+        except Exception:
+            continue
+
+    declared = declared.lower().replace("-", "").replace("_", "")
+    flat = " ".join(files or []).lower().replace("-", "").replace("_", "")
+
+    def variant() -> str:
+        """Which FLUX.1 this is. Order matters: Kontext repos also say "dev"."""
+        for needle, backend in _MFLUX_WEIGHT_NAMES:
+            if needle in flat:
+                return backend
+        for needle, backend in (("kontext", "dev_kontext"), ("fill", "dev_fill"),
+                                ("schnell", "schnell")):
+            if needle in haystack:
+                return backend
+        return "dev"
+
+    for needle, backend in _MFLUX_PIPELINES:
+        if needle in declared:
+            return backend or variant()
+
+    for needle, backend in _MFLUX_WEIGHT_NAMES:
+        if needle in flat:
+            return backend
+
+    # No declaration and no telltale filename: this is how the pre-quantized
+    # mflux packages arrive. Their component layout is still evidence -- two
+    # text encoders beside a transformer and a VAE is FLUX's shape, and not
+    # Stable Diffusion's (a single encoder and a unet) or Qwen-Image's. Only
+    # once the shape matches does the name get to pick the variant.
+    parts = {f.split("/")[0] for f in (files or []) if "/" in f}
+    flux_shaped = {"transformer", "vae", "text_encoder", "text_encoder_2"} <= parts
+    if flux_shaped and "flux" in haystack:
+        return variant()
+    return None
+
+
+def _looks_like_adapter(info: Any) -> bool:
+    """Is this a LoRA adapter repository rather than a whole model?
+
+    Worth answering separately: an adapter downloaded as a model can never
+    generate anything, and "unsupported" is the wrong thing to tell someone
+    who pasted a perfectly good LoRA.
+    """
+    files = [s.rfilename for s in (getattr(info, "siblings", None) or [])]
+    weights = [f for f in files if f.endswith(".safetensors")]
+    if not weights:
+        return False
+    # A model repository declares its pipeline; an adapter does not.
+    if any(f in ("model_index.json", "config.json") for f in files):
+        return False
+    tags = [t.lower() for t in (getattr(info, "tags", None) or [])]
+    return (
+        any("lora" in f.lower() for f in weights)
+        or any("lora" in t or "adapter" in t for t in tags)
+        or len(weights) == 1
+    )
+
+
 def _load_model(req_id: str, model: str, quantize: int | None,
                 model_path: str | None, image_count: int,
                 release_text_encoder: bool = False,
@@ -1282,10 +1413,11 @@ def op_resolve(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     private = False
     gated = False
     params = 0
+    hf_info: Any = None
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi().model_info(repo, files_metadata=True)
+        info = hf_info = HfApi().model_info(repo, files_metadata=True)
         # Hugging Face reports this for ordinary repositories but not for
         # quantized packages, whose tensors are stored differently.
         st = getattr(info, "safetensors", None)
@@ -1302,17 +1434,61 @@ def op_resolve(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         if route_error is None:
             route_error = str(exc)
 
+    kind = "model"
+    backend: str | None = None
+
+    if not tasks and hf_info is not None and _looks_like_adapter(hf_info):
+        # A LoRA, not a model. Downloading it as one produces a folder that can
+        # never generate anything, so say what it is instead of "unsupported".
+        kind = "lora"
+        route_error = (
+            "This is a LoRA adapter, not a complete model. Add it on the LoRAs "
+            "tab instead, where it can be applied on top of a model you already "
+            "have."
+        )
+    elif not tasks:
+        # The unified router could not place it. FLUX.1 is a separate lineage
+        # that mflux runs, so ask that backend before giving up.
+        backend = _detect_mflux_backend(
+            repo,
+            [str(t) for t in (getattr(hf_info, "tags", None) or [])],
+            [sib.rfilename for sib in (getattr(hf_info, "siblings", None) or [])],
+        )
+        if backend:
+            tasks = ["text_to_image"]
+            if backend in ("dev_kontext", "dev_fill"):
+                tasks = ["edit"]
+            route_error = None
+
+    if gated and not _hf_token():
+        # Being gated is not the same as being unsupported, and the fix is
+        # something only the user can do. Say so rather than sending them off
+        # to look for a different model.
+        route_error = (
+            f"This model is gated. Open huggingface.co/{repo} , accept its "
+            "licence, then add a Hugging Face access token under Settings. "
+            "The download will work after that."
+        )
+        return {
+            "model": repo, "family": family, "backend": backend, "kind": kind,
+            "modes": modes, "tasks": tasks, "bytes": size, "params": params,
+            "private": private, "gated": True, "routable": False,
+            "needs_token": True, "error": route_error,
+        }
+
     if route_error and "infer a supported backend" in route_error.lower():
         route_error = (
-            "This model is not one the engine can run. It supports the FLUX.2, "
-            "Qwen-Image, Z-Image, ERNIE, FIBO, Bonsai and Wan families. Stable "
-            "Diffusion, SDXL and FLUX.1 are different architectures and are not "
-            "included."
+            "This model is not one the engine can run. It supports the FLUX.1 "
+            "and FLUX.2, Qwen-Image, Z-Image, ERNIE, FIBO, Bonsai and Wan "
+            "families. Stable Diffusion and SDXL are a different architecture "
+            "and are not included."
         )
 
     return {
         "model": repo,
         "family": family,
+        "backend": backend,
+        "kind": kind,
         "modes": modes,
         "tasks": tasks,
         "bytes": size,
@@ -1320,6 +1496,7 @@ def op_resolve(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         "private": private,
         "gated": gated,
         "routable": bool(tasks),
+        "needs_token": False,
         "error": route_error,
     }
 
@@ -1433,10 +1610,28 @@ def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             if proc.returncode != 0:
                 tail = (proc.stderr or proc.stdout or "").strip().splitlines()
                 raise RuntimeError("adapter download failed:\n" + "\n".join(tail[-8:]))
+        elif via == "mflux":
+            # FLUX.1. Ask mflux which files it actually reads rather than
+            # pulling the repository whole: the official repos also ship a
+            # single-file copy of the transformer, so a blind snapshot fetches
+            # roughly 24 GB it will never open.
+            from huggingface_hub import snapshot_download
+
+            from mflux.models.flux.weights.flux_weight_definition import (
+                FluxWeightDefinition,
+            )
+
+            patterns = list(FluxWeightDefinition.get_download_patterns())
+            # The tokenizers load through a separate path with its own
+            # patterns; they are a few MB, so fetch them in the same pass.
+            patterns += ["tokenizer/*", "tokenizer_2/*", "scheduler/*",
+                         "model_index.json"]
+            snapshot_download(repo_id=repo_id, allow_patterns=patterns,
+                              token=_hf_token())
         elif via == "hf":
             from huggingface_hub import snapshot_download
 
-            snapshot_download(repo_id=repo_id)
+            snapshot_download(repo_id=repo_id, token=_hf_token())
         else:
             cli = Path(sys.executable).parent / "mlxgen"
             cmd = [str(cli), "download", "--model", repo_id] if cli.exists() else [
@@ -2299,22 +2494,33 @@ def main() -> None:
     # 16 GB machine cannot hold two models anyway. Cancels jump the queue.
     work: "queue.Queue[dict[str, Any]]" = queue.Queue()
 
-    def worker() -> None:
+    # A second lane for network work. Fetching weights is pure network I/O: it
+    # never touches Metal and never holds a model, so there is no reason for a
+    # 20-minute download to block a probe or a generation queued behind it.
+    # Downloads still serialise against each other -- one extra lane, not one
+    # thread per request -- so two cannot thrash the same disk and network.
+    fetch: "queue.Queue[dict[str, Any]]" = queue.Queue()
+
+    def pump(q: "queue.Queue[dict[str, Any]]") -> None:
         while True:
-            req = work.get()
+            req = q.get()
             if req is None:
                 return
             handle(req)
 
-    worker_thread = threading.Thread(target=worker, daemon=True)
+    worker_thread = threading.Thread(target=pump, args=(work,), daemon=True)
     worker_thread.start()
+    fetch_thread = threading.Thread(target=pump, args=(fetch,), daemon=True)
+    fetch_thread.start()
     threading.Thread(target=_idle_reaper, daemon=True).start()
 
     def drain(timeout: float) -> None:
         # Let queued work finish rather than dropping it silently; the host is
         # waiting on a terminal event for every request it sent.
         work.put(None)
+        fetch.put(None)
         worker_thread.join(timeout=timeout)
+        fetch_thread.join(timeout=timeout)
 
     for line in sys.stdin:
         line = line.strip()
@@ -2357,7 +2563,8 @@ def main() -> None:
             drain(5.0)
             emit({"id": req.get("id", "?"), "type": "result", "result": {"bye": True}})
             return
-        work.put(req)
+        # Network-only work goes to its own lane so it cannot stall the app.
+        (fetch if op in ("download", "probe", "resolve") else work).put(req)
 
     # stdin closed: the host is gone. Give in-flight work a moment to unwind.
     drain(5.0)

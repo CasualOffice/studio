@@ -159,6 +159,8 @@ pub fn run() {
             commands::resolve_model,
             commands::add_custom_model,
             commands::remove_custom_model,
+            commands::hf_token_status,
+            commands::set_hf_token,
             commands::unload_model,
             commands::engine_ping,
             commands::cancel_job,

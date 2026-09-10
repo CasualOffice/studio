@@ -4,6 +4,7 @@ import { api, errText } from "../lib/api";
 import type { VaultStatus } from "../lib/types";
 import { MIN_PASSPHRASE } from "../lib/passphrase";
 import Storage from "./Storage";
+import HuggingFaceToken from "./HuggingFaceToken";
 
 export default function Security({
   status, onStatus, notify, onImported, onStorageMoved,
@@ -92,6 +93,7 @@ export default function Security({
       </div>
 
       <Storage notify={notify} onMoved={onStorageMoved} />
+      <HuggingFaceToken notify={notify} />
 
       <div className="panel">
         <h2>Touch ID</h2>

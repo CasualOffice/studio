@@ -49,8 +49,12 @@ export const api = {
   resolveModel: (repo: string) => invoke<ResolvedModel>("resolve_model", { repo }),
   addCustomModel: (
     repo: string, name: string, tasks: string[], bytes: number,
-    quantize: number | null, family: string | null
-  ) => invoke<void>("add_custom_model", { repo, name, tasks, bytes, quantize, family }),
+    quantize: number | null, family: string | null, backend: string | null
+  ) => invoke<void>("add_custom_model",
+                    { spec: { repo, name, tasks, bytes, quantize, family, backend } }),
+  hfTokenStatus: () =>
+    invoke<{ present: boolean; hint: string | null }>("hf_token_status"),
+  setHfToken: (token: string) => invoke<void>("set_hf_token", { token }),
   removeCustomModel: (modelId: string) =>
     invoke<void>("remove_custom_model", { modelId }),
   unloadModel: () => invoke<void>("unload_model"),

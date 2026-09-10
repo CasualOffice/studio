@@ -508,5 +508,123 @@ class SignificantWords(unittest.TestCase):
         self.assertNotIn("more", got)
 
 
+
+class Sib:
+    def __init__(self, name):
+        self.rfilename = name
+
+
+class Info:
+    def __init__(self, files, tags=()):
+        self.siblings = [Sib(f) for f in files]
+        self.tags = list(tags)
+
+
+class AdapterDetection(unittest.TestCase):
+    """A LoRA pasted into the model box has to be recognised as a LoRA.
+
+    Downloading one as a model produces a folder that can never generate, and
+    "unsupported architecture" sends the user off looking for a different
+    model when what they pasted was perfectly good.
+    """
+
+    def test_single_lora_file_is_an_adapter(self):
+        info = Info(["lora.safetensors"],
+                    ["base_model:finetune:black-forest-labs/FLUX.1-dev"])
+        self.assertTrue(worker._looks_like_adapter(info))
+
+    def test_named_lora_among_several_files_is_an_adapter(self):
+        info = Info(["pytorch_lora_weights.safetensors", "README.md"])
+        self.assertTrue(worker._looks_like_adapter(info))
+
+    def test_a_real_model_is_not_an_adapter(self):
+        # A model repository declares its pipeline; an adapter does not.
+        info = Info(["model_index.json", "transformer/diffusion_pytorch_model.safetensors",
+                     "vae/diffusion_pytorch_model.safetensors"])
+        self.assertFalse(worker._looks_like_adapter(info))
+
+    def test_repo_with_no_weights_is_not_an_adapter(self):
+        self.assertFalse(worker._looks_like_adapter(Info(["README.md"])))
+
+
+class MfluxBackendDetection(unittest.TestCase):
+    """FLUX.1 is a separate lineage the unified router cannot place."""
+
+    def setUp(self):
+        # These test the evidence rules, not Hugging Face. Blocking the lookup
+        # keeps them fast and keeps them passing without a network.
+        import huggingface_hub
+
+        self._real = huggingface_hub.hf_hub_download
+
+        def refuse(*a, **k):
+            raise OSError("offline")
+
+        huggingface_hub.hf_hub_download = refuse
+        self.addCleanup(setattr, huggingface_hub, "hf_hub_download", self._real)
+
+    def test_weight_filename_names_the_variant(self):
+        cases = {
+            "flux1-schnell.safetensors": "schnell",
+            "flux1-dev.safetensors": "dev",
+            "flux1-kontext-dev.safetensors": "dev_kontext",
+            "flux1-fill-dev.safetensors": "dev_fill",
+        }
+        for filename, expected in cases.items():
+            with self.subTest(filename=filename):
+                self.assertEqual(
+                    worker._detect_mflux_backend("owner/x", [], [filename]),
+                    expected,
+                )
+
+    def test_specific_variants_win_over_the_plain_ones(self):
+        # Kontext repos also ship files whose names contain "dev".
+        self.assertEqual(
+            worker._detect_mflux_backend(
+                "black-forest-labs/FLUX.1-Kontext-dev", [],
+                ["flux1-kontext-dev.safetensors", "ae.safetensors"]),
+            "dev_kontext",
+        )
+
+    def test_a_prequantized_mflux_package_is_recognised(self):
+        # These ship no model_index.json and no telltale weight filename; the
+        # component layout is the evidence, and the name only picks the
+        # variant once that layout has confirmed the architecture.
+        files = ["transformer/x.safetensors", "vae/x.safetensors",
+                 "text_encoder/x.safetensors", "text_encoder_2/x.safetensors",
+                 "tokenizer/tokenizer.json"]
+        self.assertEqual(
+            worker._detect_mflux_backend("dhairyashil/FLUX.1-schnell-mflux-4bit",
+                                         [], files),
+            "schnell")
+        self.assertEqual(
+            worker._detect_mflux_backend("akx/FLUX.1-Kontext-dev-mflux-4bit",
+                                         [], files),
+            "dev_kontext")
+
+    def test_the_flux_layout_alone_is_not_enough(self):
+        # Same shape, nothing saying FLUX: claiming it would load weights
+        # through an architecture they were not trained for.
+        files = ["transformer/x.safetensors", "vae/x.safetensors",
+                 "text_encoder/x.safetensors", "text_encoder_2/x.safetensors"]
+        self.assertIsNone(
+            worker._detect_mflux_backend("someone/mystery-model", [], files))
+
+    def test_flux2_is_left_to_its_own_router(self):
+        # FLUX.2 is a different architecture with a router of its own.
+        files = ["transformer/x.safetensors", "vae/x.safetensors",
+                 "text_encoder/x.safetensors", "text_encoder_2/x.safetensors"]
+        for repo in ("AbstractFramework/flux.2-klein-4b-4bit",
+                     "owner/FLUX2-klein-9b"):
+            with self.subTest(repo=repo):
+                self.assertIsNone(worker._detect_mflux_backend(repo, [], files))
+
+    def test_not_flux_is_not_claimed(self):
+        # Acceptance is not identification: guessing here would load weights
+        # through an architecture they were not trained for.
+        self.assertIsNone(worker._detect_mflux_backend(
+            "runwayml/stable-diffusion-v1-5", ["text-to-image"],
+            ["v1-5-pruned.safetensors", "model_index.json"]))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

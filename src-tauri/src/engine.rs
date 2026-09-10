@@ -106,6 +106,13 @@ impl Engine {
             .env("NUMEXPR_NUM_THREADS", host.worker_threads.to_string())
             .env("MODELSTUDIO_IDLE_UNLOAD_SECONDS", "600");
 
+        // Gated repositories need the user's own Hugging Face token. Passed
+        // through the environment so it never lands in an argument list, where
+        // any other process on the machine could read it out of `ps`.
+        if let Some(token) = crate::models::hf_token(paths) {
+            cmd.env("HF_TOKEN", token);
+        }
+
         let mut child = cmd.spawn()?;
         let stdin = child
             .stdin

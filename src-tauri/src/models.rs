@@ -35,6 +35,11 @@ pub struct CustomModel {
     /// it MLX-Gen cannot place a repository whose name it does not recognise.
     #[serde(default)]
     pub family: Option<String>,
+    /// Names an mflux backend when this is a FLUX.1 model. That lineage is a
+    /// different architecture from FLUX.2 and the unified router cannot place
+    /// it, so it is run through mflux directly instead.
+    #[serde(default)]
+    pub backend: Option<String>,
     pub quantize: Option<u8>,
     pub package_gib: f32,
     pub steps_default: u32,
@@ -141,14 +146,35 @@ pub fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn is_installed(paths: &AppPaths, repo: &str) -> (bool, u64) {
+/// Fraction of the expected package that must be on disk before a download
+/// counts as finished. Not 100%: the engine fetches a weight and tokenizer
+/// subset rather than every file in the repo, so the total lands a little
+/// under the published figure.
+const COMPLETE_FRACTION: f32 = 0.85;
+
+/// Whether a model is fully downloaded, and how many bytes of it are present.
+///
+/// `expected_gib` is what the catalog says the package weighs; pass 0.0 when
+/// nothing is known about the expected size. Without that comparison this used
+/// a flat 64 MB floor, so an interrupted 16 GiB download reported itself as
+/// installed once 65 MB had landed, and then failed at generation time with a
+/// missing-file error instead of an honest "not downloaded yet".
+pub fn is_installed(paths: &AppPaths, repo: &str, expected_gib: f32) -> (bool, u64) {
     let dir = snapshot_dir(paths, repo);
     if !dir.exists() {
         return (false, 0);
     }
     let bytes = dir_size(&dir.join("blobs"));
-    let complete = dir.join("snapshots").exists() && bytes > 64 * 1024 * 1024;
-    (complete, bytes)
+    if !dir.join("snapshots").exists() {
+        return (false, bytes);
+    }
+    let threshold = if expected_gib > 0.0 {
+        (expected_gib * COMPLETE_FRACTION * 1024.0 * 1024.0 * 1024.0) as u64
+    } else {
+        // Nothing to compare against: fall back to "holds real weight files".
+        64 * 1024 * 1024
+    };
+    (bytes >= threshold, bytes)
 }
 
 /// Resident weight floor: what must stay in memory for the whole run.
@@ -304,7 +330,7 @@ fn measured(paths: &AppPaths, id: &str) -> (Option<f32>, u32, f32) {
 }
 
 fn status_from_entry(entry: &ModelEntry, paths: &AppPaths, host: &HostInfo) -> ModelStatus {
-    let (installed, installed_bytes) = is_installed(paths, entry.repo);
+    let (installed, installed_bytes) = is_installed(paths, entry.repo, entry.package_gib);
     let (fit, fit_reason) = classify(
         entry.package_gib,
         entry.peak_gib,
@@ -349,7 +375,7 @@ fn status_from_entry(entry: &ModelEntry, paths: &AppPaths, host: &HostInfo) -> M
 }
 
 fn status_from_custom(m: &CustomModel, paths: &AppPaths, host: &HostInfo) -> ModelStatus {
-    let (installed, installed_bytes) = is_installed(paths, &m.repo);
+    let (installed, installed_bytes) = is_installed(paths, &m.repo, m.package_gib);
     // Once installed, on-disk size beats the pre-download estimate.
     let package_gib = if installed && installed_bytes > 0 {
         installed_bytes as f32 / 1024.0 / 1024.0 / 1024.0
@@ -381,7 +407,7 @@ fn status_from_custom(m: &CustomModel, paths: &AppPaths, host: &HostInfo) -> Mod
         guidance_max: 1.0,
         notes: "Added by you. Memory is estimated, not a published benchmark.".to_string(),
         broken: None,
-        backend: None,
+        backend: m.backend.clone(),
         custom: true,
         installed,
         installed_bytes,
@@ -469,8 +495,65 @@ pub fn delete(paths: &AppPaths, repo: &str) -> Result<u64> {
     Ok(bytes)
 }
 
+/// Read the stored Hugging Face access token, if there is one.
+pub fn hf_token(paths: &AppPaths) -> Option<String> {
+    let raw = std::fs::read_to_string(paths.hf_token()).ok()?;
+    let tok = raw.trim().to_string();
+    if tok.is_empty() {
+        None
+    } else {
+        Some(tok)
+    }
+}
+
+/// Store (or, given an empty string, forget) the Hugging Face access token.
+///
+/// Written owner-read-only: it is a bearer credential for the user's Hugging
+/// Face account, and anything that can read it can act as them.
+pub fn set_hf_token(paths: &AppPaths, token: &str) -> Result<()> {
+    let path = paths.hf_token();
+    let token = token.trim();
+    if token.is_empty() {
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        return Ok(());
+    }
+    std::fs::write(&path, token)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// A throwaway directory that cleans itself up.
+    ///
+    /// Small enough not to be worth a dev-dependency, and it keeps these tests
+    /// from touching a real installation.
+    struct Scratch {
+        path: std::path::PathBuf,
+    }
+
+    impl Scratch {
+        fn new() -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("modelstudio-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
     use super::*;
 
     /// A fixed machine. Probing the real one made the disk assertions depend
@@ -521,5 +604,78 @@ mod tests {
         assert!(low_ram_helps(8.0, 13.0, &host(12.5)));
         // Weights themselves above the ceiling: not recoverable.
         assert!(!low_ram_helps(17.0, 20.0, &host(12.5)));
+    }
+
+    /// A download that stopped partway must never read as installed.
+    ///
+    /// This is what a flat byte floor got wrong: an interrupted 16 GiB model
+    /// with 250 MB on disk read as complete, and then failed at generation
+    /// with a missing-file error instead of offering to download it.
+    #[test]
+    fn a_partial_download_is_not_installed() {
+        let tmp = Scratch::new();
+        let paths = AppPaths::at(tmp.path.clone());
+        let repo = "owner/big-model";
+        let dir = snapshot_dir(&paths, repo);
+        std::fs::create_dir_all(dir.join("snapshots")).unwrap();
+        std::fs::create_dir_all(dir.join("blobs")).unwrap();
+        std::fs::write(dir.join("blobs").join("part"), vec![0u8; 4096]).unwrap();
+
+        let (installed, bytes) = is_installed(&paths, repo, 16.4);
+        assert!(!installed, "a fraction of 16.4 GiB must not count as installed");
+        assert!(bytes > 0, "but what is present is still reported");
+    }
+
+    #[test]
+    fn a_finished_download_is_installed() {
+        let tmp = Scratch::new();
+        let paths = AppPaths::at(tmp.path.clone());
+        let repo = "owner/small-model";
+        let dir = snapshot_dir(&paths, repo);
+        std::fs::create_dir_all(dir.join("snapshots")).unwrap();
+        std::fs::create_dir_all(dir.join("blobs")).unwrap();
+        std::fs::write(dir.join("blobs").join("weights"), vec![0u8; 1_000_000]).unwrap();
+
+        // The engine fetches a weight and tokenizer subset, so the total lands
+        // a little under the published figure. Anything at or above
+        // COMPLETE_FRACTION of it is finished.
+        let expected_gib = 1_000_000.0 / 1024.0 / 1024.0 / 1024.0 / 0.9;
+        assert!(is_installed(&paths, repo, expected_gib).0);
+    }
+
+    /// With no expected size to compare against, fall back to "holds weights".
+    #[test]
+    fn an_unknown_size_falls_back_to_a_floor() {
+        let tmp = Scratch::new();
+        let paths = AppPaths::at(tmp.path.clone());
+        let repo = "owner/unknown";
+        let dir = snapshot_dir(&paths, repo);
+        std::fs::create_dir_all(dir.join("snapshots")).unwrap();
+        std::fs::create_dir_all(dir.join("blobs")).unwrap();
+        std::fs::write(dir.join("blobs").join("w"), vec![0u8; 1024]).unwrap();
+        assert!(!is_installed(&paths, repo, 0.0).0);
+
+        std::fs::write(dir.join("blobs").join("w"), vec![0u8; 70 * 1024 * 1024]).unwrap();
+        assert!(is_installed(&paths, repo, 0.0).0);
+    }
+
+    /// The token is a bearer credential: nobody else on the machine gets it.
+    #[test]
+    fn a_stored_token_is_owner_readable_only() {
+        let tmp = Scratch::new();
+        let paths = AppPaths::at(tmp.path.clone());
+        assert!(hf_token(&paths).is_none());
+
+        set_hf_token(&paths, "hf_secret").unwrap();
+        assert_eq!(hf_token(&paths).as_deref(), Some("hf_secret"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(paths.hf_token()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "group and other must have no access");
+        }
+
+        set_hf_token(&paths, "  ").unwrap();
+        assert!(hf_token(&paths).is_none(), "blanking it forgets it");
     }
 }
