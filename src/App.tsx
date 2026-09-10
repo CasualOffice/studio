@@ -40,14 +40,27 @@ export default function App() {
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   // Owned here so Generate and the Vault can both hand images to the Edit tab.
   const [editImages, setEditImages] = useState<string[]>([]);
+  const [videoFrame, setVideoFrame] = useState<string[]>([]);
+  const [upscaleImage, setUpscaleImage] = useState<string[]>([]);
 
   const notify = useCallback((msg: string, bad?: boolean) => setToast({ msg, bad }), []);
 
-  const sendToEdit = useCallback((ids: string[]) => {
-    setEditImages(ids);
-    setTab("edit");
-    notify(ids.length === 1 ? "Opened in Edit." : `Opened ${ids.length} images in Edit.`);
+  /**
+   * Carry work between tabs by id.
+   *
+   * Results are already vault items, so moving one onward costs nothing and
+   * never touches the filesystem. This is what turns four separate tools into
+   * a pipeline: generate, edit that, animate the result.
+   */
+  const send = useCallback((dest: "edit" | "video" | "upscale", ids: string[]) => {
+    if (dest === "edit") { setEditImages(ids); setTab("edit"); }
+    if (dest === "video") { setVideoFrame(ids.slice(0, 1)); setTab("video"); }
+    if (dest === "upscale") { setUpscaleImage(ids.slice(0, 1)); setTab("upscale"); }
+    const where = dest === "edit" ? "Edit" : dest === "video" ? "Video" : "Enlarge";
+    notify(`Carried over to ${where}.`);
   }, [notify]);
+
+  const sendToEdit = useCallback((ids: string[]) => send("edit", ids), [send]);
 
   // Any tab can show that the engine is working, so leaving Generate mid-run
   // does not look like the job vanished.
@@ -273,6 +286,7 @@ export default function App() {
               notify={notify}
               onProduced={refreshItems}
               onSendToEdit={sendToEdit}
+              send={send}
             />
           </div>
           <div style={{ display: tab === "edit" ? "block" : "none" }}>
@@ -283,13 +297,27 @@ export default function App() {
               onProduced={refreshItems}
               images={editImages}
               onImagesChange={setEditImages}
+              send={send}
             />
           </div>
           <div style={{ display: tab === "video" ? "block" : "none" }}>
-            <Video models={models} notify={notify} onProduced={refreshItems} />
+            <Video
+              models={models}
+              notify={notify}
+              onProduced={refreshItems}
+              firstFrame={videoFrame}
+              onFirstFrameChange={setVideoFrame}
+            />
           </div>
           <div style={{ display: tab === "upscale" ? "block" : "none" }}>
-            <Upscale models={models} notify={notify} onProduced={refreshItems} />
+            <Upscale
+              models={models}
+              notify={notify}
+              onProduced={refreshItems}
+              images={upscaleImage}
+              onImagesChange={setUpscaleImage}
+              send={send}
+            />
           </div>
           {tab === "models" && (
             <Models models={models} host={host} onChanged={refreshModels} notify={notify} />
@@ -299,7 +327,8 @@ export default function App() {
               items={items}
               onChanged={refreshItems}
               notify={notify}
-              onSendToEdit={sendToEdit}
+              send={send}
+              models={models}
             />
           )}
           {tab === "activity" && <Activity notify={notify} />}

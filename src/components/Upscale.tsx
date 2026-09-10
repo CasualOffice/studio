@@ -2,13 +2,17 @@ import { useMemo, useState } from "react";
 import { api, errText, newJobId, onEngineProgress, vaultUrl } from "../lib/api";
 import type { EngineProgress, ModelStatus } from "../lib/types";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
+import SendTo, { type Destination } from "./SendTo";
 
 export default function Upscale({
-  models, notify, onProduced,
+  models, notify, onProduced, images: controlledImages, onImagesChange, send,
 }: {
   models: ModelStatus[];
   notify: (m: string, bad?: boolean) => void;
   onProduced: () => void;
+  images?: string[];
+  onImagesChange?: (ids: string[]) => void;
+  send?: (dest: Destination, ids: string[]) => void;
 }) {
   const usable = useMemo(
     () => models.filter((m) => m.installed && m.fit !== "too_much_memory"
@@ -16,7 +20,9 @@ export default function Upscale({
     [models]
   );
   const [modelId, setModelId] = useState("");
-  const [images, setImages] = useState<string[]>([]);
+  const [localImages, setLocalImages] = useState<string[]>([]);
+  const images = controlledImages ?? localImages;
+  const setImages = onImagesChange ?? setLocalImages;
   const [resolution, setResolution] = useState("2x");
   const [lowRam, setLowRam] = useState(true);
   const [running, setRunning] = useState(false);
@@ -140,8 +146,9 @@ export default function Upscale({
         {out && (
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <button className="btn small" onClick={() => exportItem({ id: out, name: "" }, notify)}>
-              Export a copy…
+              Save a copy…
             </button>
+            {send && <SendTo ids={[out]} send={send} models={models} exclude={["upscale"]} />}
           </div>
         )}
       </div>

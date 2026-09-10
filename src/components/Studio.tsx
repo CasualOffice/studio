@@ -4,13 +4,14 @@ import type { EngineProgress, ModelStatus } from "../lib/types";
 import { autoPick, estimateSeconds, humanDuration, QUALITY_LABEL, SHAPES, stepsFor, type Quality } from "../lib/presets";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
 import MaskCanvas from "./MaskCanvas";
+import SendTo, { type Destination } from "./SendTo";
 import { loadPref, savePref } from "../lib/prefs";
 
 export type Mode = "generate" | "edit";
 
 export default function Studio({
   mode, models, notify, onProduced, images: controlledImages, onImagesChange,
-  onSendToEdit,
+  onSendToEdit, send,
 }: {
   mode: Mode;
   models: ModelStatus[];
@@ -25,6 +26,8 @@ export default function Studio({
   onImagesChange?: (ids: string[]) => void;
   /** Hand an image to the Edit tab and switch to it. */
   onSendToEdit?: (ids: string[]) => void;
+  /** Carry a result into any other tab. */
+  send?: (dest: Destination, ids: string[]) => void;
 }) {
   const wantTask = mode === "edit" ? "edit" : "text_to_image";
 
@@ -629,16 +632,28 @@ export default function Studio({
                 onClick={() => exportItem({ id: outputs[selected], name: "" }, notify)}>
                 Save a copy…
               </button>
-              {mode === "generate" && onSendToEdit && (
+              {/* Carry the result onward. It is already a vault item, so this
+                  is just passing an id -- no export, no re-import. */}
+              {mode === "edit" && (
                 <button
-                  className="btn small"
-                  // The result is already a vault item, so hand the id to the
-                  // Edit tab directly. Writing to this component's own state
-                  // put it in the wrong instance and looked like a no-op.
-                  onClick={() => onSendToEdit([outputs[selected]])}
+                  className="btn small primary"
+                  title="Use this result as the new source and keep going"
+                  onClick={() => {
+                    setImages([outputs[selected]]);
+                    setOutputs([]);
+                    notify("Now editing the result.");
+                  }}
                 >
-                  Edit this
+                  Keep editing this
                 </button>
+              )}
+              {send && (
+                <SendTo
+                  ids={[outputs[selected]]}
+                  send={send}
+                  models={models}
+                  exclude={mode === "edit" ? ["edit"] : []}
+                />
               )}
               {took != null && (
                 <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-faint)" }}>

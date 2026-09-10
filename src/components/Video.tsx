@@ -14,11 +14,14 @@ const SIZES: [string, number, number][] = [
 ];
 
 export default function Video({
-  models, notify, onProduced,
+  models, notify, onProduced, firstFrame: controlledFrame, onFirstFrameChange,
 }: {
   models: ModelStatus[];
   notify: (m: string, bad?: boolean) => void;
   onProduced: () => void;
+  /** A picture carried in from another tab, to animate. */
+  firstFrame?: string[];
+  onFirstFrameChange?: (ids: string[]) => void;
 }) {
   const usable = useMemo(
     () => models.filter(
@@ -40,7 +43,9 @@ export default function Video({
   const [steps, setSteps] = useState(20);
   const [seed, setSeed] = useState(0);
   const [randomSeed, setRandomSeed] = useState(true);
-  const [firstFrame, setFirstFrame] = useState<string[]>([]);
+  const [localFrame, setLocalFrame] = useState<string[]>([]);
+  const firstFrame = controlledFrame ?? localFrame;
+  const setFirstFrame = onFirstFrameChange ?? setLocalFrame;
 
   const [running, setRunning] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -140,8 +145,9 @@ export default function Video({
               onError={(m) => notify(m, true)}
             />
             <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5 }}>
-              With a picture the clip animates it. Without one it is made from
-              the description alone.
+              {controlledFrame && controlledFrame.length > 0
+                ? "Carried over from another tab. This picture becomes the first frame."
+                : "With a picture the clip animates it. Without one it is made from the description alone."}
             </div>
           </div>
 
