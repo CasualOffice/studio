@@ -845,7 +845,67 @@ def _load_assistant(req_id: str, repo: str) -> tuple[Any, Any, Any]:
     return model, processor, config
 
 
+# The writer is a text model, separate from the one that looks at pictures.
+# A 2B vision-language model was doing both, and it could not hold a rule
+# while writing: asked to make a request precise without inventing anything,
+# it answered "make it look better" with a painting in a dark room. Reading a
+# picture and writing careful prose are different jobs, so they are now
+# different models -- and the writer answers in about two seconds rather than
+# twenty.
+_WRITER: dict[str, Any] = {"key": None, "model": None, "tokenizer": None}
+
+WRITER_REPO = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
+
+
+def _load_writer(req_id: str, repo: str | None = None) -> tuple[Any, Any]:
+    repo = repo or WRITER_REPO
+    if _WRITER["key"] == repo and _WRITER["model"] is not None:
+        return _WRITER["model"], _WRITER["tokenizer"]
+
+    if CACHE.loaded is not None:
+        log(req_id, f"releasing {CACHE.label} to make room for the writer")
+        CACHE.unload()
+
+    from mlx_lm import load as lm_load
+
+    emit({"id": req_id, "type": "progress", "phase": "load", "progress": 0.0,
+          "message": "Loading the prompt writer"})
+    model, tokenizer = lm_load(repo)
+    _WRITER.update(key=repo, model=model, tokenizer=tokenizer)
+    log(req_id, f"writer {repo} ready")
+    return model, tokenizer
+
+
+def _write(req_id: str, system: str, user: str, max_tokens: int = 160,
+           temperature: float = 0.3, repo: str | None = None) -> str:
+    """One turn with the writer."""
+    from mlx_lm import generate as lm_generate
+    from mlx_lm.sample_utils import make_sampler
+
+    model, tokenizer = _load_writer(req_id, repo)
+    prompt = tokenizer.apply_chat_template(
+        [{"role": "system", "content": system},
+         {"role": "user", "content": user}],
+        add_generation_prompt=True,
+    )
+    out = lm_generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens,
+                      sampler=make_sampler(temp=temperature), verbose=False)
+    return out if isinstance(out, str) else str(out)
+
+
+def _unload_writer() -> None:
+    _WRITER.update(key=None, model=None, tokenizer=None)
+    gc.collect()
+    try:
+        import mlx.core as mx
+
+        mx.clear_cache()
+    except Exception:
+        pass
+
+
 def _unload_assistant() -> None:
+    _unload_writer()
     _ASSIST.update(key=None, model=None, processor=None, config=None)
     gc.collect()
     try:
@@ -884,27 +944,31 @@ SCENE_SYSTEM = (
 # Slots rather than free writing, because a 2B model asked for "a vivid prompt"
 # produces adjective soup. Asked what the light is doing, it answers.
 SCENE_DIRECTION_SYSTEM = (
-    "You are directing a photograph or illustration from a short idea.\n"
-    "Answer as labelled lines and nothing else. Each is a phrase, not a "
-    "sentence.\n"
-    "Be concrete. Name things. Never write 'beautiful', 'stunning', "
-    "'high quality', '8k' or 'masterpiece' -- they carry no visual "
-    "information.\n"
-    "If the idea does not imply a slot, write: skip\n\n"
-    "SUBJECT: the main thing, with its material, colour and condition\n"
-    "ACTION: what it is doing or how it is arranged\n"
-    "SETTING: what it rests on and what is behind it\n"
-    "LIGHT: the source, its direction, and whether it is warm or cool\n"
-    "CAMERA: shot size, lens, and depth of field\n"
-    "MOOD: the overall feeling, in two or three words\n\n"
-    "Example\n"
-    "User idea: a cat\n"
-    "SUBJECT: a tabby cat with dense grey-brown fur\n"
-    "ACTION: curled tight with its tail over its nose\n"
-    "SETTING: a painted wooden windowsill, bare garden beyond the glass\n"
-    "LIGHT: low afternoon sun from the left, warm and raking\n"
-    "CAMERA: close shot, 50mm, shallow depth of field\n"
-    "MOOD: quiet and drowsy\n"
+    "You make an image request precise. You do not invent a scene.\n\n"
+    "Rules, in order of importance:\n"
+    "1. Never introduce a thing the request does not already contain. No new "
+    "objects, no new people, no new places. If the request says 'a cat on a "
+    "chair', there is no book, no window and no rug.\n"
+    "2. Keep every thing the request does name, and keep what it says about "
+    "them.\n"
+    "3. Your only job is to make what is already there specific: give it "
+    "material, colour, texture, age, scale. 'a chair' may become 'a worn oak "
+    "chair'. It may not become 'a chair beside a fireplace'.\n"
+    "4. Never write 'beautiful', 'stunning', 'high quality', '8k', "
+    "'cinematic' or 'masterpiece'. They describe nothing.\n"
+    "5. If the request names no thing at all -- 'make it better', 'something "
+    "nice' -- you cannot make it precise. Reply with exactly: UNCLEAR\n\n"
+    "Reply with the rewritten request on one line and nothing else.\n\n"
+    "Examples\n"
+    "Request: a cat on a chair\n"
+    "a tabby cat with dense grey-brown fur, curled on a worn oak chair\n\n"
+    "Request: a woman walking in the rain at night\n"
+    "a woman in a rain-soaked overcoat walking at night, hair flat with wet, "
+    "the road black and reflective under the rain\n\n"
+    "Request: make it look better\n"
+    "UNCLEAR\n\n"
+    "Request: a red car\n"
+    "a red car with sun-faded paint and a dented wing, standing still\n"
 )
 
 
@@ -914,31 +978,24 @@ SCENE_DIRECTION_SYSTEM = (
 # both have to be gradual -- these models cover a second or two, so anything
 # that reads like a cut or a fast pan comes out as a smear.
 MOTION_DIRECTION_SYSTEM = (
-    "You are directing a short video clip, one or two seconds long, from a "
-    "brief idea.\n"
-    "Answer as labelled lines and nothing else. Each is a phrase, not a "
-    "sentence.\n"
-    "Describe only what a camera could record in that time. No cuts, no scene "
-    "changes, no dialogue, no story.\n"
-    "Motion must be gradual: drifting, settling, rising, swaying. Never "
-    "'suddenly', 'quickly' or 'explodes'.\n"
-    "Never write 'cinematic', 'stunning', 'high quality', '4k' or "
-    "'masterpiece' -- they carry no visual information.\n"
-    "If the idea does not imply a slot, write: skip\n\n"
-    "SUBJECT: the main thing, with its material, colour and condition\n"
-    "MOTION: how the subject moves during the clip, slowly and continuously\n"
-    "SETTING: where it is, and what moves in the background\n"
-    "LIGHT: the source, its direction, and how it changes across the clip\n"
-    "CAMERA: the shot, and any slow move -- a gentle push in, a slight drift\n"
-    "MOOD: the overall feeling, in two or three words\n\n"
-    "Example\n"
-    "User idea: a teapot\n"
-    "SUBJECT: a glazed stoneware teapot, steam curling from the spout\n"
-    "MOTION: steam rises and thins, drifting slowly to the right\n"
-    "SETTING: a linen cloth on a kitchen table, net curtain stirring behind\n"
-    "LIGHT: soft window light from the left, steady and cool\n"
-    "CAMERA: close shot, 50mm, a very slow push in\n"
-    "MOOD: calm and unhurried\n"
+    "You make a video request precise. You do not invent a scene.\n\n"
+    "Rules, in order of importance:\n"
+    "1. Never introduce a thing the request does not already contain. No new "
+    "objects, no new people, no new places.\n"
+    "2. Keep every thing the request does name.\n"
+    "3. Make what is already there specific, and say how it moves. These "
+    "clips last a second or two, so motion is gradual: drifting, settling, "
+    "rising, swaying. Never 'suddenly', 'quickly' or 'explodes'. No cuts, no "
+    "scene changes.\n"
+    "4. Never write 'cinematic', 'stunning', 'high quality' or '4k'.\n"
+    "5. If the request names no thing at all, reply with exactly: UNCLEAR\n\n"
+    "Reply with the rewritten request on one line and nothing else.\n\n"
+    "Examples\n"
+    "Request: steam from a teapot\n"
+    "steam rising from a glazed stoneware teapot, thinning and drifting "
+    "slowly to the right\n\n"
+    "Request: make it move\n"
+    "UNCLEAR\n"
 )
 
 # Words that carry no intent, so their presence proves nothing about whether a
@@ -952,6 +1009,83 @@ _STOPWORDS = {
 # References that only make sense if you can see the picture.
 _VAGUE = ("it", "this", "that", "them", "these", "those", "the image",
           "the picture", "the photo")
+
+
+# Words that can only be attributes -- how a thing looks, not another thing.
+# A clarification is allowed to add these freely; anything else it adds is a
+# new object, which is the failure this guards against.
+_ATTRIBUTE_HINTS = (
+    "ed", "ing", "ish", "less", "en", "y",   # worn, faded, greying, reddish
+)
+
+# How much longer a clarification may reasonably be than the request. Making
+# "a cat" specific costs a few words; producing a paragraph means the model
+# stopped clarifying and started writing its own scene.
+_MAX_EXPANSION = 5
+
+# How many more things a clarification may name than the request did. Giving a
+# subject a hat and a cap is clarification; giving it a book, a window, a rug
+# and a fireplace is a different picture.
+_MAX_NEW_THINGS = 4
+
+
+def _clarified(original: str, raw: str) -> str | None:
+    """Take the model's rewrite, or reject it.
+
+    Returns None when the request names nothing that could be drawn. The old
+    version answered such requests by inventing a subject -- "make it look
+    better" produced a painting in a dark room with a large window, none of
+    which the user had asked for -- and with a T5 encoder every invented noun
+    is something the image actually contains.
+    """
+    line = ""
+    for candidate in raw.strip().splitlines():
+        candidate = candidate.strip().strip("`").strip()
+        # Models like to preface. Take the first line that is the answer.
+        if not candidate or candidate.lower().startswith(("request:", "here", "sure")):
+            continue
+        line = candidate
+        break
+    if not line:
+        return None
+    if line.strip().upper().startswith("UNCLEAR"):
+        return None
+
+    # Deliberately not trimmed to a sentence. The model was asked for one
+    # line, and that trim falls back to the last clause when there is no full
+    # stop -- which cut "a tabby cat..., curled on a worn oak chair" at the
+    # comma, deleting the chair and failing the retention check below.
+    line = line.rstrip(" .,;") + "."
+    if not _keeps_intent(original, line):
+        return None
+
+    # Every thing the request named has to still be there. `_keeps_intent` only
+    # asks whether *any* of it survived, which let "an old bicycle against a
+    # brick wall" come back as a bicycle with no wall -- the clarification
+    # quietly deleting half the request.
+    missing = [w for w in _significant(original)
+               if not any(g.startswith(w[:4]) or w.startswith(g[:4])
+                          for g in _significant(line))]
+    if missing:
+        return None
+
+    # A rewrite far longer than the request is inventing, not clarifying.
+    # The floor matters as much as the ratio: "a teapot" is one significant
+    # word, and naming its glaze, its spout and its wear is a legitimate
+    # clarification that a ratio alone would reject.
+    if len(_significant(line)) > max(24, _MAX_EXPANSION * len(_significant(original))):
+        return None
+
+    # Length alone cannot tell a described teapot from a list of furniture.
+    # Each "a ..." is another thing in the picture, so counting them catches
+    # what the ratio cannot: adding attributes keeps the count flat, while
+    # inventing objects drives it up one article at a time.
+    def things(text: str) -> int:
+        return len(re.findall(r"\b(?:a|an|the)\s+[a-z]", text.lower()))
+
+    if things(line) - things(original) > _MAX_NEW_THINGS:
+        return None
+    return line
 
 
 def _keeps_intent(original: str, rewritten: str) -> bool:
@@ -1143,6 +1277,62 @@ def _compose_edit_instruction(user_prompt: str, subject: str) -> str:
     return f"{text}, keeping everything else in the picture unchanged."
 
 
+EDIT_CLARIFY_SYSTEM = (
+    "You make an image-editing request unambiguous. You are told what the "
+    "picture contains. You use that only to say exactly which thing the "
+    "request means.\n\n"
+    "Rules, in order of importance:\n"
+    "1. Change nothing about what is being asked for. If the request says "
+    "make it red, the result is still red.\n"
+    "2. Use the observations only to replace a vague reference with a "
+    "specific one. 'the jacket' becomes 'the green field jacket' when the "
+    "picture shows a green field jacket.\n"
+    "3. Ignore every observation the request does not refer to. If the "
+    "request is about a jacket, the wall, the floor and the lighting are "
+    "irrelevant and must not appear.\n"
+    "4. Add nothing else. No new objects, no style, no mood, no camera.\n"
+    "5. End with 'leave everything else unchanged.'\n\n"
+    "Reply with the rewritten instruction on one line and nothing else.\n\n"
+    "Examples\n"
+    "Observed: subject: a green field jacket; setting: a grey wall\n"
+    "Request: make the jacket red\n"
+    "change the green field jacket to red, leave everything else unchanged.\n\n"
+    "Observed: subject: a beige ceramic teapot; surface: a linen cloth\n"
+    "Request: remove the lid\n"
+    "remove the lid from the beige ceramic teapot, leave everything else "
+    "unchanged.\n"
+)
+
+
+def _clarify_edit(req_id: str, user_prompt: str, facts: dict[str, str],
+                  writer: str | None = None) -> str:
+    """Rewrite an edit request using what the picture shows.
+
+    The picture is there to settle *which* thing is meant, and nothing more.
+    The previous version pasted every observation into a template, so "make the
+    jacket red" came back carrying the wall, the floor and the fabric weave --
+    detail the editor never needed and, worse, was now being told to preserve.
+    """
+    if not facts:
+        return _enrich_edit_instruction(user_prompt, facts)
+
+    observed = "; ".join(f"{k.lower()}: {v}" for k, v in facts.items())
+    try:
+        raw = _write(
+            req_id, EDIT_CLARIFY_SYSTEM,
+            f"Observed: {observed}\nRequest: {user_prompt}",
+            max_tokens=120, temperature=0.2, repo=writer,
+        )
+    except Exception as exc:
+        log(req_id, f"writer unavailable, composing directly: {exc}", "warn")
+        return _enrich_edit_instruction(user_prompt, facts)
+
+    line = _clarified(user_prompt, raw)
+    # A rewrite that lost the request, or that the writer refused, is worse
+    # than the plain request: the user's own words already say what they want.
+    return line or user_prompt
+
+
 def _enrich_edit_instruction(user_prompt: str, facts: dict[str, str]) -> str:
     """Deepen the request with what the picture shows, without replacing it.
 
@@ -1287,11 +1477,13 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     raw_staged = _stage_vault_inputs(req.get("vault_inputs") or [])
     staged = _downscale_for_assist(raw_staged)
     try:
-        model, processor, config = _load_assistant(req_id, repo)
-
         editing = mode == "edit" and bool(staged)
 
         def ask(text: str, images: list[str], max_tokens: int, temperature: float) -> str:
+            # Only the picture-reading path needs the vision model, and it is
+            # loaded here rather than up front so a plain text request never
+            # pays for it.
+            model, processor, config = _load_assistant(req_id, repo)
             formatted = apply_chat_template(
                 processor, config, text, num_images=len(images)
             )
@@ -1311,23 +1503,28 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             facts = _parse_scene(raw)
             description = " · ".join(f"{k.lower()}: {v}" for k, v in facts.items())
             log(req_id, f"scene: {description or 'nothing readable'}")
-            improved = _enrich_edit_instruction(user_prompt, facts)
+            improved = _clarify_edit(req_id, user_prompt, facts,
+                                     req.get("writer"))
         else:
             emit({"id": req_id, "type": "progress", "phase": "denoise",
                   "progress": None, "message": "Writing the prompt"})
             system = (MOTION_DIRECTION_SYSTEM if mode == "video"
                       else SCENE_DIRECTION_SYSTEM)
-            instruction = (
-                f"{system}\nNow do the same here.\n"
-                f"User idea: {user_prompt}\n"
-            )
-            raw = ask(instruction, [], 220, 0.4)
-            slots = _parse_scene(raw)
-            improved = (
-                _compose_scene(user_prompt, slots) if slots
-                else _enrich_idea(user_prompt, raw)
-            )
-            description = " · ".join(f"{k.lower()}: {v}" for k, v in slots.items())
+            # The writer, not the picture-reader: this is a writing task.
+            raw = _write(req_id, system, f"Request: {user_prompt}",
+                         repo=req.get("writer"))
+            improved = _clarified(user_prompt, raw)
+            description = ""
+            if improved is None:
+                # The request names nothing that could be drawn, so there is
+                # nothing to make precise. Inventing a subject to fill the gap
+                # is what made this useless before.
+                return {
+                    "prompt": user_prompt, "original": user_prompt,
+                    "saw_image": False, "unclear": True, "description": "",
+                    "note": ("This does not say what to draw yet. Name the "
+                             "thing you want and I can make it specific."),
+                }
 
         if not _keeps_intent(user_prompt, improved):
             log(req_id, f"discarding rewrite {improved!r}: it lost the request", "warn")

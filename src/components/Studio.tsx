@@ -162,11 +162,22 @@ export default function Studio({
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
     try {
       const r = await api.assistPrompt(id, prompt, mode, mode === "edit" ? images : []);
+      if (r.unclear) {
+        // Nothing was drawable in the request, so nothing was changed. Saying
+        // so beats inventing a subject to fill the gap, which is what this
+        // used to do.
+        notify(r.note ?? "Say what you want in the picture first.", true);
+        return;
+      }
+      if (r.prompt === prompt) {
+        notify("Your prompt is already specific enough to leave alone.");
+        return;
+      }
       setUndoPrompt(prompt);
       setPrompt(r.prompt);
       notify(r.saw_image
-        ? "Added detail from your picture. Your request is unchanged."
-        : "Added detail. Your idea still leads the prompt.");
+        ? "Tied your request to what is actually in the picture."
+        : "Made your prompt specific. Nothing new was invented.");
     } catch (e) {
       notify(errText(e), true);
     } finally {
@@ -409,18 +420,18 @@ export default function Studio({
               disabled={assisting || running || !prompt.trim()}
               onClick={improve}
               title={assistantReady
-                ? "Keeps your words and adds detail the model can act on"
-                : "Needs the prompt assistant from the Models tab"}
+                ? "Makes your request precise. Adds no objects you did not ask for"
+                : "Needs the prompt writer from the Models tab"}
             >
               {assisting
-                ? "Looking…"
+                ? "Thinking…"
                 : mode === "edit" && images.length > 0
-                  ? "✨ Add detail from my picture"
-                  : "✨ Add detail to my idea"}
+                  ? "✨ Make this precise, using my picture"
+                  : "✨ Make my prompt precise"}
             </button>
             {!assistantReady && (
               <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5 }}>
-                Needs the prompt assistant — a 1.5 GB download in the Models tab.
+                Needs the prompt writer — a 2.3 GB download in the Models tab.
                 It runs on this Mac; nothing is sent anywhere.
               </div>
             )}

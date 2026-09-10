@@ -374,6 +374,11 @@ pub async fn bootstrap(report: Reporter<'_>, paths: &AppPaths, force: bool) -> R
         // conflicts with MLX-Gen's <0.32 cap, but it runs correctly on 0.31.2;
         // pip will warn about the mismatch and that warning is expected.
         "mlx-vlm",
+        // The prompt writer is a text model, and text generation is a
+        // different library from vision. Keeping the two apart is deliberate:
+        // a 2B vision-language model doing both could not hold a rule while
+        // writing, and answered "make it look better" by inventing a scene.
+        "mlx-lm",
         // iPhone photos are HEIC, which Pillow cannot read on its own.
         "pillow-heif",
     ]);

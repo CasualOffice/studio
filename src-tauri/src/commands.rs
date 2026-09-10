@@ -1092,13 +1092,28 @@ pub async fn assist_prompt(
     state.require_unlocked()?;
 
     let host = HostInfo::probe(&state.paths());
-    let assistant = models::find(&state.paths(), &host, "qwen2-vl-2b-4bit")
-        .ok_or_else(|| AppError::msg("the prompt assistant is missing from the catalog"))?;
-    if !assistant.installed {
+
+    // Two different models, and which one is needed depends on the request.
+    // Writing a prompt is a text job; only reading the picture needs the
+    // vision model. Requiring both would make a plain text request wait on a
+    // download it never uses.
+    let writer = models::find(&state.paths(), &host, "qwen3-4b-instruct-4bit")
+        .ok_or_else(|| AppError::msg("the prompt writer is missing from the catalog"))?;
+    if !writer.installed {
         return Err(AppError::msg(
-            "The prompt assistant is not installed yet. Add it from the Models tab \
-             \u{2014} it is a 1.5 GiB download and runs entirely on this Mac.",
+            "The prompt writer is not installed yet. Add it from the Models tab \
+             \u{2014} it is a 2.3 GiB download and runs entirely on this Mac.",
         ));
+    }
+    if !images.is_empty() {
+        let reader = models::find(&state.paths(), &host, "qwen2-vl-2b-4bit")
+            .ok_or_else(|| AppError::msg("the prompt assistant is missing from the catalog"))?;
+        if !reader.installed {
+            return Err(AppError::msg(
+                "Reading your picture needs the prompt assistant as well. Add it \
+                 from the Models tab \u{2014} it is a 1.2 GiB download.",
+            ));
+        }
     }
 
     // Hand over per-image keys only, exactly as generation does.
@@ -1119,7 +1134,9 @@ pub async fn assist_prompt(
             &job_id,
             "assist",
             json!({
-                "assistant": assistant.repo,
+                // The reader, used only when there is a picture.
+                "assistant": "mlx-community/Qwen2-VL-2B-Instruct-4bit",
+                "writer": writer.repo,
                 "prompt": prompt,
                 "mode": mode,
                 "vault_inputs": vault_inputs,

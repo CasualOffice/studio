@@ -680,5 +680,53 @@ class MotionDirection(unittest.TestCase):
         self.assertIn("steam rises", out)
         self.assertIn("teapot", out)
 
+
+class Clarification(unittest.TestCase):
+    """Making a request precise is not the same as writing a scene.
+
+    The old enhancer was told it was "directing a photograph", so it invented
+    one: "make it look better" came back as a painting in a dark room with a
+    large window, none of which the user had asked for. With a T5 encoder
+    every invented noun is something the picture actually contains.
+    """
+
+    def test_a_request_that_names_nothing_is_refused(self):
+        self.assertIsNone(worker._clarified("make it look better", "UNCLEAR"))
+        self.assertIsNone(worker._clarified("something nice", "  unclear  "))
+
+    def test_a_dropped_subject_is_rejected(self):
+        # "an old bicycle against a brick wall" came back without the wall.
+        self.assertIsNone(worker._clarified(
+            "an old bicycle against a brick wall",
+            "an old bicycle with a rusted steel frame"))
+
+    def test_everything_named_is_kept(self):
+        out = worker._clarified(
+            "a cat on a chair",
+            "a tabby cat with dense grey-brown fur, curled on a worn oak chair")
+        self.assertIsNotNone(out)
+        self.assertIn("cat", out)
+        self.assertIn("chair", out)
+
+    def test_a_whole_invented_paragraph_is_rejected(self):
+        # Far longer than the request means it stopped clarifying.
+        bloat = ("a cat, a book, a window, a rug, a fireplace, a lamp, a vase, "
+                 "a painting, a bookshelf, a rocking chair, a cushion, a blanket, "
+                 "a teapot, a clock, a mirror, a plant, a basket, a candle")
+        self.assertIsNone(worker._clarified("a cat", bloat))
+
+    def test_a_preamble_is_skipped(self):
+        out = worker._clarified(
+            "a red car",
+            "Sure! Here is the rewrite:\na red car with sun-faded paint")
+        self.assertEqual(out, "a red car with sun-faded paint.")
+
+    def test_a_short_request_may_still_expand(self):
+        # One significant word legitimately expands; a ratio alone rejected it.
+        out = worker._clarified(
+            "a teapot",
+            "a glazed stoneware teapot with a chipped spout and crazed white glaze")
+        self.assertIsNotNone(out)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

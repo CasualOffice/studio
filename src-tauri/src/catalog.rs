@@ -64,6 +64,27 @@ pub struct ModelEntry {
 pub const CATALOG: &[ModelEntry] = &[
     // ---- Prompt assistant ------------------------------------------------
     ModelEntry {
+        id: "qwen3-4b-instruct-4bit",
+        repo: "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+        name: "Prompt writer (Qwen3 4B)",
+        family: None,
+        tasks: &[Task::Assist],
+        quantize: Some(4),
+        package_gib: 2.3,
+        peak_gib: 3.2,
+        peak_estimated: true,
+        steps_default: 0,
+        max_edit_images: 0,
+        video_from_image: false,
+        guidance_default: 1.0,
+        guidance_max: 1.0,
+        notes: "Makes your prompt precise without inventing anything, and \
+                turns a story into a shot list. Answers in about two seconds. \
+                Runs entirely on this Mac — nothing is sent anywhere.",
+        broken: None,
+        backend: None,
+    },
+    ModelEntry {
         id: "qwen2-vl-2b-4bit",
         repo: "mlx-community/Qwen2-VL-2B-Instruct-4bit",
         name: "Prompt assistant (Qwen2-VL 2B)",
@@ -78,9 +99,9 @@ pub const CATALOG: &[ModelEntry] = &[
         video_from_image: false,
         guidance_default: 1.0,
         guidance_max: 1.0,
-        notes: "Rewrites your prompt, and can look at the image you are editing. \
-                Small enough to stay loaded beside an image model. Runs entirely \
-                on this Mac — nothing is sent anywhere.",
+        notes: "Reads the picture you are editing, so a request about \
+                \"the jacket\" can be tied to the jacket that is actually \
+                there. Runs entirely on this Mac — nothing is sent anywhere.",
         broken: None,
         backend: None,
     },

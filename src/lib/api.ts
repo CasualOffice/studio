@@ -62,7 +62,8 @@ export const api = {
   cancelJob: (jobId: string) => invoke<void>("cancel_job", { jobId }),
 
   assistPrompt: (jobId: string, prompt: string, mode: string, images: string[]) =>
-    invoke<{ prompt: string; original: string; saw_image: boolean }>(
+    invoke<{ prompt: string; original: string; saw_image: boolean;
+             unclear?: boolean; note?: string }>(
       "assist_prompt", { jobId, prompt, mode, images }
     ),
 

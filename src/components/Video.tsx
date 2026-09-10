@@ -70,8 +70,12 @@ export default function Video({
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
     try {
       const r = await api.assistPrompt(id, prompt, "video", []);
+      if (r.unclear) {
+        notify(r.note ?? "Say what should be in the clip first.", true);
+        return;
+      }
       setPrompt(r.prompt);
-      notify("Added motion. Your idea still leads the prompt.");
+      notify("Made your prompt specific, and said how it moves.");
     } catch (e) {
       notify(errText(e), true);
     } finally {
@@ -201,11 +205,11 @@ export default function Video({
                 ? "Keeps your words and adds the motion a video model needs"
                 : "Needs the prompt assistant from the Models tab"}
             >
-              {assisting ? "Looking…" : "\u2728 Add motion to my idea"}
+              {assisting ? "Thinking…" : "\u2728 Make my prompt precise"}
             </button>
             {!assistantReady && (
               <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5 }}>
-                Needs the prompt assistant — a 1.5 GB download in the Models tab.
+                Needs the prompt writer — a 2.3 GB download in the Models tab.
                 It runs on this Mac; nothing is sent anywhere.
               </div>
             )}
