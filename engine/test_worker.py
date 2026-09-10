@@ -598,5 +598,50 @@ class Clarification(unittest.TestCase):
             "a glazed stoneware teapot with a chipped spout and crazed white glaze")
         self.assertIsNotNone(out)
 
+
+class ShotListParsing(unittest.TestCase):
+    """Getting the panels back out of whatever the writer decided to say.
+
+    Models fence JSON in backticks and preface it with a sentence however
+    firmly they are told not to, so the array is located rather than assumed.
+    """
+
+    GOOD = ('[{"shot":"wide","subject":"Mira","action":"stands in the hallway",'
+            '"setting":"a flat"},'
+            '{"shot":"close-up","subject":"a tap","action":"water running",'
+            '"setting":"the kitchen"}]')
+
+    def test_a_bare_array_parses(self):
+        panels = worker._parse_shotlist(self.GOOD, 2)
+        self.assertEqual(len(panels), 2)
+        self.assertEqual(panels[0]["shot"], "wide")
+        self.assertEqual(panels[1]["setting"], "the kitchen")
+
+    def test_a_fenced_array_parses(self):
+        panels = worker._parse_shotlist(f"```json\n{self.GOOD}\n```", 2)
+        self.assertEqual(len(panels), 2)
+
+    def test_a_preface_is_ignored(self):
+        panels = worker._parse_shotlist(
+            f"Sure! Here are the panels:\n{self.GOOD}\nLet me know!", 2)
+        self.assertEqual(len(panels), 2)
+
+    def test_extra_panels_are_trimmed_to_what_was_asked(self):
+        panels = worker._parse_shotlist(self.GOOD, 1)
+        self.assertEqual(len(panels), 1)
+
+    def test_an_unknown_shot_size_falls_back(self):
+        panels = worker._parse_shotlist(
+            '[{"shot":"dutch angle","subject":"x","action":"y","setting":"z"}]', 1)
+        self.assertEqual(panels[0]["shot"], "medium")
+
+    def test_prose_with_no_array_is_an_error(self):
+        with self.assertRaises(ValueError):
+            worker._parse_shotlist("I cannot do that.", 4)
+
+    def test_an_empty_array_is_an_error(self):
+        with self.assertRaises(ValueError):
+            worker._parse_shotlist("[]", 4)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

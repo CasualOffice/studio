@@ -1429,6 +1429,43 @@ mod tests {
     }
 }
 
+/// Break a story into an ordered list of panels.
+///
+/// The first step of a picture board, and the one everything after it depends
+/// on: a bad division of the story cannot be rescued by good panels. It runs
+/// on the writer, because the smaller vision model could not hold the panel
+/// count or cover the whole story.
+#[tauri::command]
+pub async fn shot_list(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+    story: String,
+    panels: u32,
+) -> Result<serde_json::Value> {
+    state.require_unlocked()?;
+
+    let host = HostInfo::probe(&state.paths());
+    let writer = models::find(&state.paths(), &host, "qwen3-4b-instruct-4bit")
+        .ok_or_else(|| AppError::msg("the prompt writer is missing from the catalog"))?;
+    if !writer.installed {
+        return Err(AppError::msg(
+            "Breaking a story into panels needs the prompt writer. Add it from \
+             the Models tab \u{2014} it is a 2.1 GiB download and runs entirely \
+             on this Mac.",
+        ));
+    }
+
+    let engine = state.engine(&app).await?;
+    engine
+        .request(
+            &job_id,
+            "shotlist",
+            json!({ "story": story, "panels": panels, "writer": writer.repo }),
+        )
+        .await
+}
+
 /// Whether a Hugging Face token is stored, without ever handing it back out.
 #[tauri::command]
 pub fn hf_token_status(state: State<'_, AppState>) -> Result<serde_json::Value> {

@@ -8,15 +8,17 @@ import Studio from "./components/Studio";
 import Gallery from "./components/Gallery";
 import Upscale from "./components/Upscale";
 import Video from "./components/Video";
+import Storyboard from "./components/Storyboard";
 import Security from "./components/Security";
 import Activity from "./components/Activity";
 import { Toast } from "./components/shared";
 
-type Tab = "generate" | "edit" | "video" | "upscale" | "models" | "gallery" | "activity" | "security";
+type Tab = "generate" | "edit" | "board" | "video" | "upscale" | "models" | "gallery" | "activity" | "security";
 
 const TABS: [Tab, string, string][] = [
   ["generate", "✦", "Generate"],
   ["edit", "✎", "Edit"],
+  ["board", "▤", "Board"],
   ["video", "▷", "Video"],
   ["upscale", "⤢", "Upscale"],
   ["models", "◍", "Models"],
@@ -330,6 +332,13 @@ export default function App() {
               send={send}
               recipe={recipe?.kind === "edit" ? recipe : null}
               onRecipeUsed={() => setRecipe(null)}
+            />
+          </div>
+          <div style={{ display: tab === "board" ? "block" : "none" }}>
+            <Storyboard
+              models={models}
+              notify={notify}
+              onProduced={refreshItems}
             />
           </div>
           <div style={{ display: tab === "video" ? "block" : "none" }}>

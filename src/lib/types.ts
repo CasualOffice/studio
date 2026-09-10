@@ -234,3 +234,11 @@ export interface ResolvedLora {
   gated: boolean;
   base_model: string | null;
 }
+
+/** One frame of a picture board, as the writer divided the story. */
+export interface Panel {
+  shot: "wide" | "medium" | "close-up";
+  subject: string;
+  action: string;
+  setting: string;
+}

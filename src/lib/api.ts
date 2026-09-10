@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   EngineProgress, GenerateArgs, HostInfo, ModelStatus,
-  Lora, RepairReport, ResolvedLora, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus,
+  Lora, Panel, RepairReport, ResolvedLora, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus,
 } from "./types";
 
 /** Tauri rejects with our structured error; normalise it to a message. */
@@ -52,6 +52,10 @@ export const api = {
     quantize: number | null, family: string | null, backend: string | null
   ) => invoke<void>("add_custom_model",
                     { spec: { repo, name, tasks, bytes, quantize, family, backend } }),
+  shotList: (jobId: string, story: string, panels: number) =>
+    invoke<{ panels: Panel[]; asked: number }>(
+      "shot_list", { jobId, story, panels }
+    ),
   hfTokenStatus: () =>
     invoke<{ present: boolean; hint: string | null }>("hf_token_status"),
   setHfToken: (token: string) => invoke<void>("set_hf_token", { token }),

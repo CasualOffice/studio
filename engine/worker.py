@@ -1399,6 +1399,102 @@ def _strip_empty_modifiers(text: str) -> str:
 
 
 
+# --------------------------------------------------------------------------
+# Storyboard
+# --------------------------------------------------------------------------
+
+SHOTLIST_SYSTEM = (
+    "You are a storyboard artist. You break prose into panels a camera could "
+    "photograph.\n\n"
+    "Rules:\n"
+    "1. Never invent an event the story does not contain. You are dividing "
+    "what is there, not writing more of it.\n"
+    "2. Cover the whole story, in order, from the first beat to the last. Do "
+    "not spend every panel on the ending.\n"
+    "3. Each panel is one moment. No cuts inside a panel, no passage of time.\n"
+    "4. Vary the shot sizes. A page of close-ups reads as flat as a page of "
+    "wides.\n"
+    "5. Describe only what is visible. No thoughts, no sound, no dialogue.\n"
+)
+
+
+def _shotlist_instruction(story: str, count: int) -> str:
+    return (
+        f"Break this story into exactly {count} panels.\n\n"
+        "Reply with only a JSON array of exactly "
+        f"{count} objects, each with:\n"
+        '  "shot": one of "wide", "medium", "close-up"\n'
+        '  "subject": who or what is in frame\n'
+        '  "action": what is happening, as a short phrase\n'
+        '  "setting": where it takes place\n\n'
+        "No prose before or after the JSON.\n\n"
+        f"Story:\n{story}"
+    )
+
+
+def _parse_shotlist(raw: str, count: int) -> list[dict[str, str]]:
+    """Pull the panel array out of the model's reply.
+
+    Models fence JSON in backticks and preface it with a sentence however
+    firmly they are told not to, so the array is located rather than assumed.
+    """
+    body = raw.strip()
+    if "```" in body:
+        parts = body.split("```")
+        if len(parts) > 1:
+            body = parts[1]
+            if body.lstrip().lower().startswith("json"):
+                body = body.lstrip()[4:]
+    start, end = body.find("["), body.rfind("]")
+    if start < 0 or end <= start:
+        raise ValueError("the writer did not return a panel list")
+
+    panels = json.loads(body[start:end + 1])
+    if not isinstance(panels, list) or not panels:
+        raise ValueError("the writer returned no panels")
+
+    cleaned: list[dict[str, str]] = []
+    for p in panels[:count]:
+        if not isinstance(p, dict):
+            continue
+        shot = str(p.get("shot", "medium")).strip().lower()
+        if shot not in ("wide", "medium", "close-up"):
+            shot = "medium"
+        cleaned.append({
+            "shot": shot,
+            "subject": str(p.get("subject", "")).strip(),
+            "action": str(p.get("action", "")).strip(),
+            "setting": str(p.get("setting", "")).strip(),
+        })
+    if not cleaned:
+        raise ValueError("the writer returned no usable panels")
+    return cleaned
+
+
+def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
+    """Turn a story into an ordered list of panels.
+
+    The riskiest step in the picture-board pipeline, because everything after
+    it is only as good as the division of the story. A 2B vision-language
+    model could not do it -- asked for four panels it returned one, and
+    skipped most of the story -- so this runs on the writer.
+    """
+    story = (req.get("story") or "").strip()
+    if not story:
+        raise ValueError("write the story first, then break it into panels")
+
+    count = max(2, min(int(req.get("panels", 6)), 24))
+    emit({"id": req_id, "type": "progress", "phase": "denoise",
+          "progress": None, "message": f"Breaking the story into {count} panels"})
+
+    raw = _write(req_id, SHOTLIST_SYSTEM, _shotlist_instruction(story, count),
+                 max_tokens=180 * count, temperature=0.3, repo=req.get("writer"))
+    panels = _parse_shotlist(raw, count)
+    if len(panels) < count:
+        log(req_id, f"asked for {count} panels, got {len(panels)}", "warn")
+    return {"panels": panels, "asked": count}
+
+
 def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     """Rewrite a prompt, optionally looking at the image being edited."""
     from mlx_vlm import generate as vlm_generate
@@ -2718,6 +2814,7 @@ OPS = {
     "video": op_video,
     "unload": op_unload,
     "assist": op_assist,
+    "shotlist": op_shotlist,
     "unload_assistant": op_unload_assistant,
     "set_memory": op_set_memory,
 }
