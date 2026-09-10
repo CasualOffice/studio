@@ -630,36 +630,21 @@ GENERATE_SYSTEM = (
     "- Keep every subject, object and detail they mentioned.\n"
     "- Add concrete visuals: lighting, materials, colour, framing, mood.\n"
     "- Never add text, logos or watermarks.\n"
-    "- Output only the prompt. No preamble, no quotes, under 60 words.\n\n"
+    "- Output one sentence, ending with a full stop. Under 45 words.\n\n"
     "Example\n"
     "User idea: a cat\n"
     "You write: a tabby cat curled on a windowsill in low afternoon sun, warm "
-    "rim light through dusty glass, shallow depth of field, soft muted colours\n"
+    "rim light through dusty glass, shallow depth of field, soft muted colours.\n"
 )
 
-DESCRIBE_SYSTEM = (
-    "Describe this picture for someone who cannot see it.\n"
-    "Name the main subject and its colour and material, then the surface it "
-    "sits on, the background, and the lighting.\n"
-    "Be factual. Do not guess at anything you cannot see. Do not give opinions.\n"
-    "One or two sentences, under 50 words."
-)
-
-EDIT_SYSTEM = (
-    "You rewrite an edit request into a precise instruction for an image "
-    "editor that changes one thing and leaves the rest alone.\n"
-    "You are given a description of a picture and the change someone wants.\n"
+# For edits the model is asked one narrow question and nothing more.
+SUBJECT_SYSTEM = (
+    "Name the main subject of this picture as a short noun phrase.\n"
     "Rules:\n"
-    "- Their requested change is the ONLY change. Never replace it with a "
-    "different edit, and never add edits they did not ask for.\n"
-    "- Use the description to name the specific thing their request refers to.\n"
-    "- Say what must stay unchanged.\n"
-    "- Output only the instruction. No preamble, no quotes, under 40 words.\n\n"
-    "Example\n"
-    "Picture shows: a woman in a green jacket standing on a street\n"
-    "User asks: make it red\n"
-    "You write: change the woman's green jacket to red, keeping her pose, face, "
-    "and the street background exactly as they are\n"
+    "- Two to five words. No sentence, no punctuation, no description.\n"
+    "- Say what the thing is, with its colour or material if obvious.\n\n"
+    "Examples: a beige ceramic teapot / a woman in a green jacket / "
+    "a red sports car\n"
 )
 
 # Words that carry no intent, so their presence proves nothing about whether a
@@ -670,15 +655,13 @@ _STOPWORDS = {
     "my", "me", "i", "want", "add", "more", "less", "very", "some", "all",
 }
 
+# References that only make sense if you can see the picture.
+_VAGUE = ("it", "this", "that", "them", "these", "those", "the image",
+          "the picture", "the photo")
+
 
 def _keeps_intent(original: str, rewritten: str) -> bool:
-    """Reject a rewrite that dropped everything the user actually asked for.
-
-    A small model handed an image will sometimes describe the picture instead
-    of following the instruction -- turning "make it blue" into "remove the
-    background". Silently doing a different edit is worse than doing none, so
-    a rewrite must carry over at least one meaningful word.
-    """
+    """A rewrite that loses the request is worse than no rewrite."""
     def words(text: str) -> set[str]:
         cleaned = "".join(c.lower() if c.isalnum() else " " for c in text)
         return {w for w in cleaned.split() if len(w) > 2 and w not in _STOPWORDS}
@@ -687,18 +670,45 @@ def _keeps_intent(original: str, rewritten: str) -> bool:
     if not wanted:
         return True
     got = words(rewritten)
-    # Prefixes catch simple inflections: "blue" vs "bluish", "cat" vs "cats".
     return any(any(w.startswith(g[:4]) or g.startswith(w[:4]) for g in got) for w in wanted)
+
+
+def _trim_to_sentence(text: str, max_words: int = 55) -> str:
+    """Cut back to the last complete sentence.
+
+    A token limit lands wherever it lands, so the model regularly stops
+    mid-clause. Handing the generator "...warm rim light throug" is worse than
+    handing it one shorter finished sentence, and the same limit also means the
+    stated word count is routinely ignored.
+    """
+    text = text.strip()
+    if not text:
+        return text
+
+    words = text.split()
+    if len(words) > max_words:
+        text = " ".join(words[:max_words])
+
+    if text.endswith((".", "!", "?")):
+        return text
+    cut = max(text.rfind("."), text.rfind("!"), text.rfind("?"))
+    if cut > 20:
+        return text[: cut + 1]
+    # No sentence break to fall back on: end at the last clause instead of
+    # leaving a dangling half-word.
+    comma = text.rfind(",")
+    if comma > 20:
+        return text[:comma] + "."
+    return text.rstrip(" ,;:-") + "."
 
 
 def _clean_assist(text: str, fallback: str) -> str:
     """Trim the chatter models add around a rewritten prompt."""
     out = (text or "").strip()
     for marker in ("Prompt:", "prompt:", "Instruction:", "instruction:",
-                   "You write:", "Answer:", "Output:"):
+                   "You write:", "Answer:", "Output:", "Subject:"):
         if out.startswith(marker):
             out = out[len(marker):].strip()
-    # Models often wrap the whole answer in quotes.
     if len(out) > 1 and out[0] in "\"'" and out[-1] == out[0]:
         out = out[1:-1].strip()
     for sep in ("\n\n", "\nNote:", "\nThis "):
@@ -710,7 +720,7 @@ def _clean_assist(text: str, fallback: str) -> str:
 # Longest edge handed to the vision model. Qwen2-VL uses dynamic resolution,
 # so cost scales with pixel count and does so brutally: measured on an M4,
 # 384px took 1.5s, 1024px 7.6s and 2048px 58.4s. A phone photo would stall for
-# minutes. 512px is ample for naming a subject and its surroundings.
+# minutes. 512px is ample for naming a subject.
 ASSIST_MAX_EDGE = 512
 
 
@@ -718,29 +728,92 @@ def _downscale_for_assist(paths: list[str]) -> list[str]:
     """Shrink staged images before the vision model sees them."""
     if not paths:
         return []
-    import io
-
     from PIL import Image
 
     out = []
     for p in paths:
         try:
-            img = Image.open(p)
-            if max(img.size) <= ASSIST_MAX_EDGE:
-                out.append(p)
-                continue
-            scale = ASSIST_MAX_EDGE / max(img.size)
-            small = img.convert("RGB").resize(
-                (max(1, int(img.width * scale)), max(1, int(img.height * scale))),
-                Image.LANCZOS,
-            )
-            dest = f"{p}.small.png"
-            small.save(dest, format="PNG")
+            with Image.open(p) as img:
+                if max(img.size) <= ASSIST_MAX_EDGE:
+                    out.append(p)
+                    continue
+                scale = ASSIST_MAX_EDGE / max(img.size)
+                small = img.convert("RGB").resize(
+                    (max(1, int(img.width * scale)), max(1, int(img.height * scale))),
+                    Image.LANCZOS,
+                )
+                dest = f"{p}.small.png"
+                small.save(dest, format="PNG")
             out.append(dest)
         except Exception:
             # A resize failure should not block the rewrite entirely.
             out.append(p)
     return out
+
+
+def _collapse_repetition(text: str) -> str:
+    """Cut a prompt short where a small model starts looping.
+
+    Asked for one vivid sentence, a 2B model will sometimes latch onto a phrase
+    and repeat it: "a sleek black cat, sleek and smooth, ... sleek black
+    curtains, sleek black blinds". The repetition adds nothing and crowds out
+    the actual subject, so the prompt is cut at the point it starts.
+    """
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    seen: set[str] = set()
+    kept: list[str] = []
+    for part in parts:
+        # Compare on content words, so "sleek black cat" and "sleek black
+        # curtains" are different but a verbatim repeat is caught.
+        key = " ".join(sorted(w.lower().strip(".") for w in part.split()))
+        if key in seen:
+            break
+        seen.add(key)
+        kept.append(part)
+
+        # Two consecutive clauses sharing every significant word is a loop.
+        if len(kept) >= 3:
+            a, b = set(kept[-1].lower().split()), set(kept[-2].lower().split())
+            if a and b and len(a & b) >= max(len(a), len(b)) - 1:
+                kept.pop()
+                break
+
+    out = ", ".join(kept)
+    return out if out.endswith((".", "!", "?")) else out.rstrip(" ,;:") + "."
+
+
+def _compose_edit_instruction(user_prompt: str, subject: str) -> str:
+    """Build the edit instruction from the user's own words.
+
+    Deliberately not a rewrite. Asking a small model to restate an instruction
+    after showing it a picture meant it mixed the picture's details into the
+    request and sometimes replaced the request altogether -- "make it blue"
+    came back as "remove the background". The model is now asked only what the
+    subject is; the sentence is assembled here, so the user's wording survives
+    literally and their intent cannot be substituted.
+    """
+    text = user_prompt.strip().rstrip(".")
+    if not text:
+        return text
+    if not subject:
+        return f"{text}, keeping everything else in the picture unchanged."
+
+    # Replace the first standalone pronoun with what the picture actually
+    # shows. Word boundaries matter: a naive search matches inside "it" in
+    # "white", and index arithmetic across a padded copy silently shifts by one.
+    pronoun = re.compile(r"\b(it|this|that|them|these|those)\b", re.IGNORECASE)
+    if pronoun.search(text):
+        text = pronoun.sub(subject, text, count=1)
+    else:
+        # No pronoun to resolve. Name the subject only when the request does
+        # not already say what it applies to.
+        significant = [w.lower() for w in subject.split() if len(w) > 3]
+        if not any(w in text.lower() for w in significant):
+            text = f"{text} on {subject}"
+
+    # Collapse any double spaces the substitution introduced.
+    text = " ".join(text.split())
+    return f"{text}, keeping everything else in the picture unchanged."
 
 
 def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
@@ -773,33 +846,29 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
 
         description = ""
         if editing:
-            # Stage one: look. Asking a 2B model to see and rewrite in one shot
-            # made it describe the picture instead of following the request;
-            # separating the two gives each step a single job.
+            # One narrow question: what is this? The instruction itself is
+            # composed from the user's words, not written by the model.
             emit({"id": req_id, "type": "progress", "phase": "denoise",
                   "progress": None, "message": "Looking at your picture"})
-            description = _clean_assist(ask(DESCRIBE_SYSTEM, staged, 90, 0.2), "")
-            log(req_id, f"saw: {description[:110]}")
-
-        emit({"id": req_id, "type": "progress", "phase": "denoise",
-              "progress": None, "message": "Writing the prompt"})
-
-        if editing:
-            # Stage two is text-only: the description already carries the image.
-            instruction = (
-                f"{EDIT_SYSTEM}\nNow do the same here.\n"
-                f"Picture shows: {description}\n"
-                f"User asks: {user_prompt}\nYou write:"
-            )
-            text = ask(instruction, [], 110, 0.2)
+            subject = _clean_assist(ask(SUBJECT_SYSTEM, staged, 24, 0.1), "")
+            # Guard against a model that answers with a paragraph anyway.
+            subject = " ".join(subject.replace("\n", " ").split()[:6]).strip(" .,")
+            description = subject
+            log(req_id, f"subject: {subject!r}")
+            improved = _compose_edit_instruction(user_prompt, subject)
         else:
+            emit({"id": req_id, "type": "progress", "phase": "denoise",
+                  "progress": None, "message": "Writing the prompt"})
             instruction = (
                 f"{GENERATE_SYSTEM}\nNow do the same here.\n"
                 f"User idea: {user_prompt}\nYou write:"
             )
-            text = ask(instruction, [], 130, 0.4)
-
-        improved = _clean_assist(text, user_prompt)
+            # Room to finish a sentence; the trim enforces the length.
+            improved = _trim_to_sentence(
+                _collapse_repetition(
+                    _clean_assist(ask(instruction, [], 220, 0.4), user_prompt)
+                )
+            )
 
         if not _keeps_intent(user_prompt, improved):
             log(req_id, f"discarding rewrite {improved!r}: it lost the request", "warn")
@@ -1071,6 +1140,162 @@ def _split_gen_kwargs(req: dict[str, Any]) -> tuple[dict[str, Any], dict[str, An
     return collect(_REQUIRED_KW), collect(_OPTIONAL_KW)
 
 
+
+# --------------------------------------------------------------------------
+# Live previews
+# --------------------------------------------------------------------------
+
+# Longest edge of a preview frame. Small on purpose: these are sent once per
+# denoise step over the same JSON Lines channel as everything else, and the
+# point is to show the picture taking shape, not to be the picture.
+PREVIEW_MAX_EDGE = 320
+PREVIEW_QUALITY = 62
+
+
+def _resolve_latent_creator(model: Any) -> Any:
+    """Find the latent unpacker for whichever family this model belongs to.
+
+    Unpacking is per-family and the model does not carry a reference to it, so
+    it is resolved from the model's own module path: a class living under
+    `mflux.models.<family>.variants...` pairs with a creator under
+    `mflux.models.<family>.latent_creator`.
+    """
+    import importlib
+    import inspect
+    import pkgutil
+
+    parts = type(model).__module__.split(".")
+    if len(parts) < 3 or parts[0] != "mflux" or parts[1] != "models":
+        return None
+    family = parts[2]
+
+    try:
+        pkg = importlib.import_module(f"mflux.models.{family}.latent_creator")
+    except Exception:
+        return None
+
+    modules = [pkg]
+    for info in getattr(pkg, "__path__", []) and pkgutil.iter_modules(pkg.__path__) or []:
+        try:
+            modules.append(importlib.import_module(
+                f"mflux.models.{family}.latent_creator.{info.name}"))
+        except Exception:
+            continue
+
+    for mod in modules:
+        for _, obj in inspect.getmembers(mod, inspect.isclass):
+            if hasattr(obj, "unpack_latents"):
+                return obj
+    return None
+
+
+def _attach_live_preview(req_id: str, loaded: Any) -> Any:
+    """Emit a JPEG of the partial image after each denoise step.
+
+    MLX-Gen can decode a step's latents through a published tiny autoencoder
+    for the same latent space, far cheaper than the full VAE. Without this a
+    hundred-second generation is a progress bar and nothing else; with it you
+    can see whether the composition is going anywhere and stop early if not.
+
+    Mirrors MLX-Gen's own StepwiseHandler rather than the documentation's
+    example, which references a `LatentCreator.unpack_latents` that no longer
+    exists -- following the docs produced a handler that ran every step and
+    silently failed on every one.
+    """
+    import base64
+    import io
+
+    try:
+        from mflux.models.common.preview.preview_decoder import PreviewDecoder
+        from mflux.utils.image_util import ImageUtil
+    except Exception as exc:
+        log(req_id, f"live preview unavailable: {exc}", "warn")
+        return None
+
+    target = getattr(loaded, "model", loaded)
+    creator = _resolve_latent_creator(target)
+    if creator is None:
+        log(req_id, "no latent unpacker for this family; preview disabled", "warn")
+        return None
+
+    try:
+        # Resolving once, before the loop, keeps each step cheap.
+        decoder = PreviewDecoder.resolve(target, mode="auto")
+    except Exception as exc:
+        log(req_id, f"no preview decoder: {exc}", "warn")
+        decoder = None
+
+    state = {"failed": False}
+
+    class LivePreview:
+        def call_in_loop(self, t, seed, prompt, latents, config, time_steps):
+            if state["failed"]:
+                return
+            try:
+                unpacked = creator.unpack_latents(
+                    latents=latents, height=config.height, width=config.width
+                )
+                vae = getattr(target, "vae", None)
+                if decoder is not None:
+                    decoded = decoder.decode(unpacked, vae=vae)
+                elif hasattr(vae, "decode_packed_latents"):
+                    decoded = vae.decode_packed_latents(unpacked)
+                else:
+                    decoded = vae.decode(unpacked)
+
+                img = ImageUtil.to_pil_image(decoded)
+                if max(img.size) > PREVIEW_MAX_EDGE:
+                    scale = PREVIEW_MAX_EDGE / max(img.size)
+                    img = img.resize(
+                        (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+                    )
+                buf = io.BytesIO()
+                img.convert("RGB").save(buf, format="JPEG", quality=PREVIEW_QUALITY)
+                emit({
+                    "id": req_id,
+                    "type": "preview",
+                    "step": (t + 1) if isinstance(t, int) else None,
+                    "total_steps": getattr(config, "num_inference_steps", None),
+                    "jpeg": base64.b64encode(buf.getvalue()).decode("ascii"),
+                })
+            except Exception as exc:
+                # Report once, then stay quiet: a preview is a convenience and
+                # must never interrupt or spam a generation. Reporting at all
+                # matters, though -- silently swallowing this is what hid a
+                # broken handler behind an empty canvas.
+                state["failed"] = True
+                log(req_id, f"preview disabled after an error: {exc}", "warn")
+
+    handler = LivePreview()
+    try:
+        target.callbacks.register(handler)
+    except Exception as exc:
+        log(req_id, f"could not register preview: {exc}", "warn")
+        return None
+    return handler
+
+
+def _detach_live_preview(loaded: Any, handler: Any) -> None:
+    if handler is None:
+        return
+    target = getattr(loaded, "model", loaded)
+    cb = getattr(target, "callbacks", None)
+    for attr in ("unregister", "remove"):
+        fn = getattr(cb, attr, None)
+        if callable(fn):
+            try:
+                fn(handler)
+                return
+            except Exception:
+                pass
+    # No removal API: drop it from whichever list holds it, so a later run in
+    # the same process does not keep emitting into a finished job.
+    for name in ("in_loop_callbacks", "callbacks"):
+        lst = getattr(cb, name, None)
+        if isinstance(lst, list) and handler in lst:
+            lst.remove(handler)
+
+
 def _run_generation(req_id: str, req: dict[str, Any], task: str,
                     image_count: int) -> dict[str, Any]:
     model = req["model"]
@@ -1157,6 +1382,7 @@ def _generate_inner(req_id, req, task, loaded, gen_kw, optional_kw, slots,
         optional_kw["image_path"] = images[0] if len(images) == 1 else list(images)
 
     unsubscribe = _subscribe(req_id, loaded, task)
+    preview = _attach_live_preview(req_id, loaded) if req.get("preview", True) else None
     base: dict[str, Any] = {
         "seeds": list(seeds),
         "progress_callback": _make_progress_handler(req_id),
@@ -1189,6 +1415,7 @@ def _generate_inner(req_id, req, task, loaded, gen_kw, optional_kw, slots,
         )
     finally:
         unsubscribe()
+        _detach_live_preview(loaded, preview)
         if low_ram:
             # Do not leave several GiB of weights resident after a run that
             # was requested specifically because memory is scarce.

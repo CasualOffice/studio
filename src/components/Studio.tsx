@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, errText, fmtDuration, newJobId, onEngineProgress, vaultUrl } from "../lib/api";
+import { api, errText, fmtDuration, newJobId, onEnginePreview, onEngineProgress, vaultUrl } from "../lib/api";
 import type { EngineProgress, ModelStatus } from "../lib/types";
 import { autoPick, estimateSeconds, humanDuration, QUALITY_LABEL, SHAPES, stepsFor, type Quality } from "../lib/presets";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
@@ -88,6 +88,9 @@ export default function Studio({
   // Which model the engine currently holds, so a warm run is not quoted the
   // cold-start penalty.
   const [residentModel, setResidentModel] = useState<string | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [showPreview, setShowPreview] = useState(() => loadPref("preview", true));
+  useEffect(() => { savePref("preview", showPreview); }, [showPreview]);
 
   // A visible counter during the wait, so a long run never looks like a hang.
   useEffect(() => {
@@ -165,7 +168,11 @@ export default function Studio({
     const effectiveSeed = randomSeed ? Math.floor(Math.random() * 2_000_000_000) : seed;
     setRunning(true); setJobId(id); setProg(null); setTook(null);
 
+    setPreview(null);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
+    const unPrev = await onEnginePreview((f) => {
+      if (f.jobId === id) setPreview(f.src);
+    });
     const t0 = performance.now();
     try {
       // A painted mask is stored like any other content, then referenced by id.
@@ -194,6 +201,7 @@ export default function Studio({
         image_strength: mode === "edit" && i2iMode === "latent" ? strength : null,
         i2i_mode: mode === "edit" ? i2iMode : null,
         low_ram: lowRam,
+        preview: showPreview,
         cache_limit_gb: capCache ? cacheLimit : null,
         allow_over_budget: model.low_ram_may_help,
         mask: maskId,
@@ -212,8 +220,9 @@ export default function Studio({
       const msg = errText(e);
       notify(msg.includes("cancelled") ? "Cancelled." : msg, !msg.includes("cancelled"));
     } finally {
-      un();
+      un(); unPrev();
       setRunning(false); setJobId(null); setProg(null);
+      setPreview(null);
     }
   };
 
@@ -581,6 +590,20 @@ export default function Studio({
               <div className="field">
                 <label style={{ cursor: "pointer" }}>
                   <span>
+                    <input type="checkbox" checked={showPreview}
+                      style={{ width: "auto", marginRight: 6 }}
+                      onChange={(e) => setShowPreview(e.target.checked)} />
+                    Show the picture forming
+                  </span>
+                </label>
+                <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5, lineHeight: 1.55 }}>
+                  Decodes each step through a small preview decoder. Costs a
+                  little time per step; turn it off for the fastest possible run.
+                </div>
+              </div>
+              <div className="field">
+                <label style={{ cursor: "pointer" }}>
+                  <span>
                     <input type="checkbox" checked={capCache} style={{ width: "auto", marginRight: 6 }}
                       onChange={(e) => setCapCache(e.target.checked)} />
                     Cap the MLX buffer cache
@@ -604,6 +627,23 @@ export default function Studio({
         <div className="canvas">
           {outputs.length > 0 ? (
             <img src={vaultUrl(outputs[selected])} alt="" />
+          ) : preview ? (
+            <div style={{ textAlign: "center" }}>
+              {/* Deliberately soft: this is a cheap decode of a partial step,
+                  not the output, and it should not be mistaken for it. */}
+              <img
+                src={preview}
+                alt=""
+                style={{
+                  maxWidth: "100%", maxHeight: "58vh", borderRadius: 6,
+                  imageRendering: "auto", opacity: 0.92,
+                }}
+              />
+              <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 8 }}>
+                Taking shape{prog?.step && prog?.total_steps
+                  ? ` — step ${prog.step} of ${prog.total_steps}` : "…"}
+              </div>
+            </div>
           ) : (
             <div className="empty">
               <span className="big">{mode === "edit" ? "✎" : "✦"}</span>

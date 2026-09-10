@@ -11,6 +11,23 @@ mod vault;
 
 /// Re-exported so `examples/vault_vectors.rs` can generate cross-language test
 /// vectors against the real implementation rather than a copy of it.
+/// Exposed for `examples/storage_move.rs`, which checks that relocating the
+/// model store preserves symlinks rather than duplicating every weight file.
+pub mod storage_move {
+    pub use crate::models::{copy_tree, dir_size_of};
+}
+
+/// Exposed for `examples/vault_lifecycle.rs`, which exercises creation,
+/// deduplication, repair and export against a throwaway directory.
+pub mod vault_lifecycle {
+    pub use crate::vault::{Vault, VaultItem};
+
+    /// Seal bytes with the vault's own key, to plant an orphan for repair to find.
+    pub fn seal_for_test(vault: &Vault, bytes: &[u8]) -> Option<Vec<u8>> {
+        vault.seal_for_test(bytes)
+    }
+}
+
 /// Exposed for `examples/keychain_probe.rs`, which exercises the Touch ID
 /// path without needing the whole app running.
 #[cfg(target_os = "macos")]

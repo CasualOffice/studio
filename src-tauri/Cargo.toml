@@ -3,6 +3,7 @@ name = "melp-model-studio"
 version = "0.1.0"
 description = "Local image generation and editing on Apple Silicon"
 authors = ["melp"]
+license = "GPL-3.0-or-later"
 edition = "2021"
 rust-version = "1.77"
 

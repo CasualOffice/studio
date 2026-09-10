@@ -6,6 +6,19 @@ locally on Apple Silicon, with everything it produces encrypted at rest.
 Tauri 2 (Rust) shell, React frontend, and a long-lived Python sidecar that
 drives [MLX-Gen](https://github.com/lpalbou/mlx-gen) on Apple's MLX framework.
 
+## Licence
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+Every dependency is permissively licensed and therefore compatible in this
+direction: MLX, mlx-gen and mlx-vlm are MIT, PyTorch and transformers are
+Apache-2.0, pillow-heif is BSD-3-Clause, and the Tauri and RustCrypto stacks
+are MIT OR Apache-2.0. Combining them under the GPL is allowed; the reverse
+would not be.
+
+If you distribute a modified build, the GPL requires you to offer its source
+under the same terms.
+
 ## Requirements
 
 - Apple Silicon. MLX has no Intel Mac backend, and the app refuses to set up on one.

@@ -226,5 +226,95 @@ class Staging(unittest.TestCase):
             self.assertEqual(leftovers, [], "conversion left a file behind")
 
 
+
+
+class EditInstruction(unittest.TestCase):
+    """The user's wording must survive verbatim.
+
+    Letting a 2B model restate an instruction after showing it a picture meant
+    it folded the picture's details into the request, and sometimes replaced
+    the request outright. The sentence is now assembled from the user's own
+    words; the model only supplies a subject noun.
+    """
+
+    def test_pronoun_is_resolved_to_the_subject(self):
+        out = worker._compose_edit_instruction("make it blue", "a beige ceramic teapot")
+        self.assertIn("blue", out)
+        self.assertIn("teapot", out)
+        self.assertNotIn(" it ", f" {out} ")
+        # Word boundaries: substitution must not run words together or leave
+        # double spaces, both of which broke an earlier index-based version.
+        self.assertNotIn("  ", out)
+        self.assertTrue(out.startswith("make a beige ceramic teapot blue"), out)
+
+    def test_does_not_match_inside_another_word(self):
+        out = worker._compose_edit_instruction("make the white parts warmer", "a jacket")
+        self.assertIn("white", out, "a pronoun search matched inside 'white'")
+
+    def test_users_own_words_are_preserved(self):
+        for request in ("add steam coming out", "remove the handle",
+                        "make the lid gold"):
+            out = worker._compose_edit_instruction(request, "a teapot")
+            first = request.split()[0]
+            self.assertTrue(out.lower().startswith(first),
+                            f"{out!r} did not begin with {request!r}")
+
+    def test_intent_cannot_be_replaced(self):
+        # Whatever the subject, the request has to still be in there.
+        out = worker._compose_edit_instruction("make it blue", "a car in a field at night")
+        self.assertIn("blue", out, "the actual request was lost")
+
+    def test_says_what_to_leave_alone(self):
+        out = worker._compose_edit_instruction("make it red", "a jacket")
+        self.assertIn("unchanged", out)
+
+    def test_works_without_a_subject(self):
+        out = worker._compose_edit_instruction("brighten the sky", "")
+        self.assertTrue(out.lower().startswith("brighten the sky"))
+
+
+class TrimToSentence(unittest.TestCase):
+    """A token limit lands mid-clause; a dangling fragment is worse than a
+    shorter finished sentence."""
+
+    def test_completes_at_the_last_full_stop(self):
+        text = "a tabby cat on a sill. warm rim light throug"
+        self.assertEqual(worker._trim_to_sentence(text), "a tabby cat on a sill.")
+
+    def test_falls_back_to_the_last_clause(self):
+        out = worker._trim_to_sentence("a bustling market at dusk, neon lights, vibrant crow")
+        self.assertTrue(out.endswith("."))
+        self.assertNotIn("crow", out)
+
+    def test_leaves_a_complete_sentence_alone(self):
+        text = "a red cube on a table."
+        self.assertEqual(worker._trim_to_sentence(text), text)
+
+    def test_enforces_the_word_cap(self):
+        long = " ".join(["word"] * 200)
+        self.assertLessEqual(len(worker._trim_to_sentence(long).split()), 56)
+
+
+
+
+class Repetition(unittest.TestCase):
+    """Small models loop. The repeats crowd out the actual subject."""
+
+    def test_cuts_where_the_loop_starts(self):
+        looped = ("a sleek black cat, sleek and smooth, in a sleek black room, "
+                  "sleek black walls, sleek black floor, sleek black ceiling")
+        out = worker._collapse_repetition(looped)
+        self.assertIn("cat", out)
+        self.assertLess(out.lower().count("sleek"), looped.lower().count("sleek"))
+
+    def test_leaves_a_varied_prompt_alone(self):
+        good = ("a vivid orange sunset over a mountain range, vibrant red sky, "
+                "deep blue mountains, warm light.")
+        self.assertEqual(worker._collapse_repetition(good).rstrip("."), good.rstrip("."))
+
+    def test_always_ends_with_punctuation(self):
+        self.assertTrue(worker._collapse_repetition("a cat, a dog").endswith("."))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

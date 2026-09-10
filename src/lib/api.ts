@@ -81,6 +81,31 @@ export const onSetupProgress = (cb: (p: SetupProgress) => void): Promise<Unliste
 export const onEngineProgress = (cb: (p: EngineProgress) => void): Promise<UnlistenFn> =>
   listen<EngineProgress>("engine://progress", (e) => cb(e.payload));
 
+export interface PreviewFrame {
+  jobId: string;
+  /** Data URL, ready to drop straight into an <img>. */
+  src: string;
+  step: number | null;
+  totalSteps: number | null;
+}
+
+/**
+ * Partial frames during a run.
+ *
+ * A separate channel from progress so that a listener interested only in
+ * "how far along" is not woken for every decoded image.
+ */
+export const onEnginePreview = (cb: (f: PreviewFrame) => void): Promise<UnlistenFn> =>
+  listen<{ id: string; jpeg: string; step: number | null; total_steps: number | null }>(
+    "engine://preview",
+    (e) => cb({
+      jobId: e.payload.id,
+      src: `data:image/jpeg;base64,${e.payload.jpeg}`,
+      step: e.payload.step,
+      totalSteps: e.payload.total_steps,
+    })
+  );
+
 export const onEngineExit = (cb: () => void): Promise<UnlistenFn> =>
   listen("engine://exit", () => cb());
 

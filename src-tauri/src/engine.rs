@@ -257,6 +257,11 @@ async fn dispatch(app: &AppHandle, pending: &Pending, v: Value) {
                 },
             );
         }
+        "preview" => {
+            // A partial frame. Forwarded as its own channel so the progress
+            // handler is not woken for every image.
+            let _ = app.emit("engine://preview", v);
+        }
         "log" => {
             let _ = app.emit("engine://log", v);
         }

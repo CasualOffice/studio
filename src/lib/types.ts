@@ -131,6 +131,8 @@ export interface GenerateArgs {
   image_strength: number | null;
   i2i_mode: string | null;
   low_ram: boolean;
+  /** Show the picture forming, step by step. */
+  preview: boolean;
   cache_limit_gb: number | null;
   allow_over_budget: boolean;
   /** Vault id of a painted mask: white where the model may change things. */

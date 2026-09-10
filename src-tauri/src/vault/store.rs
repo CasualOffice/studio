@@ -707,6 +707,16 @@ impl Vault {
         Ok(RepairReport { recovered: recovered_count, dropped, unreadable })
     }
 
+    /// Seal bytes with this vault's data key.
+    ///
+    /// Only used to plant an orphaned blob for the repair probe: a realistic
+    /// test needs content the vault can actually open.
+    pub fn seal_for_test(&self, bytes: &[u8]) -> Option<Vec<u8>> {
+        let guard = read_guard!(self.inner);
+        let u = guard.as_ref()?;
+        Some(crypto::seal(&u.dek, bytes))
+    }
+
     /// The one sanctioned way plaintext leaves the vault.
     pub fn export(&self, id: &str, dest: &Path) -> Result<u64, VaultError> {
         let plain = self.get(id)?;

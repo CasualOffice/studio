@@ -67,6 +67,10 @@ impl AppState {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn new_job_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -647,6 +651,9 @@ pub struct GenerateArgs {
     pub cache_limit_gb: Option<f32>,
     #[serde(default)]
     pub allow_over_budget: bool,
+    /// Show the picture forming, step by step.
+    #[serde(default = "default_true")]
+    pub preview: bool,
     /// Vault id of a painted mask: white where the model may change the image.
     pub mask: Option<String>,
     /// CSS-like padding for outpainting, e.g. "10%,25%,10%,25%".
@@ -764,6 +771,7 @@ async fn run_job(
     if args.low_ram {
         params["low_ram"] = json!(true);
     }
+    params["preview"] = json!(args.preview);
     if let Some(c) = args.cache_limit_gb {
         params["cache_limit_gb"] = json!(c);
     }
