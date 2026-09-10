@@ -63,7 +63,7 @@ pub const CATALOG: &[ModelEntry] = &[
         family: None,
         tasks: &[Task::Assist],
         quantize: Some(4),
-        package_gib: 1.5,
+        package_gib: 1.2,
         peak_gib: 2.6,
         peak_estimated: true,
         steps_default: 0,

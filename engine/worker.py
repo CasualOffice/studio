@@ -1662,6 +1662,15 @@ def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             f"{repo_id} reported success but nothing was written to the cache. "
             "The repository may not exist, be gated, or need a different downloader."
         )
+    # Record that this one finished. Judging completeness by comparing bytes
+    # against a published figure only ever approximates it -- the engine
+    # fetches a subset, and the published figure is sometimes just wrong -- so
+    # the downloader says so outright instead of leaving it to be inferred.
+    try:
+        (repo_dir / ".melp-complete").write_text(str(size))
+    except OSError as exc:
+        log(req_id, f"could not mark {repo_id} complete: {exc}", "warn")
+
     emit({"id": req_id, "type": "progress", "phase": "download", "progress": 1.0,
           "total_bytes": expected or size, "done_bytes": size})
     return {"model": repo_id, "path": str(repo_dir), "bytes": size}

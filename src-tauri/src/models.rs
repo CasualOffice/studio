@@ -168,10 +168,18 @@ pub fn is_installed(paths: &AppPaths, repo: &str, expected_gib: f32) -> (bool, u
     if !dir.join("snapshots").exists() {
         return (false, bytes);
     }
+    // The downloader leaves this behind when it finishes, which beats any
+    // inference from size: it is the only signal that cannot be wrong.
+    if dir.join(".melp-complete").exists() {
+        return (true, bytes);
+    }
+    // Nothing said so outright -- downloaded before that marker existed, or
+    // fetched by something else. Fall back to comparing against what the
+    // catalog expects.
     let threshold = if expected_gib > 0.0 {
         (expected_gib * COMPLETE_FRACTION * 1024.0 * 1024.0 * 1024.0) as u64
     } else {
-        // Nothing to compare against: fall back to "holds real weight files".
+        // Nothing to compare against either: fall back to "holds weights".
         64 * 1024 * 1024
     };
     (bytes >= threshold, bytes)
@@ -641,6 +649,28 @@ mod tests {
         // COMPLETE_FRACTION of it is finished.
         let expected_gib = 1_000_000.0 / 1024.0 / 1024.0 / 1024.0 / 0.9;
         assert!(is_installed(&paths, repo, expected_gib).0);
+    }
+
+    /// What the downloader says outright beats anything inferred from size.
+    ///
+    /// Published package figures are approximations -- the engine fetches a
+    /// subset, and some are simply wrong -- so a model that finished
+    /// downloading must not be called missing because it came in under an
+    /// estimate.
+    #[test]
+    fn a_marked_download_is_installed_whatever_the_size_says() {
+        let tmp = Scratch::new();
+        let paths = AppPaths::at(tmp.path.clone());
+        let repo = "owner/came-in-under";
+        let dir = snapshot_dir(&paths, repo);
+        std::fs::create_dir_all(dir.join("snapshots")).unwrap();
+        std::fs::create_dir_all(dir.join("blobs")).unwrap();
+        std::fs::write(dir.join("blobs").join("w"), vec![0u8; 4096]).unwrap();
+
+        // Well under the expected size, and without the marker it would fail.
+        assert!(!is_installed(&paths, repo, 16.4).0);
+        std::fs::write(dir.join(".melp-complete"), "4096").unwrap();
+        assert!(is_installed(&paths, repo, 16.4).0);
     }
 
     /// With no expected size to compare against, fall back to "holds weights".
