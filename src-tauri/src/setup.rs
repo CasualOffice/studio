@@ -86,14 +86,20 @@ async fn resolve_python_url() -> String {
     let client = reqwest::Client::builder()
         .user_agent("melp-model-studio")
         .build();
-    let Ok(client) = client else { return FALLBACK_PY.into() };
+    let Ok(client) = client else {
+        return FALLBACK_PY.into();
+    };
 
     let resp = client
         .get("https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest")
         .send()
         .await;
-    let Ok(resp) = resp else { return FALLBACK_PY.into() };
-    let Ok(json) = resp.json::<serde_json::Value>().await else { return FALLBACK_PY.into() };
+    let Ok(resp) = resp else {
+        return FALLBACK_PY.into();
+    };
+    let Ok(json) = resp.json::<serde_json::Value>().await else {
+        return FALLBACK_PY.into();
+    };
 
     let want_prefix = format!("cpython-{}.", PY_SERIES);
     let assets = json.get("assets").and_then(|a| a.as_array());
@@ -135,10 +141,17 @@ async fn download_to(report: Reporter<'_>, url: &str, dest: &Path, span: (f32, f
         file.write_all(&chunk).await?;
         if last_emit.elapsed().as_millis() > 120 {
             last_emit = std::time::Instant::now();
-            let frac = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+            let frac = if total > 0 {
+                done as f32 / total as f32
+            } else {
+                0.0
+            };
             report(
                 "python",
-                &format!("Downloading Python runtime — {:.0} MB", done as f32 / 1_048_576.0),
+                &format!(
+                    "Downloading Python runtime — {:.0} MB",
+                    done as f32 / 1_048_576.0
+                ),
                 Some(span.0 + (span.1 - span.0) * frac),
             );
         }
@@ -279,7 +292,11 @@ async fn provision_python(report: Reporter<'_>, paths: &AppPaths, force: bool) -
 
     // install_only archives unpack to a single `python/` directory.
     let unpacked = staging.join("python");
-    let src = if unpacked.exists() { unpacked } else { staging.clone() };
+    let src = if unpacked.exists() {
+        unpacked
+    } else {
+        staging.clone()
+    };
     let _ = std::fs::remove_dir_all(paths.python_dir());
     std::fs::rename(&src, paths.python_dir())?;
     let _ = std::fs::remove_dir_all(&staging);
@@ -318,7 +335,15 @@ pub async fn bootstrap(report: Reporter<'_>, paths: &AppPaths, force: bool) -> R
     // ---- 3. Engine ------------------------------------------------------
     report("engine", "Upgrading pip", Some(0.30));
     let mut up = Command::new(paths.venv_python());
-    up.args(["-m", "pip", "install", "--upgrade", "pip", "wheel", "--no-input"]);
+    up.args([
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        "pip",
+        "wheel",
+        "--no-input",
+    ]);
     run_streaming(report, "engine", up, (0.30, 0.34)).await?;
 
     report(
@@ -328,14 +353,20 @@ pub async fn bootstrap(report: Reporter<'_>, paths: &AppPaths, force: bool) -> R
     );
     let mut pip = Command::new(paths.venv_python());
     pip.args([
-        "-m", "pip", "install", "--upgrade", "--no-input",
-        "mlx-gen", "huggingface_hub[hf_transfer]",
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        "--no-input",
+        "mlx-gen",
+        "huggingface_hub[hf_transfer]",
         // Pinned deliberately. MLX-Gen allows anything below 0.32, but the
         // versions differ in ways that matter: 0.31.0 changes mx.repeat's
         // accepted argument types (which SeedVR2 depends on) and lacks
         // mx.new_thread_local_stream (which mlx-vlm needs). 0.31.2 is the one
         // where generation, editing and the prompt assistant all work.
-        "mlx==0.31.2", "mlx-metal==0.31.2",
+        "mlx==0.31.2",
+        "mlx-metal==0.31.2",
         // Vault sealing happens inside the engine process, so plaintext never
         // reaches disk; this is the AEAD implementation it uses.
         "cryptography",

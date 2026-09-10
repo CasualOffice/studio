@@ -21,7 +21,8 @@ use std::sync::RwLock;
 use std::time::Instant;
 use zeroize::Zeroize;
 
-const B64: base64::engine::general_purpose::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+const B64: base64::engine::general_purpose::GeneralPurpose =
+    base64::engine::general_purpose::STANDARD;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VaultError {
@@ -88,12 +89,19 @@ pub struct Wrap {
 impl Wrap {
     fn seal(kek: &[u8; 32], dek: &[u8; 32]) -> Self {
         let (nonce, ct) = crypto::wrap_dek(kek, dek);
-        Self { nonce: B64.encode(nonce), ct: B64.encode(ct) }
+        Self {
+            nonce: B64.encode(nonce),
+            ct: B64.encode(ct),
+        }
     }
 
     fn open(&self, kek: &[u8; 32]) -> Result<[u8; 32], VaultError> {
-        let nonce = B64.decode(&self.nonce).map_err(|e| VaultError::Corrupt(e.to_string()))?;
-        let ct = B64.decode(&self.ct).map_err(|e| VaultError::Corrupt(e.to_string()))?;
+        let nonce = B64
+            .decode(&self.nonce)
+            .map_err(|e| VaultError::Corrupt(e.to_string()))?;
+        let ct = B64
+            .decode(&self.ct)
+            .map_err(|e| VaultError::Corrupt(e.to_string()))?;
         crypto::unwrap_dek(kek, &nonce, &ct).map_err(|_| VaultError::BadPassphrase)
     }
 }
@@ -117,7 +125,9 @@ pub fn content_hash(bytes: &[u8]) -> String {
 
 fn derive_kek(passphrase: &str, kdf: &KdfParams) -> Result<[u8; 32], VaultError> {
     use argon2::{Algorithm, Argon2, Params, Version};
-    let salt = B64.decode(&kdf.salt).map_err(|e| VaultError::Corrupt(e.to_string()))?;
+    let salt = B64
+        .decode(&kdf.salt)
+        .map_err(|e| VaultError::Corrupt(e.to_string()))?;
     let params = Params::new(kdf.m_cost, kdf.t_cost, kdf.p_cost, Some(32))
         .map_err(|e| VaultError::Kdf(e.to_string()))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
@@ -196,13 +206,17 @@ pub struct Vault {
 /// safe and the difference between one lost operation and all of them.
 macro_rules! read_guard {
     ($lock:expr) => {
-        $lock.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+        $lock
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     };
 }
 
 macro_rules! write_guard {
     ($lock:expr) => {
-        $lock.write().unwrap_or_else(|poisoned| poisoned.into_inner())
+        $lock
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     };
 }
 
@@ -229,8 +243,9 @@ fn sniff_mime(bytes: &[u8]) -> &'static str {
             b"avif" => "image/avif",
             _ => "video/mp4",
         },
-        _ if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" =>
-            "image/webp",
+        _ if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" => {
+            "image/webp"
+        }
         _ => "application/octet-stream",
     }
 }
@@ -249,15 +264,28 @@ pub struct VaultStatus {
 
 impl Vault {
     pub fn new(root: PathBuf) -> Self {
-        Self { root, inner: RwLock::new(None) }
+        Self {
+            root,
+            inner: RwLock::new(None),
+        }
     }
 
-    pub fn manifest_path(&self) -> PathBuf { self.root.join("vault.json") }
-    fn index_path(&self) -> PathBuf { self.root.join("index.enc") }
-    fn blobs(&self) -> PathBuf { self.root.join("blobs") }
-    fn blob_path(&self, id: &str) -> PathBuf { self.blobs().join(id) }
+    pub fn manifest_path(&self) -> PathBuf {
+        self.root.join("vault.json")
+    }
+    fn index_path(&self) -> PathBuf {
+        self.root.join("index.enc")
+    }
+    fn blobs(&self) -> PathBuf {
+        self.root.join("blobs")
+    }
+    fn blob_path(&self, id: &str) -> PathBuf {
+        self.blobs().join(id)
+    }
 
-    pub fn exists(&self) -> bool { self.manifest_path().exists() }
+    pub fn exists(&self) -> bool {
+        self.manifest_path().exists()
+    }
 
     pub fn is_unlocked(&self) -> bool {
         self.inner.read().map(|g| g.is_some()).unwrap_or(false)
@@ -274,7 +302,10 @@ impl Vault {
     fn write_manifest(&self, m: &Manifest) -> Result<(), VaultError> {
         std::fs::create_dir_all(&self.root)?;
         let tmp = self.manifest_path().with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(m).map_err(|e| VaultError::Corrupt(e.to_string()))?)?;
+        std::fs::write(
+            &tmp,
+            serde_json::to_vec_pretty(m).map_err(|e| VaultError::Corrupt(e.to_string()))?,
+        )?;
         std::fs::rename(&tmp, self.manifest_path())?;
         Ok(())
     }
@@ -453,7 +484,8 @@ impl Vault {
     /// rename and turns a corrupt write from total metadata loss into the loss
     /// of whatever changed since the last save.
     fn write_index(&self, dek: &[u8; 32], index: &Index) -> Result<(), VaultError> {
-        let mut plain = serde_json::to_vec(index).map_err(|e| VaultError::Corrupt(e.to_string()))?;
+        let mut plain =
+            serde_json::to_vec(index).map_err(|e| VaultError::Corrupt(e.to_string()))?;
         let sealed = crypto::seal(dek, &plain);
         plain.zeroize();
 
@@ -491,7 +523,10 @@ impl Vault {
         }
     }
 
-    fn with_unlocked<T>(&self, f: impl FnOnce(&Unlocked) -> Result<T, VaultError>) -> Result<T, VaultError> {
+    fn with_unlocked<T>(
+        &self,
+        f: impl FnOnce(&Unlocked) -> Result<T, VaultError>,
+    ) -> Result<T, VaultError> {
         let guard = read_guard!(self.inner);
         let u = guard.as_ref().ok_or(VaultError::Locked)?;
         f(u)
@@ -662,7 +697,9 @@ impl Vault {
                 if known.contains(&name) || name.ends_with(".tmp") {
                     continue;
                 }
-                let Ok(sealed) = std::fs::read(e.path()) else { continue };
+                let Ok(sealed) = std::fs::read(e.path()) else {
+                    continue;
+                };
                 match crypto::open(&dek, &sealed) {
                     Ok(plain) => {
                         let mime = sniff_mime(&plain);
@@ -704,7 +741,11 @@ impl Vault {
         if recovered_count > 0 || dropped > 0 {
             self.write_index(&dek, &index)?;
         }
-        Ok(RepairReport { recovered: recovered_count, dropped, unreadable })
+        Ok(RepairReport {
+            recovered: recovered_count,
+            dropped,
+            unreadable,
+        })
     }
 
     /// Seal bytes with this vault's data key.
@@ -733,21 +774,31 @@ impl Vault {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "macos")]
-fn biometry_available() -> bool { super::keychain::biometry_usable() }
+fn biometry_available() -> bool {
+    super::keychain::biometry_usable()
+}
 
 #[cfg(target_os = "macos")]
-fn biometric_key_present() -> bool { super::keychain::kek_present() }
+fn biometric_key_present() -> bool {
+    super::keychain::kek_present()
+}
 #[cfg(not(target_os = "macos"))]
-fn biometric_key_present() -> bool { false }
+fn biometric_key_present() -> bool {
+    false
+}
 #[cfg(not(target_os = "macos"))]
-fn biometry_available() -> bool { false }
+fn biometry_available() -> bool {
+    false
+}
 
 #[cfg(target_os = "macos")]
 fn provision_biometric_kek() -> Result<[u8; 32], VaultError> {
     super::keychain::provision_kek().map_err(|_| VaultError::NoBiometricKey)
 }
 #[cfg(not(target_os = "macos"))]
-fn provision_biometric_kek() -> Result<[u8; 32], VaultError> { Err(VaultError::NoBiometricKey) }
+fn provision_biometric_kek() -> Result<[u8; 32], VaultError> {
+    Err(VaultError::NoBiometricKey)
+}
 
 #[cfg(target_os = "macos")]
 fn load_biometric_kek() -> Result<[u8; 32], VaultError> {
@@ -755,11 +806,15 @@ fn load_biometric_kek() -> Result<[u8; 32], VaultError> {
         .map_err(|_| VaultError::NoBiometricKey)
 }
 #[cfg(not(target_os = "macos"))]
-fn load_biometric_kek() -> Result<[u8; 32], VaultError> { Err(VaultError::NoBiometricKey) }
+fn load_biometric_kek() -> Result<[u8; 32], VaultError> {
+    Err(VaultError::NoBiometricKey)
+}
 
 #[cfg(target_os = "macos")]
 fn delete_biometric_kek() -> Result<(), VaultError> {
     super::keychain::delete_kek().map_err(|_| VaultError::NoBiometricKey)
 }
 #[cfg(not(target_os = "macos"))]
-fn delete_biometric_kek() -> Result<(), VaultError> { Ok(()) }
+fn delete_biometric_kek() -> Result<(), VaultError> {
+    Ok(())
+}

@@ -1772,13 +1772,22 @@ def op_video(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
 
     staged = _stage_vault_inputs(req.get("vault_inputs") or [])
     try:
+        # Routes disagree about what a picture means here. Wan treats it as a
+        # first frame (image_count); Bernini treats it as a reference to
+        # animate (reference_image_count) and rejects image input outright.
+        # Offering both lets the resolver pick whichever this model supports.
+        plan_kw: dict[str, Any] = {}
+        if staged:
+            plan_kw["reference_image_count"] = len(staged)
+
         loaded, load_ms = _load_model(
             req_id,
             req["model"],
             req.get("quantize"),
             req.get("model_path"),
-            image_count=1 if staged else 0,
+            image_count=0,
             release_text_encoder=True,
+            **plan_kw,
         )
 
         base: dict[str, Any] = {
@@ -1797,7 +1806,10 @@ def op_video(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         }
         optional: dict[str, Any] = {}
         if staged:
-            # A first frame turns text-to-video into image-to-video.
+            # Same picture, two spellings: a first frame for Wan, an ordered
+            # reference set for Bernini. The tolerance layer drops whichever
+            # this route names as unsupported.
+            optional["reference_image_paths"] = list(staged)
             optional["image_path"] = staged[0]
         if req.get("negative_prompt"):
             optional["negative_prompt"] = req["negative_prompt"]

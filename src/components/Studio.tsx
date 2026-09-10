@@ -6,6 +6,7 @@ import { exportItem, ImageDrop, JobProgress } from "./shared";
 import MaskCanvas from "./MaskCanvas";
 import SendTo, { type Destination } from "./SendTo";
 import Loras from "./Loras";
+import Adjust from "./Adjust";
 import { loadPref, savePref } from "../lib/prefs";
 
 export type Mode = "generate" | "edit";
@@ -69,7 +70,7 @@ export default function Studio({
   const setImages = onImagesChange ?? setLocalImages;
   const [strength, setStrength] = useState(0.6);
   // What kind of edit this is. Each maps to a different route in the engine.
-  type EditKind = "instruct" | "mask" | "expand" | "latent";
+  type EditKind = "instruct" | "mask" | "expand" | "latent" | "adjust";
   const [editKind, setEditKind] = useState<EditKind>("instruct");
   const [maskBytes, setMaskBytes] = useState<Uint8Array | null>(null);
   const [pad, setPad] = useState({ top: 0, right: 25, bottom: 0, left: 25 });
@@ -291,6 +292,7 @@ export default function Studio({
                   ["mask", "Paint a region"],
                   ["expand", "Extend the picture"],
                   ["latent", "Reinterpret"],
+                  ["adjust", "Crop & rotate"],
                 ] as [EditKind, string][]).map(([k, label]) => (
                   <button
                     key={k}
@@ -304,6 +306,7 @@ export default function Studio({
                 {editKind === "mask" && "Paint over an area and only that area is regenerated."}
                 {editKind === "expand" && "Grow the canvas; the model invents what was outside the frame."}
                 {editKind === "latent" && "Reinterpret the whole picture, keeping its composition."}
+                {editKind === "adjust" && "Crop, rotate or straighten. Instant, and no model involved."}
               </div>
             </div>
           )}
@@ -322,6 +325,17 @@ export default function Studio({
                   {model?.name} edits one picture at a time.
                 </div>
               )}
+            </div>
+          )}
+
+          {mode === "edit" && editKind === "adjust" && images.length > 0 && (
+            <div className="field">
+              <label>Adjust the frame</label>
+              <Adjust
+                sourceId={images[0]}
+                onSaved={(id) => { setImages([id]); onProduced(); }}
+                notify={notify}
+              />
             </div>
           )}
 
@@ -365,7 +379,7 @@ export default function Studio({
             </div>
           )}
 
-          <div className="field">
+          <div className="field" style={{ display: editKind === "adjust" && mode === "edit" ? "none" : undefined }}>
             <label>
               {mode === "edit" ? "What should change?" : "What do you want to see?"}
               {undoPrompt !== null && (
@@ -458,7 +472,7 @@ export default function Studio({
             )}
           </div>
 
-          {running ? (
+          {editKind === "adjust" && mode === "edit" ? null : running ? (
             <>
               <JobProgress p={prog} label="Working" />
               <div style={{

@@ -216,7 +216,10 @@ pub fn wrap_dek(kek: &[u8; 32], dek: &[u8; 32]) -> ([u8; 12], Vec<u8>) {
     let ct = cipher
         .encrypt(
             Nonce::from_slice(&nonce_bytes),
-            Payload { msg: dek, aad: AAD_DEK_WRAP },
+            Payload {
+                msg: dek,
+                aad: AAD_DEK_WRAP,
+            },
         )
         .expect("wrapping a 32-byte key cannot fail");
     (nonce_bytes, ct)
@@ -230,7 +233,10 @@ pub fn unwrap_dek(kek: &[u8; 32], nonce: &[u8], ct: &[u8]) -> Result<[u8; 32], C
     let mut pt = cipher
         .decrypt(
             Nonce::from_slice(nonce),
-            Payload { msg: ct, aad: AAD_DEK_WRAP },
+            Payload {
+                msg: ct,
+                aad: AAD_DEK_WRAP,
+            },
         )
         .map_err(|_| CryptoError::Decrypt)?;
     if pt.len() != 32 {
@@ -250,8 +256,14 @@ mod tests {
     #[test]
     fn roundtrip_various_sizes() {
         let dek = random_bytes::<32>();
-        for len in [0usize, 1, 1024, CHUNK_SIZE as usize, CHUNK_SIZE as usize + 1,
-                    CHUNK_SIZE as usize * 3 + 7] {
+        for len in [
+            0usize,
+            1,
+            1024,
+            CHUNK_SIZE as usize,
+            CHUNK_SIZE as usize + 1,
+            CHUNK_SIZE as usize * 3 + 7,
+        ] {
             let pt: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
             let ct = seal(&dek, &pt);
             assert_eq!(open(&dek, &ct).unwrap(), pt, "failed at len {len}");

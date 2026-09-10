@@ -116,13 +116,17 @@ fn vault_protocol(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let paths = AppPaths::resolve().expect("could not resolve application directories");
-    paths.ensure_dirs().expect("could not create application directories");
+    paths
+        .ensure_dirs()
+        .expect("could not create application directories");
     let vault = Arc::new(Vault::new(paths.vault()));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .register_uri_scheme_protocol("vault", |ctx, request| vault_protocol(ctx.app_handle(), request))
+        .register_uri_scheme_protocol("vault", |ctx, request| {
+            vault_protocol(ctx.app_handle(), request)
+        })
         .manage(AppState::new(paths, vault))
         .invoke_handler(tauri::generate_handler![
             commands::host_info,

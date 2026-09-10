@@ -18,7 +18,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{oneshot, Mutex};
 
-type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<std::result::Result<Value, EngineFailure>>>>>;
+type Pending =
+    Arc<Mutex<HashMap<String, oneshot::Sender<std::result::Result<Value, EngineFailure>>>>>;
 
 #[derive(Serialize, Clone, Debug)]
 pub struct EngineFailure {
@@ -63,7 +64,11 @@ impl Engine {
 }
 
 impl Engine {
-    pub async fn spawn(app: &AppHandle, paths: &AppPaths, script: &std::path::Path) -> Result<Arc<Self>> {
+    pub async fn spawn(
+        app: &AppHandle,
+        paths: &AppPaths,
+        script: &std::path::Path,
+    ) -> Result<Arc<Self>> {
         if !paths.venv_python().exists() {
             return Err(AppError::SetupIncomplete(
                 "the Python runtime has not been installed yet".into(),
@@ -91,7 +96,10 @@ impl Engine {
             // MLX picks its own limits; keep tokenizers from forking threads
             // that would fight the generation for a 16 GB machine's cores.
             .env("TOKENIZERS_PARALLELISM", "false")
-            .env("MODELSTUDIO_MEMORY_BUDGET_GIB", host.memory_budget_gib.to_string())
+            .env(
+                "MODELSTUDIO_MEMORY_BUDGET_GIB",
+                host.memory_budget_gib.to_string(),
+            )
             .env("OMP_NUM_THREADS", host.worker_threads.to_string())
             .env("MKL_NUM_THREADS", host.worker_threads.to_string())
             .env("VECLIB_MAXIMUM_THREADS", host.worker_threads.to_string())
@@ -99,9 +107,18 @@ impl Engine {
             .env("MODELSTUDIO_IDLE_UNLOAD_SECONDS", "600");
 
         let mut child = cmd.spawn()?;
-        let stdin = child.stdin.take().ok_or_else(|| AppError::msg("no stdin"))?;
-        let stdout = child.stdout.take().ok_or_else(|| AppError::msg("no stdout"))?;
-        let stderr = child.stderr.take().ok_or_else(|| AppError::msg("no stderr"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| AppError::msg("no stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| AppError::msg("no stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| AppError::msg("no stderr"))?;
 
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let dead = Arc::new(AtomicBool::new(false));
@@ -189,9 +206,10 @@ impl Engine {
         {
             let mut stdin = self.stdin.lock().await;
             let line = format!("{}\n", serde_json::to_string(&params)?);
-            stdin.write_all(line.as_bytes()).await.map_err(|e| {
-                AppError::Engine(format!("could not reach the engine: {e}"))
-            })?;
+            stdin
+                .write_all(line.as_bytes())
+                .await
+                .map_err(|e| AppError::Engine(format!("could not reach the engine: {e}")))?;
             stdin.flush().await?;
         }
 
@@ -235,7 +253,11 @@ impl Engine {
 }
 
 async fn dispatch(app: &AppHandle, pending: &Pending, v: Value) {
-    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("?").to_string();
+    let id = v
+        .get("id")
+        .and_then(|x| x.as_str())
+        .unwrap_or("?")
+        .to_string();
     let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
 
     match ty {

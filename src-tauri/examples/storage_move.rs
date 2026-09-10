@@ -22,7 +22,9 @@ fn main() {
         ($label:expr, $cond:expr) => {{
             let ok = $cond;
             println!("  {} {}", if ok { "OK  " } else { "FAIL" }, $label);
-            if !ok { failures += 1; }
+            if !ok {
+                failures += 1;
+            }
         }};
     }
 
@@ -34,10 +36,16 @@ fn main() {
     fs::write(repo.join("blobs/deadbeef"), vec![7u8; 512 * 1024]).unwrap();
     fs::write(repo.join("blobs/cafe"), b"{\"config\": true}").unwrap();
     fs::write(repo.join("refs/main"), b"abc123").unwrap();
-    std::os::unix::fs::symlink("../../blobs/deadbeef",
-        repo.join("snapshots/abc123/model.safetensors")).unwrap();
-    std::os::unix::fs::symlink("../../blobs/cafe",
-        repo.join("snapshots/abc123/config.json")).unwrap();
+    std::os::unix::fs::symlink(
+        "../../blobs/deadbeef",
+        repo.join("snapshots/abc123/model.safetensors"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        "../../blobs/cafe",
+        repo.join("snapshots/abc123/config.json"),
+    )
+    .unwrap();
 
     let before = sm::dir_size_of(&from);
     println!("Source is {} bytes of real content\n", before);
@@ -47,16 +55,36 @@ fn main() {
     let dest_repo = to.join("hub/models--acme--demo");
     let link = dest_repo.join("snapshots/abc123/model.safetensors");
 
-    check!("snapshot entry is still a symlink, not a copy",
-        fs::symlink_metadata(&link).map(|m| m.is_symlink()).unwrap_or(false));
-    check!("symlink still points at the blob",
-        fs::read_link(&link).map(|t| t == Path::new("../../blobs/deadbeef")).unwrap_or(false));
-    check!("symlink resolves to the real content",
-        fs::read(&link).map(|b| b.len() == 512 * 1024).unwrap_or(false));
-    check!("blob content is byte-identical",
-        fs::read(dest_repo.join("blobs/deadbeef")).unwrap() == vec![7u8; 512 * 1024]);
-    check!("plain files come across", fs::read(dest_repo.join("refs/main")).unwrap() == b"abc123");
-    check!("nested directories are recreated", dest_repo.join("snapshots/abc123").is_dir());
+    check!(
+        "snapshot entry is still a symlink, not a copy",
+        fs::symlink_metadata(&link)
+            .map(|m| m.is_symlink())
+            .unwrap_or(false)
+    );
+    check!(
+        "symlink still points at the blob",
+        fs::read_link(&link)
+            .map(|t| t == Path::new("../../blobs/deadbeef"))
+            .unwrap_or(false)
+    );
+    check!(
+        "symlink resolves to the real content",
+        fs::read(&link)
+            .map(|b| b.len() == 512 * 1024)
+            .unwrap_or(false)
+    );
+    check!(
+        "blob content is byte-identical",
+        fs::read(dest_repo.join("blobs/deadbeef")).unwrap() == vec![7u8; 512 * 1024]
+    );
+    check!(
+        "plain files come across",
+        fs::read(dest_repo.join("refs/main")).unwrap() == b"abc123"
+    );
+    check!(
+        "nested directories are recreated",
+        dest_repo.join("snapshots/abc123").is_dir()
+    );
 
     // The whole point: following links would report roughly double.
     let after = sm::dir_size_of(&to);
@@ -67,6 +95,10 @@ fn main() {
 
     let _ = fs::remove_dir_all(&root);
     println!();
-    if failures == 0 { println!("STORAGE MOVE OK"); }
-    else { println!("{failures} check(s) failed"); std::process::exit(1); }
+    if failures == 0 {
+        println!("STORAGE MOVE OK");
+    } else {
+        println!("{failures} check(s) failed");
+        std::process::exit(1);
+    }
 }

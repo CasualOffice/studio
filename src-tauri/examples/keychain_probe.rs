@@ -68,7 +68,10 @@ fn main() {
         }
     };
 
-    check!("presence check sees it without prompting", kc::kek_present());
+    check!(
+        "presence check sees it without prompting",
+        kc::kek_present()
+    );
 
     if read {
         println!("\nReading the key — expect a Touch ID prompt now:");

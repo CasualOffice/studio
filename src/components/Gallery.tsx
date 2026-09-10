@@ -17,11 +17,26 @@ export default function Gallery({
   onReuse?: (item: VaultItem, reuseSeed: boolean) => void;
 }) {
   const [open, setOpen] = useState<VaultItem | null>(null);
+  const [query, setQuery] = useState("");
+  const [kindFilter, setKindFilter] = useState<string>("all");
 
   // Painted masks live in the vault so they are never written in the clear,
   // but they are working data and would only clutter the library.
   const all = items;
   items = items.filter((i) => i.kind !== "mask");
+
+  const kinds = Array.from(new Set(items.map((i) => i.kind))).sort();
+  if (kindFilter !== "all") items = items.filter((i) => i.kind === kindFilter);
+  if (query.trim()) {
+    // Search what a person would remember: what they asked for, what made it,
+    // and the file name.
+    const q = query.toLowerCase();
+    items = items.filter((i) =>
+      i.prompt.toLowerCase().includes(q) ||
+      i.name.toLowerCase().includes(q) ||
+      i.model.toLowerCase().includes(q)
+    );
+  }
 
   /**
    * Walk an item back to where it started.
@@ -186,7 +201,30 @@ export default function Gallery({
   }
 
   return (
-    <div className="gallery-grid">
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <input
+          type="text"
+          value={query}
+          placeholder="Search prompts, models, names"
+          onChange={(e) => setQuery(e.target.value)}
+          style={{ flex: 1, minWidth: 200 }}
+        />
+        <select value={kindFilter} onChange={(e) => setKindFilter(e.target.value)}
+          style={{ width: "auto" }}>
+          <option value="all">Everything</option>
+          {kinds.map((k) => (
+            <option key={k} value={k}>{KIND_LABEL[k] ?? k}</option>
+          ))}
+        </select>
+      </div>
+      {items.length === 0 ? (
+        <div className="empty-state">
+          <span className="big">⌕</span>
+          Nothing matches that.
+        </div>
+      ) : (
+      <div className="gallery-grid">
       {items.map((it) => (
         <div className="gallery-card" key={it.id} onClick={() => setOpen(it)}>
           {isImage(it)
@@ -217,6 +255,8 @@ export default function Gallery({
           </div>
         </div>
       ))}
+      </div>
+      )}
     </div>
   );
 }

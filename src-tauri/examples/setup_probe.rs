@@ -23,10 +23,19 @@ async fn main() {
 
     let paths = probe::paths_at(PathBuf::from(&root));
     println!("root: {root}");
-    println!("mode: {}\n", if full { "full (installs mlx-gen)" } else { "runtime only" });
+    println!(
+        "mode: {}\n",
+        if full {
+            "full (installs mlx-gen)"
+        } else {
+            "runtime only"
+        }
+    );
 
     let report = |step: &str, detail: &str, progress: Option<f32>| {
-        let pct = progress.map(|p| format!("{:>3.0}%", p * 100.0)).unwrap_or("    ".into());
+        let pct = progress
+            .map(|p| format!("{:>3.0}%", p * 100.0))
+            .unwrap_or("    ".into());
         // pip and curl are chatty; one line per step keeps the log readable.
         println!("  [{pct}] {step:<8} {}", &detail[..detail.len().min(96)]);
     };
@@ -43,7 +52,10 @@ async fn main() {
             println!("\nOK in {:.0}s", started.elapsed().as_secs_f32());
             println!("  python  : {}", paths.python_bin().display());
             println!("  venv    : {}", paths.venv_python().display());
-            for (label, p) in [("python", paths.python_bin()), ("venv", paths.venv_python())] {
+            for (label, p) in [
+                ("python", paths.python_bin()),
+                ("venv", paths.venv_python()),
+            ] {
                 println!("  {label} exists: {}", p.exists());
             }
         }

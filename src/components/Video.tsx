@@ -137,11 +137,13 @@ export default function Video({
           <h2>Make a clip</h2>
 
           <div className="field">
-            <label>Starting picture <em>optional</em></label>
+            <label>
+              Starting picture <em>optional</em>
+            </label>
             <ImageDrop
               images={firstFrame}
               onChange={setFirstFrame}
-              max={1}
+              max={model?.max_edit_images ?? 1}
               onError={(m) => notify(m, true)}
             />
             <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5 }}>

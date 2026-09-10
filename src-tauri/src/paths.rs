@@ -57,29 +57,57 @@ impl AppPaths {
         Ok(())
     }
 
-    pub fn models_root(&self) -> &PathBuf { &self.models_root }
-    fn config_path(&self) -> PathBuf { self.root.join("config.json") }
+    pub fn models_root(&self) -> &PathBuf {
+        &self.models_root
+    }
+    fn config_path(&self) -> PathBuf {
+        self.root.join("config.json")
+    }
 
-    pub fn runtime(&self) -> PathBuf { self.root.join("runtime") }
-    pub fn python_dir(&self) -> PathBuf { self.runtime().join("python") }
-    pub fn python_bin(&self) -> PathBuf { self.python_dir().join("bin/python3") }
-    pub fn venv(&self) -> PathBuf { self.runtime().join("venv") }
-    pub fn venv_python(&self) -> PathBuf { self.venv().join("bin/python3") }
-    pub fn stamp(&self) -> PathBuf { self.runtime().join("install.json") }
+    pub fn runtime(&self) -> PathBuf {
+        self.root.join("runtime")
+    }
+    pub fn python_dir(&self) -> PathBuf {
+        self.runtime().join("python")
+    }
+    pub fn python_bin(&self) -> PathBuf {
+        self.python_dir().join("bin/python3")
+    }
+    pub fn venv(&self) -> PathBuf {
+        self.runtime().join("venv")
+    }
+    pub fn venv_python(&self) -> PathBuf {
+        self.venv().join("bin/python3")
+    }
+    pub fn stamp(&self) -> PathBuf {
+        self.runtime().join("install.json")
+    }
 
     /// Hugging Face cache. Kept inside our root so the disk meter tells the
     /// truth and "delete model" actually reclaims space.
-    pub fn hf_home(&self) -> PathBuf { self.models_root.clone() }
-    pub fn hf_hub(&self) -> PathBuf { self.hf_home().join("hub") }
+    pub fn hf_home(&self) -> PathBuf {
+        self.models_root.clone()
+    }
+    pub fn hf_hub(&self) -> PathBuf {
+        self.hf_home().join("hub")
+    }
 
     /// The encrypted vault. There is deliberately no plaintext output
     /// directory: generated and imported content only ever lands in here.
-    pub fn vault(&self) -> PathBuf { self.root.join("vault") }
+    pub fn vault(&self) -> PathBuf {
+        self.root.join("vault")
+    }
     /// Models the user added by Hugging Face repo id.
-    pub fn custom_models(&self) -> PathBuf { self.root.join("custom_models.json") }
+    pub fn custom_models(&self) -> PathBuf {
+        self.root.join("custom_models.json")
+    }
     /// Measured generation speed on this machine.
-    pub fn timings(&self) -> PathBuf { self.root.join("timings.json") }
-    pub fn logs(&self) -> PathBuf { self.root.join("logs") }
+    pub fn timings(&self) -> PathBuf {
+        self.root.join("timings.json")
+    }
+    pub fn logs(&self) -> PathBuf {
+        self.root.join("logs")
+    }
 
     pub fn ensure_dirs(&self) -> Result<()> {
         for d in [self.runtime(), self.hf_hub(), self.vault(), self.logs()] {
@@ -101,7 +129,10 @@ impl AppPaths {
 
         let mut tried: Vec<PathBuf> = Vec::new();
 
-        if let Ok(p) = app.path().resolve("engine/worker.py", tauri::path::BaseDirectory::Resource) {
+        if let Ok(p) = app
+            .path()
+            .resolve("engine/worker.py", tauri::path::BaseDirectory::Resource)
+        {
             if p.exists() {
                 return Ok(p);
             }

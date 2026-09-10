@@ -72,7 +72,9 @@ pub struct ModelStatus {
 }
 
 fn snapshot_dir(paths: &AppPaths, repo: &str) -> PathBuf {
-    paths.hf_hub().join(format!("models--{}", repo.replace('/', "--")))
+    paths
+        .hf_hub()
+        .join(format!("models--{}", repo.replace('/', "--")))
 }
 
 /// Bytes actually occupied, counting each blob once.
@@ -82,9 +84,13 @@ fn snapshot_dir(paths: &AppPaths, repo: &str) -> PathBuf {
 /// exactly double; `symlink_metadata` sees the link itself and we skip it.
 fn dir_size(p: &Path) -> u64 {
     let mut total = 0u64;
-    let Ok(rd) = std::fs::read_dir(p) else { return 0 };
+    let Ok(rd) = std::fs::read_dir(p) else {
+        return 0;
+    };
     for e in rd.flatten() {
-        let Ok(md) = std::fs::symlink_metadata(e.path()) else { continue };
+        let Ok(md) = std::fs::symlink_metadata(e.path()) else {
+            continue;
+        };
         if md.is_symlink() {
             continue;
         }
@@ -266,7 +272,6 @@ pub fn judge_uninstalled(package_gib: f32, host: &HostInfo) -> (Fit, String) {
     classify(package_gib, estimate_peak(package_gib), None, host, false)
 }
 
-
 ///
 /// Quantized weights sit in memory at roughly package size; activations, the
 /// text encoder and the MLX cache add on top. The multiplier is deliberately
@@ -298,7 +303,11 @@ fn status_from_entry(entry: &ModelEntry, paths: &AppPaths, host: &HostInfo) -> M
         name: entry.name.into(),
         family: entry.family.map(|f| f.to_string()),
         tasks: entry.tasks.to_vec(),
-        tasks_str: entry.tasks.iter().map(|t| task_name(*t).to_string()).collect(),
+        tasks_str: entry
+            .tasks
+            .iter()
+            .map(|t| task_name(*t).to_string())
+            .collect(),
         quantize: entry.quantize,
         package_gib: entry.package_gib,
         peak_gib: entry.peak_gib,
@@ -416,14 +425,20 @@ pub fn list(paths: &AppPaths, host: &HostInfo) -> Result<Vec<ModelStatus>> {
         .iter()
         .map(|e| status_from_entry(e, paths, host))
         .collect();
-    out.extend(load_custom(paths).iter().map(|m| status_from_custom(m, paths, host)));
+    out.extend(
+        load_custom(paths)
+            .iter()
+            .map(|m| status_from_custom(m, paths, host)),
+    );
 
     // Installed first, then by ascending memory cost: the order a user on a
     // constrained machine actually wants to read.
     out.sort_by(|a, b| {
-        b.installed
-            .cmp(&a.installed)
-            .then(a.peak_gib.partial_cmp(&b.peak_gib).unwrap_or(std::cmp::Ordering::Equal))
+        b.installed.cmp(&a.installed).then(
+            a.peak_gib
+                .partial_cmp(&b.peak_gib)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
     });
     Ok(out)
 }

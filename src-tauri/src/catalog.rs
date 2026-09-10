@@ -71,7 +71,6 @@ pub const CATALOG: &[ModelEntry] = &[
                 on this Mac — nothing is sent anywhere.",
         broken: None,
     },
-
     // ---- Comfortable on 16 GB -------------------------------------------
     ModelEntry {
         id: "bonsai-2bit",
@@ -379,7 +378,11 @@ pub const CATALOG: &[ModelEntry] = &[
     },
     ModelEntry {
         id: "bernini-r-1.3b",
-        repo: "ByteDance/Bernini-R-1.3B-Diffusers",
+        // The alias, not the bare repo id: this route needs a factored set --
+        // the shared Wan2.1 tokenizer, UMT5, VAE and scheduler from one
+        // repository plus the renderer from another. Only the alias fetches
+        // both, and `--all-files` is rejected outright for it.
+        repo: "bernini-r-1.3b",
         name: "Bernini-R 1.3B — image to video",
         family: Some("wan"),
         tasks: &[Task::Video],
@@ -396,7 +399,6 @@ pub const CATALOG: &[ModelEntry] = &[
                 gate as failing, so treat output as experimental.",
         broken: None,
     },
-
     // ---- Documented but out of reach on 16 GB ---------------------------
     ModelEntry {
         id: "fibo-8bit",

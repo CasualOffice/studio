@@ -1,0 +1,104 @@
+name: CI
+
+# Apple Silicon only: MLX has no other backend, and the vault's Keychain code
+# is macOS-specific. A Linux runner could not build this even in principle.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: cargo-
+
+      - name: Formatting
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: src-tauri
+        # Warnings are failures here: the codebase is currently at zero, and
+        # the only way that stays true is if drift breaks the build.
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
+  frontend:
+    name: Frontend
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Type check
+        run: npx tsc --noEmit
+      - name: Build
+        run: npm run build
+
+  engine:
+    name: Engine
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Only what the tests touch. Installing mlx-gen would pull PyTorch and
+      # several gigabytes of weights for tests that never load a model.
+      - name: Install test dependencies
+        run: python -m pip install --quiet pillow pillow-heif cryptography
+
+      - name: Tests
+        run: python engine/test_worker.py
+
+  interop:
+    name: Vault format interop
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --quiet cryptography
+
+      # The Rust and Python implementations of the vault format must stay
+      # byte-identical. Nothing else in the suite would catch them drifting.
+      - name: Generate vectors from Rust
+        working-directory: src-tauri
+        run: cargo run --quiet --example vault_vectors > ../vectors.json
+
+      - name: Verify Python produces the same bytes
+        run: |
+          python - <<'PY'
+          import json, sys, os
+          sys.path.insert(0, "engine")
+          import vaultcrypto as vc
+          d = json.load(open("vectors.json"))
+          fk = bytes.fromhex(d["file_key_hex"])
+          fid = bytes.fromhex(d["file_id_hex"])
+          for v in d["vectors"]:
+              pt = bytes((i % 251) for i in range(v["len"]))
+              assert vc.seal_with_file_key(fk, fid, pt) == bytes.fromhex(v["sealed_hex"]), \
+                  f"mismatch at {v['len']} bytes"
+          print(f"{len(d['vectors'])} vectors byte-identical")
+          PY

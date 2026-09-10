@@ -30,7 +30,10 @@ impl AppState {
 
     /// A snapshot of the current paths. Cheap: `AppPaths` is two `PathBuf`s.
     pub fn paths(&self) -> AppPaths {
-        self.paths_inner.read().expect("paths lock poisoned").clone()
+        self.paths_inner
+            .read()
+            .expect("paths lock poisoned")
+            .clone()
     }
 
     fn replace_paths(&self, paths: AppPaths) {
@@ -270,7 +273,11 @@ pub fn vault_import(state: State<'_, AppState>, source: String, kind: String) ->
     let item = VaultItem {
         id: uuid::Uuid::new_v4().to_string(),
         content_hash: None,
-        kind: if mime.starts_with("image/") { "import".into() } else { "doc".into() },
+        kind: if mime.starts_with("image/") {
+            "import".into()
+        } else {
+            "doc".into()
+        },
         name,
         mime: mime.into(),
         bytes: bytes.len() as u64,
@@ -495,8 +502,11 @@ fn normalize_repo(input: &str) -> Result<String> {
     let mut s = input.trim();
 
     for prefix in [
-        "https://huggingface.co/", "http://huggingface.co/",
-        "https://www.huggingface.co/", "huggingface.co/", "hf.co/",
+        "https://huggingface.co/",
+        "http://huggingface.co/",
+        "https://www.huggingface.co/",
+        "huggingface.co/",
+        "hf.co/",
     ] {
         if let Some(rest) = s.strip_prefix(prefix) {
             s = rest;
@@ -531,7 +541,9 @@ fn normalize_repo(input: &str) -> Result<String> {
 
     let valid = |part: &str| {
         !part.is_empty()
-            && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     };
     if repo.matches('/').count() != 1 || !repo.split('/').all(valid) {
         return Err(AppError::msg(
@@ -590,7 +602,11 @@ pub fn add_custom_model(
         &state.paths(),
         CustomModel {
             id,
-            name: if name.trim().is_empty() { repo.clone() } else { name },
+            name: if name.trim().is_empty() {
+                repo.clone()
+            } else {
+                name
+            },
             repo,
             tasks,
             quantize,
@@ -678,7 +694,10 @@ async fn run_job(
         .ok_or_else(|| AppError::msg(format!("unknown model: {}", args.model_id)))?;
 
     if let Some(reason) = entry.broken.as_deref() {
-        return Err(AppError::msg(format!("{} cannot run. {}", entry.name, reason)));
+        return Err(AppError::msg(format!(
+            "{} cannot run. {}",
+            entry.name, reason
+        )));
     }
 
     if !entry.installed {
@@ -762,7 +781,11 @@ async fn run_job(
     if let Some(g) = args.guidance {
         params["guidance"] = json!(g);
     }
-    if let Some(n) = args.negative_prompt.as_ref().filter(|s| !s.trim().is_empty()) {
+    if let Some(n) = args
+        .negative_prompt
+        .as_ref()
+        .filter(|s| !s.trim().is_empty())
+    {
         params["negative_prompt"] = json!(n);
     }
     if let Some(s) = args.image_strength {
@@ -795,7 +818,11 @@ async fn run_job(
             "ext": "png",
         });
     }
-    if let Some(p) = args.outpaint_padding.as_ref().filter(|s| !s.trim().is_empty()) {
+    if let Some(p) = args
+        .outpaint_padding
+        .as_ref()
+        .filter(|s| !s.trim().is_empty())
+    {
         params["outpaint_padding"] = json!(p);
         if let Some(f) = args.outpaint_fill.as_ref() {
             params["outpaint_fill"] = json!(f);
@@ -818,7 +845,11 @@ async fn run_job(
 
     let produced: Vec<String> = result["outputs"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let sizes: Vec<u64> = result["sizes"]
         .as_array()
@@ -830,7 +861,11 @@ async fn run_job(
             id: id.clone(),
             content_hash: None,
             kind: op.to_string(),
-            name: format!("{}-{}.png", op, chrono::Local::now().format("%Y%m%d-%H%M%S")),
+            name: format!(
+                "{}-{}.png",
+                op,
+                chrono::Local::now().format("%Y%m%d-%H%M%S")
+            ),
             mime: "image/png".into(),
             bytes: sizes.get(i).copied().unwrap_or(0),
             model: entry.name.to_string(),
@@ -865,7 +900,10 @@ async fn run_job(
     }
 
     // Anything reserved but not produced is dead weight.
-    let unused: Vec<String> = slot_ids.into_iter().filter(|i| !produced.contains(i)).collect();
+    let unused: Vec<String> = slot_ids
+        .into_iter()
+        .filter(|i| !produced.contains(i))
+        .collect();
     state.vault.discard_slots(&unused);
 
     Ok(produced)
@@ -907,7 +945,10 @@ pub async fn upscale(
     let entry = models::find(&state.paths(), &host, &model_id)
         .ok_or_else(|| AppError::msg(format!("unknown model: {model_id}")))?;
     if !entry.installed {
-        return Err(AppError::msg(format!("{} is not downloaded yet.", entry.name)));
+        return Err(AppError::msg(format!(
+            "{} is not downloaded yet.",
+            entry.name
+        )));
     }
 
     let (slot_id, file_id, key, path) = state.vault.reserve_slot()?;
@@ -947,7 +988,11 @@ pub async fn upscale(
 
     let produced: Vec<String> = result["outputs"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let sizes: Vec<u64> = result["sizes"]
         .as_array()
@@ -959,7 +1004,10 @@ pub async fn upscale(
             id: id.clone(),
             content_hash: None,
             kind: "upscale".into(),
-            name: format!("upscale-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S")),
+            name: format!(
+                "upscale-{}.png",
+                chrono::Local::now().format("%Y%m%d-%H%M%S")
+            ),
             mime: "image/png".into(),
             bytes: sizes.get(i).copied().unwrap_or(0),
             model: entry.name.to_string(),
@@ -1027,7 +1075,6 @@ pub async fn assist_prompt(
         .await
 }
 
-
 /// Generate a clip.
 ///
 /// Frame count is the cost lever, not fps: fps is playback metadata written
@@ -1058,7 +1105,10 @@ pub async fn generate_video(
     let entry = models::find(&state.paths(), &host, &model_id)
         .ok_or_else(|| AppError::msg(format!("unknown model: {model_id}")))?;
     if let Some(reason) = entry.broken.as_deref() {
-        return Err(AppError::msg(format!("{} cannot run. {}", entry.name, reason)));
+        return Err(AppError::msg(format!(
+            "{} cannot run. {}",
+            entry.name, reason
+        )));
     }
     if !entry.installed {
         return Err(AppError::msg(format!(
@@ -1125,7 +1175,11 @@ pub async fn generate_video(
 
     let produced: Vec<String> = result["outputs"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let sizes: Vec<u64> = result["sizes"]
         .as_array()
@@ -1154,7 +1208,6 @@ pub async fn generate_video(
     }
     Ok(produced)
 }
-
 
 /// An adapter the user has installed, remembered between launches.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -1239,10 +1292,18 @@ pub async fn add_lora(
 
     let paths = state.paths();
     let mut list = load_loras(&paths);
-    let handle = if file.is_empty() { repo.clone() } else { format!("{repo}:{file}") };
+    let handle = if file.is_empty() {
+        repo.clone()
+    } else {
+        format!("{repo}:{file}")
+    };
     list.retain(|l| l.handle != handle);
     list.push(Lora {
-        name: if name.trim().is_empty() { handle.clone() } else { name },
+        name: if name.trim().is_empty() {
+            handle.clone()
+        } else {
+            name
+        },
         handle,
         repo,
         bytes,
@@ -1261,7 +1322,6 @@ pub fn remove_lora(state: State<'_, AppState>, handle: String) -> Result<Vec<Lor
     save_loras(&paths, &list)?;
     Ok(load_loras(&paths))
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1282,7 +1342,11 @@ mod tests {
             "hf.co/Qwen/Qwen-Image/",
             "https://huggingface.co/models/Qwen/Qwen-Image",
         ] {
-            assert_eq!(normalize_repo(input).unwrap(), "Qwen/Qwen-Image", "input: {input}");
+            assert_eq!(
+                normalize_repo(input).unwrap(),
+                "Qwen/Qwen-Image",
+                "input: {input}"
+            );
         }
     }
 

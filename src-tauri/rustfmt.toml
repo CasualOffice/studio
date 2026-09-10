@@ -1,0 +1,3 @@
+# Defaults, pinned so `cargo fmt --check` in CI cannot drift with the toolchain.
+edition = "2021"
+max_width = 100

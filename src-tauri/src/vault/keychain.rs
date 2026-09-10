@@ -12,17 +12,17 @@
 #![cfg(target_os = "macos")]
 
 use core_foundation::base::{CFType, TCFType};
+use core_foundation::boolean::CFBoolean;
 use core_foundation::data::CFData;
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::string::{CFString, CFStringRef};
+use core_foundation_sys::base::CFRelease;
 use security_framework::access_control::{ProtectionMode, SecAccessControl};
 use security_framework_sys::access_control::kSecAccessControlUserPresence;
-use core_foundation::boolean::CFBoolean;
-use core_foundation_sys::base::CFRelease;
 use security_framework_sys::base::{errSecItemNotFound, errSecSuccess};
 use security_framework_sys::item::{
-    kSecAttrAccessControl, kSecAttrAccount, kSecAttrService, kSecClass,
-    kSecClassGenericPassword, kSecMatchLimit, kSecReturnData, kSecValueData,
+    kSecAttrAccessControl, kSecAttrAccount, kSecAttrService, kSecClass, kSecClassGenericPassword,
+    kSecMatchLimit, kSecReturnData, kSecValueData,
 };
 use security_framework_sys::keychain_item::{SecItemAdd, SecItemCopyMatching, SecItemDelete};
 use zeroize::Zeroize;
@@ -74,7 +74,10 @@ fn access_control() -> Result<SecAccessControl, KeychainError> {
 fn base_query() -> Vec<(CFString, CFType)> {
     unsafe {
         vec![
-            (cfstr(kSecClass), cfstr(kSecClassGenericPassword).as_CFType()),
+            (
+                cfstr(kSecClass),
+                cfstr(kSecClassGenericPassword).as_CFType(),
+            ),
             (cfstr(kSecAttrService), CFString::new(SERVICE).as_CFType()),
             (cfstr(kSecAttrAccount), CFString::new(ACCOUNT).as_CFType()),
         ]
@@ -117,7 +120,10 @@ pub fn load_kek(prompt: &str) -> Result<[u8; 32], KeychainError> {
     unsafe {
         pairs.push((cfstr(kSecReturnData), CFBoolean::true_value().as_CFType()));
         pairs.push((cfstr(kSecMatchLimit), cfstr(kSecMatchLimitOne).as_CFType()));
-        pairs.push((cfstr(kSecUseOperationPrompt), CFString::new(prompt).as_CFType()));
+        pairs.push((
+            cfstr(kSecUseOperationPrompt),
+            CFString::new(prompt).as_CFType(),
+        ));
     }
     let dict = CFDictionary::from_CFType_pairs(&pairs);
 
@@ -184,15 +190,26 @@ pub fn biometry_usable() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
 
     *CACHED.get_or_init(|| {
-        let Ok(acl) = access_control() else { return false };
+        let Ok(acl) = access_control() else {
+            return false;
+        };
         let probe = crate::vault::crypto::random_bytes::<32>();
 
         let mut pairs = unsafe {
             vec![
-                (cfstr(kSecClass), cfstr(kSecClassGenericPassword).as_CFType()),
+                (
+                    cfstr(kSecClass),
+                    cfstr(kSecClassGenericPassword).as_CFType(),
+                ),
                 (cfstr(kSecAttrService), CFString::new(SERVICE).as_CFType()),
-                (cfstr(kSecAttrAccount), CFString::new(PROBE_ACCOUNT).as_CFType()),
-                (cfstr(kSecValueData), CFData::from_buffer(&probe).as_CFType()),
+                (
+                    cfstr(kSecAttrAccount),
+                    CFString::new(PROBE_ACCOUNT).as_CFType(),
+                ),
+                (
+                    cfstr(kSecValueData),
+                    CFData::from_buffer(&probe).as_CFType(),
+                ),
                 (cfstr(kSecAttrAccessControl), acl.as_CFType()),
             ]
         };
