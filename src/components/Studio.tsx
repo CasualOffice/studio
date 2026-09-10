@@ -513,6 +513,12 @@ export default function Studio({
           )}
         </div>
 
+        {/* Style is what a picture board is made of, so the adapters that
+            carry it are not an advanced setting. This used to sit inside the
+            Advanced block, which is off by default -- so they could not be
+            found at all without knowing they were there. */}
+        <Loras selected={loras} onSelectedChange={setLoras} notify={notify} />
+
         {advanced && (
           <>
             <div className="panel">
@@ -605,8 +611,6 @@ export default function Studio({
                 </div>
               </div>
             </div>
-
-            <Loras selected={loras} onSelectedChange={setLoras} notify={notify} />
 
             <div className="panel">
               <h2>Memory</h2>

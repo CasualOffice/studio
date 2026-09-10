@@ -1498,9 +1498,9 @@ def op_resolve(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         # never generate anything, so say what it is instead of "unsupported".
         kind = "lora"
         route_error = (
-            "This is a LoRA adapter, not a complete model. Add it on the LoRAs "
-            "tab instead, where it can be applied on top of a model you already "
-            "have."
+            "This is a LoRA adapter, not a complete model. Add it under "
+            "\"Style adapters\" on the Generate panel instead, where it can be "
+            "applied on top of a model you already have."
         )
     elif not tasks:
         # The unified router could not place it. FLUX.1 is a separate lineage

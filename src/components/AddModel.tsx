@@ -132,7 +132,8 @@ export default function AddModel({
             <>
               <strong>This is a LoRA, not a model</strong>
               An adapter refines a model you already have; it cannot generate on
-              its own. Add it on the <b>LoRAs</b> tab, using the same repo id.
+              its own. Add it under <b>Style adapters</b> on the Generate panel,
+              using the same repo id.
             </>
           ) : resolved.needs_token ? (
             <>
