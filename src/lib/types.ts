@@ -6,6 +6,10 @@ export interface HostInfo {
   arch: string;
   total_ram_gib: number;
   usable_ram_gib: number;
+  /** Largest model this Mac can run, in billions of parameters. */
+  max_params_4bit: number;
+  max_params_8bit: number;
+  max_params_bf16: number;
   free_disk_gib: number;
   total_disk_gib: number;
   disk_headroom_gib: number;
@@ -167,6 +171,10 @@ export interface ResolvedModel {
   fit_reason: string;
   /** Smallest Mac memory configuration that would run it, if not this one. */
   required_ram_gib: number | null;
+  /** Parameter count, when the repository reports one. */
+  params: number;
+  max_params_4bit: number;
+  max_params_8bit: number;
 }
 
 export interface StorageInfo {

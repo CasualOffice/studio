@@ -154,7 +154,7 @@ export default function Models({
         </div>
       )}
 
-      <AddModel onAdded={onChanged} notify={notify} />
+      <AddModel onAdded={onChanged} notify={notify} host={host} />
 
       <div className="group-label">Runs on this Mac</div>
       <div className="model-list">{runnable.map(card)}</div>

@@ -32,6 +32,33 @@ pub struct HostInfo {
     /// Threads the engine may use for CPU-side work.
     pub worker_threads: usize,
     pub total_cores: usize,
+    /// Largest model this machine can run, in billions of parameters, at each
+    /// precision. Stated up front so nobody has to discover it by pasting
+    /// links and reading failures.
+    pub max_params_4bit: f32,
+    pub max_params_8bit: f32,
+    pub max_params_bf16: f32,
+}
+
+/// Bytes each parameter occupies at a given precision.
+const BYTES_PER_PARAM_4BIT: f32 = 0.5;
+const BYTES_PER_PARAM_8BIT: f32 = 1.0;
+const BYTES_PER_PARAM_BF16: f32 = 2.0;
+
+/// Text encoders, VAE and tokenizers ride along with every image model and do
+/// not shrink with the transformer's quantization. Measured across the
+/// catalog: FLUX.2 Klein 4B q4 is 4.3 GiB for a 4B transformer, and FLUX.1 dev
+/// 12B q4 is 8.95 GiB for a 11.9B one, which puts the fixed part near 2.8 GiB.
+const COMPANION_GIB: f32 = 2.8;
+
+/// How many billion parameters fit, given what is usable and the precision.
+///
+/// Inverts the same relationship the catalog uses in the other direction:
+/// peak is roughly the package plus a quarter again for activations, plus a
+/// gigabyte of runtime.
+fn max_params(usable_gib: f32, bytes_per_param: f32) -> f32 {
+    let max_package = ((usable_gib - 1.0) / 1.25 - COMPANION_GIB).max(0.0);
+    (max_package / bytes_per_param).max(0.0)
 }
 
 impl HostInfo {
@@ -73,6 +100,18 @@ impl HostInfo {
             memory_budget_gib: (total_ram_gib - RESERVED_GIB - 0.5).max(1.0),
             worker_threads: total_cores.saturating_sub(RESERVED_CORES).max(1),
             total_cores,
+            max_params_4bit: max_params(
+                (total_ram_gib - RESERVED_GIB).max(0.0),
+                BYTES_PER_PARAM_4BIT,
+            ),
+            max_params_8bit: max_params(
+                (total_ram_gib - RESERVED_GIB).max(0.0),
+                BYTES_PER_PARAM_8BIT,
+            ),
+            max_params_bf16: max_params(
+                (total_ram_gib - RESERVED_GIB).max(0.0),
+                BYTES_PER_PARAM_BF16,
+            ),
             chip: cpu_brand(),
             apple_silicon: arch == "aarch64",
             arch,
@@ -94,4 +133,41 @@ fn cpu_brand() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Unknown CPU".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Checked against models whose real sizes are known: FLUX.2 Klein 4B at
+    /// q4 occupies 4.3 GiB and runs comfortably on 16 GB, while FLUX.1 dev at
+    /// 11.9B and q4 occupies 8.95 GiB and sits right at the edge.
+    #[test]
+    fn a_16gb_mac_lands_where_measurement_says_it_should() {
+        let usable = 16.0 - RESERVED_GIB;
+        let four = max_params(usable, BYTES_PER_PARAM_4BIT);
+        let eight = max_params(usable, BYTES_PER_PARAM_8BIT);
+
+        assert!((10.0..14.0).contains(&four), "4-bit ceiling was {four}B");
+        assert!((5.0..7.0).contains(&eight), "8-bit ceiling was {eight}B");
+        assert!(four > eight, "lower precision must allow a larger model");
+    }
+
+    #[test]
+    fn qwen_image_is_correctly_out_of_reach_on_16gb() {
+        // 20.4B, and the catalog's measured peak agrees it does not fit.
+        assert!(max_params(16.0 - RESERVED_GIB, BYTES_PER_PARAM_4BIT) < 20.4);
+    }
+
+    #[test]
+    fn a_larger_machine_allows_more() {
+        let small = max_params(16.0 - RESERVED_GIB, BYTES_PER_PARAM_4BIT);
+        let large = max_params(64.0 - RESERVED_GIB, BYTES_PER_PARAM_4BIT);
+        assert!(large > small * 3.0, "{small}B vs {large}B");
+    }
+
+    #[test]
+    fn a_tiny_machine_reports_zero_rather_than_a_negative() {
+        assert_eq!(max_params(2.0, BYTES_PER_PARAM_BF16), 0.0);
+    }
 }

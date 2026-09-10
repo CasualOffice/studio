@@ -578,6 +578,11 @@ pub async fn resolve_model(
     resolved["fit"] = serde_json::to_value(fit)?;
     resolved["fit_reason"] = json!(reason);
     resolved["required_ram_gib"] = json!(models::required_ram_gib(peak));
+
+    // What this machine can take, so a refusal explains itself in the same
+    // terms the user was thinking in.
+    resolved["max_params_4bit"] = json!(host.max_params_4bit);
+    resolved["max_params_8bit"] = json!(host.max_params_8bit);
     Ok(resolved)
 }
 

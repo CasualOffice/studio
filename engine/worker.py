@@ -1199,10 +1199,15 @@ def op_resolve(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     size = 0
     private = False
     gated = False
+    params = 0
     try:
         from huggingface_hub import HfApi
 
         info = HfApi().model_info(repo, files_metadata=True)
+        # Hugging Face reports this for ordinary repositories but not for
+        # quantized packages, whose tensors are stored differently.
+        st = getattr(info, "safetensors", None)
+        params = int(getattr(st, "total", 0) or 0) if st else 0
         # Count only what MLX-Gen would actually fetch: weights and tokenizers,
         # not the repo's images, ONNX exports or duplicate formats.
         for sib in info.siblings or []:
@@ -1229,6 +1234,7 @@ def op_resolve(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         "modes": modes,
         "tasks": tasks,
         "bytes": size,
+        "params": params,
         "private": private,
         "gated": gated,
         "routable": bool(tasks),

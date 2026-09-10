@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api, errText, fmtBytes } from "../lib/api";
-import type { ResolvedModel } from "../lib/types";
+import type { HostInfo, ResolvedModel } from "../lib/types";
 
 const TASK_LABEL: Record<string, string> = {
   text_to_image: "Generate",
@@ -15,10 +15,11 @@ const TASK_LABEL: Record<string, string> = {
  * spending a byte.
  */
 export default function AddModel({
-  onAdded, notify,
+  onAdded, notify, host,
 }: {
   onAdded: () => void;
   notify: (m: string, bad?: boolean) => void;
+  host: HostInfo | null;
 }) {
   const [open, setOpen] = useState(false);
   const [repo, setRepo] = useState("");
@@ -88,11 +89,18 @@ export default function AddModel({
           Paste a model link from huggingface.co, or type <code>owner/name</code>.
           It is checked against this Mac before anything downloads.
           <div style={{ marginTop: 6 }}>
-            The engine runs the <b>FLUX.2</b>, <b>Qwen-Image</b>, <b>Z-Image</b>,
-            <b> ERNIE</b>, <b>FIBO</b>, <b>Bonsai</b> and <b>Wan</b> families.
-            Stable Diffusion, SDXL and FLUX.1 are different architectures and
-            will not run. Pre-quantized MLX packages work best — a
-            full-precision repository is usually far too large for this Mac.
+            {host && (
+              <>
+                This Mac fits roughly <b>{host.max_params_4bit.toFixed(0)}B parameters
+                at 4-bit</b> or <b>{host.max_params_8bit.toFixed(0)}B at 8-bit</b>.
+                {" "}Anything larger will not run, whatever its file size says.
+                <br />
+              </>
+            )}
+            It also has to be an architecture the engine knows: <b>FLUX.2</b>,
+            {" "}<b>Qwen-Image</b>, <b>Z-Image</b>, <b>ERNIE</b>, <b>FIBO</b>,
+            {" "}<b>Bonsai</b> or <b>Wan</b>. Stable Diffusion, SDXL and FLUX.1
+            are different architectures and will not run here.
           </div>
         </div>
       </div>
@@ -113,10 +121,18 @@ export default function AddModel({
             <>
               <strong>
                 {resolved.tasks.map((t) => TASK_LABEL[t] ?? t).join(" · ")}
+                {resolved.params > 0 && ` · ${(resolved.params / 1e9).toFixed(1)}B parameters`}
                 {" · "}{fmtBytes(resolved.bytes)} download
                 {" · "}~{resolved.peak_gib.toFixed(1)} GiB memory
                 {runsHere ? " · runs here" : " · will not run here"}
               </strong>
+              {resolved.params > 0 && resolved.params / 1e9 > resolved.max_params_4bit && (
+                <div style={{ marginBottom: 6 }}>
+                  At {(resolved.params / 1e9).toFixed(1)}B it is beyond this
+                  Mac&rsquo;s ceiling of about {resolved.max_params_4bit.toFixed(0)}B,
+                  even quantized to 4-bit.
+                </div>
+              )}
               {resolved.fit_reason}
               {resolved.gated && " This repo is gated — accept its licence on Hugging Face first."}
               {" "}Memory is estimated from the download size, not a published benchmark.
