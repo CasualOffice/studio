@@ -173,7 +173,7 @@ export default function App() {
   if (!setup.ready) {
     return (
       <>
-        <div className="drag-region" />
+        <div className="drag-region" data-tauri-drag-region />
         <Setup
           host={host}
           state={setup}
@@ -190,7 +190,7 @@ export default function App() {
   if (!vault.unlocked) {
     return (
       <>
-        <div className="drag-region" />
+        <div className="drag-region" data-tauri-drag-region />
         <VaultGate status={vault} onOpen={setVault} />
         {toast && <Toast msg={toast.msg} bad={toast.bad} onDone={() => setToast(null)} />}
       </>
@@ -204,7 +204,7 @@ export default function App() {
 
   return (
     <div className="shell">
-      <div className="drag-region" />
+      <div className="drag-region" data-tauri-drag-region />
       <aside className="sidebar">
         <div className="brand">
           Model Studio
@@ -261,9 +261,9 @@ export default function App() {
       </aside>
 
       <main className="main">
-        <div className="topbar">
-          <h1>{TABS.find(([id]) => id === tab)?.[2]}</h1>
-          <div className="spacer" />
+        <div className="topbar" data-tauri-drag-region>
+          <h1 data-tauri-drag-region>{TABS.find(([id]) => id === tab)?.[2]}</h1>
+          <div className="spacer" data-tauri-drag-region />
           {busyLabel && (
             <span className="pill" title="A job is running in the engine">
               <span className="spin">◐</span> {busyLabel}

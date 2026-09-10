@@ -123,6 +123,10 @@ pub fn run() {
     let vault = Arc::new(Vault::new(paths.vault()));
 
     tauri::Builder::default()
+        // The standard macOS menu. It carries Cmd-C, Cmd-V, Cmd-A and the
+        // window controls; without a menu those shortcuts do not exist, so
+        // selected text cannot be copied out of the app at all.
+        .menu(tauri::menu::Menu::default)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .register_uri_scheme_protocol("vault", |ctx, request| {
