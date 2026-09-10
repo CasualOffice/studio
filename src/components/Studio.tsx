@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, errText, fmtDuration, newJobId, onEnginePreview, onEngineProgress, vaultUrl } from "../lib/api";
+import { api, errDetail, errText, fmtDuration, newJobId, onEnginePreview, onEngineProgress, vaultUrl } from "../lib/api";
 import type { EngineProgress, ModelStatus, Recipe } from "../lib/types";
 import { autoPick, estimateSeconds, humanDuration, QUALITY_LABEL, SHAPES, stepsFor, type Quality } from "../lib/presets";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
@@ -243,7 +243,11 @@ export default function Studio({
       if (res.length === 0) notify("The engine returned no output.", true);
     } catch (e) {
       const msg = errText(e);
-      notify(msg.includes("cancelled") ? "Cancelled." : msg, !msg.includes("cancelled"));
+      const detail = errDetail(e);
+      // Keep the engine's own wording where it differs; the toast is short by
+      // design and the original is what a diagnosis needs.
+      if (detail) console.error("engine:", detail);
+      notify(msg.includes("ancelled") ? "Cancelled." : msg, !msg.includes("ancelled"));
     } finally {
       un(); unPrev();
       setRunning(false); setJobId(null); setProg(null);

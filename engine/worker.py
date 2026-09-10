@@ -1814,7 +1814,11 @@ def op_video(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         if req.get("negative_prompt"):
             optional["negative_prompt"] = req["negative_prompt"]
         if req.get("guidance") is not None:
+            # Wan calls this `guidance`; Bernini steers references with
+            # `reference_guidance` and its documented default is 4.5. Offering
+            # both lets the tolerance layer keep whichever the route names.
             optional["guidance"] = req["guidance"]
+            optional["reference_guidance"] = req["guidance"]
 
         target = getattr(loaded, "model", loaded)
         gen_started = time.time()

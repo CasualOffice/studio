@@ -1,5 +1,6 @@
 mod catalog;
 mod commands;
+mod diagnose;
 mod engine;
 mod error;
 mod hostinfo;

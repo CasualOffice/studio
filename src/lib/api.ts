@@ -14,6 +14,21 @@ export function errText(e: unknown): string {
   return String(e);
 }
 
+/**
+ * The engine's original wording, when there is one.
+ *
+ * Failures are restated in plain language for the toast, but the raw text is
+ * what you need when the restatement is not enough, so it travels alongside.
+ */
+export function errDetail(e: unknown): string | null {
+  if (e && typeof e === "object" && "detail" in e) {
+    const d = String((e as { detail: unknown }).detail);
+    const m = "message" in e ? String((e as { message: unknown }).message) : "";
+    return d && d !== m ? d : null;
+  }
+  return null;
+}
+
 export const api = {
   hostInfo: () => invoke<HostInfo>("host_info"),
   setupState: () => invoke<SetupState>("setup_state"),

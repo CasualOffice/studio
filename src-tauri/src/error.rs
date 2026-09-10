@@ -52,9 +52,19 @@ impl Serialize for AppError {
             AppError::Json(_) => "json",
             AppError::Msg(_) => "error",
         };
-        let mut st = s.serialize_struct("AppError", 2)?;
+        // Engine failures carry whatever Python raised. Accurate, rarely
+        // useful; restate the ones we recognise and keep the original for the
+        // Activity tab.
+        let raw = self.to_string();
+        let message = match self {
+            AppError::Engine(inner) => crate::diagnose::humanize(inner),
+            _ => raw.clone(),
+        };
+
+        let mut st = s.serialize_struct("AppError", 3)?;
         st.serialize_field("kind", kind)?;
-        st.serialize_field("message", &self.to_string())?;
+        st.serialize_field("message", &message)?;
+        st.serialize_field("detail", &raw)?;
         st.end()
     }
 }
