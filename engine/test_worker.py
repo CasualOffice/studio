@@ -291,8 +291,10 @@ class TrimToSentence(unittest.TestCase):
         self.assertEqual(worker._trim_to_sentence(text), text)
 
     def test_enforces_the_word_cap(self):
+        # 90, not 55. These models read prompts through a T5 encoder and handle
+        # long scene direction well; a 50-word prompt beats a 10-word one.
         long = " ".join(["word"] * 200)
-        self.assertLessEqual(len(worker._trim_to_sentence(long).split()), 56)
+        self.assertLessEqual(len(worker._trim_to_sentence(long).split()), 91)
 
 
 
@@ -417,6 +419,93 @@ class NoContradiction(unittest.TestCase):
         out = worker._enrich_edit_instruction("make it blue", self.FACTS)
         self.assertIn("glazed stoneware", out)
         self.assertIn("linen", out)
+
+
+
+
+class SceneDirection(unittest.TestCase):
+    """Prompts these models can actually use.
+
+    They read through a T5 encoder, which parses grammar, so flowing
+    description outperforms a keyword list. An earlier version emitted
+    comma-separated tags under twenty-five words -- how you prompt Stable
+    Diffusion, and close to the opposite of what works here.
+    """
+
+    SLOTS = {
+        "SUBJECT": "a tabby cat with dense grey-brown fur",
+        "ACTION": "curled tight with its tail over its nose",
+        "SETTING": "a painted wooden windowsill, bare garden beyond",
+        "LIGHT": "low afternoon sun from the left, warm and raking",
+        "CAMERA": "close shot, 50mm, shallow depth of field",
+        "MOOD": "quiet and drowsy",
+    }
+
+    def test_reads_as_prose_not_tags(self):
+        out = worker._compose_scene("a cat", self.SLOTS)
+        # Sentences, not one long comma run.
+        self.assertGreaterEqual(out.count(". "), 2, out)
+        self.assertGreater(len(out.split()), 25, "too short to help: " + out)
+
+    def test_keeps_the_users_subject(self):
+        out = worker._compose_scene("a cat", self.SLOTS)
+        self.assertIn("cat", out.lower())
+
+    def test_anchors_when_the_model_drifts(self):
+        # The model answered about something else entirely; the request must
+        # survive, and lead, rather than be bracketed as an afterthought.
+        drifted = {**self.SLOTS, "SUBJECT": "a copper kettle"}
+        out = worker._compose_scene("a cat", drifted)
+        self.assertIn("cat", out.lower(), out)
+        self.assertTrue(out.lower().startswith("a cat:"), out)
+
+    def test_does_not_anchor_when_the_subject_already_matches(self):
+        # No need to repeat the request when the description contains it.
+        out = worker._compose_scene("a cat", self.SLOTS)
+        self.assertNotIn(":", out.split(".")[0], out)
+
+    def test_light_and_camera_become_their_own_sentences(self):
+        out = worker._compose_scene("a cat", self.SLOTS)
+        self.assertIn("50mm", out)
+        self.assertIn("afternoon sun", out)
+
+    def test_skipped_slots_are_dropped(self):
+        facts = worker._parse_scene(
+            "SUBJECT: a red car\nACTION: skip\nSETTING: a wet street\n"
+            "LIGHT: skip\nCAMERA: wide shot\n"
+        )
+        self.assertNotIn("ACTION", facts)
+        self.assertNotIn("LIGHT", facts)
+        self.assertEqual(facts["CAMERA"], "wide shot")
+
+    def test_empty_modifiers_are_removed(self):
+        # These promise quality without describing anything, and on a T5
+        # encoder they consume attention for nothing.
+        for filler in ("beautiful", "8k", "masterpiece", "highly detailed",
+                       "trending on artstation"):
+            out = worker._strip_empty_modifiers(f"a {filler} red car on a wet street")
+            self.assertNotIn(filler.split()[0], out.lower(), out)
+            self.assertIn("red car", out)
+
+    def test_falls_back_when_the_model_ignores_the_format(self):
+        out = worker._compose_scene("a cat", {})
+        self.assertEqual(out, "a cat.")
+
+
+
+
+class SignificantWords(unittest.TestCase):
+    """Short words are usually the whole request."""
+
+    def test_three_letter_subjects_count(self):
+        for word in ("cat", "red", "sun", "car", "sky", "dog"):
+            self.assertIn(word, worker._significant(f"a {word} in the picture"),
+                          f"{word!r} was discarded")
+
+    def test_filler_is_still_ignored(self):
+        got = worker._significant("please make it more beautiful")
+        self.assertNotIn("make", got)
+        self.assertNotIn("more", got)
 
 
 if __name__ == "__main__":

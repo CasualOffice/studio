@@ -725,18 +725,38 @@ SCENE_SYSTEM = (
     "SETTING: crumpled linen cloth, pale wall\n"
 )
 
-# For text-only ideas the model supplies extra detail, not a replacement.
-DETAIL_SYSTEM = (
-    "The user has an idea for a picture. Add visual detail to it.\n"
-    "Rules:\n"
-    "- Do NOT restate their idea. Write only what should be ADDED.\n"
-    "- Lighting, materials, colour palette, camera framing, mood.\n"
-    "- A few comma-separated phrases. Under 25 words. No full sentence.\n"
-    "- Never add text, logos or watermarks.\n\n"
+# Structured scene direction for a text-only idea.
+#
+# These models read prompts through a T5 encoder, which parses grammar: flowing
+# description outperforms a list of tags, and long prompts outperform short
+# ones. The earlier version asked for comma-separated keywords under
+# twenty-five words, which is how you prompt Stable Diffusion and close to the
+# opposite of what works here.
+#
+# Slots rather than free writing, because a 2B model asked for "a vivid prompt"
+# produces adjective soup. Asked what the light is doing, it answers.
+SCENE_DIRECTION_SYSTEM = (
+    "You are directing a photograph or illustration from a short idea.\n"
+    "Answer as labelled lines and nothing else. Each is a phrase, not a "
+    "sentence.\n"
+    "Be concrete. Name things. Never write 'beautiful', 'stunning', "
+    "'high quality', '8k' or 'masterpiece' -- they carry no visual "
+    "information.\n"
+    "If the idea does not imply a slot, write: skip\n\n"
+    "SUBJECT: the main thing, with its material, colour and condition\n"
+    "ACTION: what it is doing or how it is arranged\n"
+    "SETTING: what it rests on and what is behind it\n"
+    "LIGHT: the source, its direction, and whether it is warm or cool\n"
+    "CAMERA: shot size, lens, and depth of field\n"
+    "MOOD: the overall feeling, in two or three words\n\n"
     "Example\n"
     "User idea: a cat\n"
-    "You add: curled on a windowsill, low afternoon sun, warm rim light, "
-    "shallow depth of field, muted colours\n"
+    "SUBJECT: a tabby cat with dense grey-brown fur\n"
+    "ACTION: curled tight with its tail over its nose\n"
+    "SETTING: a painted wooden windowsill, bare garden beyond the glass\n"
+    "LIGHT: low afternoon sun from the left, warm and raking\n"
+    "CAMERA: close shot, 50mm, shallow depth of field\n"
+    "MOOD: quiet and drowsy\n"
 )
 
 # Words that carry no intent, so their presence proves nothing about whether a
@@ -765,7 +785,7 @@ def _keeps_intent(original: str, rewritten: str) -> bool:
     return any(any(w.startswith(g[:4]) or g.startswith(w[:4]) for g in got) for w in wanted)
 
 
-def _trim_to_sentence(text: str, max_words: int = 55) -> str:
+def _trim_to_sentence(text: str, max_words: int = 90) -> str:
     """Cut back to the last complete sentence.
 
     A token limit lands wherever it lands, so the model regularly stops
@@ -875,9 +895,14 @@ def _collapse_repetition(text: str) -> str:
 
 
 def _significant(text: str) -> list[str]:
-    """Content words, ignoring filler that carries no meaning."""
+    """Content words, ignoring filler that carries no meaning.
+
+    Three characters counts. The threshold was four, which silently discarded
+    "cat", "red", "sun", "car" and "sky" -- short words that are usually the
+    entire point of a request.
+    """
     cleaned = "".join(c.lower() if c.isalnum() else " " for c in text)
-    return [w for w in cleaned.split() if len(w) > 3 and w not in _STOPWORDS]
+    return [w for w in cleaned.split() if len(w) > 2 and w not in _STOPWORDS]
 
 
 def _parse_scene(text: str) -> dict[str, str]:
@@ -893,11 +918,12 @@ def _parse_scene(text: str) -> dict[str, str]:
         key, _, value = line.partition(":")
         key = key.strip().strip("-*# ").upper()
         value = " ".join(value.split()).strip(" .")
-        if key in ("SUBJECT", "SURFACE", "LIGHT", "SETTING") and value:
-            if value.lower() in ("unknown", "n/a", "none"):
+        if key in ("SUBJECT", "SURFACE", "LIGHT", "SETTING",
+                   "ACTION", "CAMERA", "MOOD") and value:
+            if value.lower() in ("unknown", "n/a", "none", "skip", "-"):
                 continue
             # Guard against an answer that turns into a paragraph.
-            facts[key] = " ".join(value.split()[:8])
+            facts[key] = " ".join(value.split()[:12])
     return facts
 
 
@@ -994,22 +1020,72 @@ def _enrich_edit_instruction(user_prompt: str, facts: dict[str, str]) -> str:
     return ", ".join(clauses).replace(", and ", " and ") + "."
 
 
-def _enrich_idea(user_prompt: str, detail: str) -> str:
-    """Put the user's idea first, then the added detail.
+# Words that promise quality without describing anything. They survive from
+# Stable Diffusion prompting, where they acted as style tokens; on a T5 encoder
+# they consume attention and contribute nothing.
+_EMPTY_MODIFIERS = (
+    "beautiful", "stunning", "gorgeous", "amazing", "masterpiece", "best quality",
+    "high quality", "highly detailed", "ultra detailed", "8k", "4k", "hdr",
+    "award winning", "trending on artstation", "professional", "perfect",
+)
 
-    The earlier version asked for a whole new sentence, which is how "a cat"
-    became a paragraph about a room with no cat in it. Leading with their exact
-    words means the subject cannot be lost.
+
+def _strip_empty_modifiers(text: str) -> str:
+    """Remove quality-promising filler, keeping the description intact."""
+    out = text
+    for word in _EMPTY_MODIFIERS:
+        out = re.sub(rf"\b{re.escape(word)}\b,?\s*", "", out, flags=re.IGNORECASE)
+    return " ".join(out.split()).strip(" ,")
+
+
+def _compose_scene(user_prompt: str, slots: dict[str, str]) -> str:
+    """Assemble scene direction into flowing prose.
+
+    Ordered subject, action, setting, then light, then camera, because that is
+    the order these models resolve a scene in: what, doing what, where, lit
+    how, seen how. Written as sentences rather than a keyword list, since the
+    T5 encoder reads grammar.
     """
     idea = user_prompt.strip().rstrip(".,")
-    extra = _collapse_repetition(_clean_assist(detail, "")).strip().rstrip(".")
-    # Strip a restatement if the model ignored the instruction not to.
+    if not slots:
+        return f"{idea}."
+
+    subject = _strip_empty_modifiers(slots.get("SUBJECT", "")) or idea
+    # If the described subject shares nothing with what was asked for, the
+    # model drifted. Lead with the request and let the description follow it,
+    # rather than bracketing the request as an afterthought.
+    drifted = not set(_significant(idea)) & set(_significant(subject))
+    if drifted and _significant(idea):
+        subject = f"{idea}: {subject}"
+
+    opening = ", ".join(
+        p for p in (
+            subject,
+            _strip_empty_modifiers(slots.get("ACTION", "")),
+            _strip_empty_modifiers(slots.get("SETTING", "")),
+        ) if p
+    )
+
+    tail = [
+        _strip_empty_modifiers(slots.get(k, ""))
+        for k in ("LIGHT", "CAMERA", "MOOD")
+    ]
+    sentences = [opening] + [t for t in tail if t]
+    return ". ".join(s[0].upper() + s[1:] if s else s for s in sentences).rstrip(".") + "."
+
+
+def _enrich_idea(user_prompt: str, detail: str) -> str:
+    """Fallback for a model that ignored the slot format entirely."""
+    idea = user_prompt.strip().rstrip(".,")
+    extra = _strip_empty_modifiers(
+        _collapse_repetition(_clean_assist(detail, "")).strip().rstrip(".")
+    )
     low = extra.lower()
     if low.startswith(idea.lower()):
         extra = extra[len(idea):].lstrip(" ,")
     if not extra:
         return f"{idea}."
-    return _trim_to_sentence(f"{idea}, {extra}.")
+    return _trim_to_sentence(f"{idea}, {extra}.", max_words=90)
 
 
 def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
@@ -1055,10 +1131,16 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             emit({"id": req_id, "type": "progress", "phase": "denoise",
                   "progress": None, "message": "Writing the prompt"})
             instruction = (
-                f"{DETAIL_SYSTEM}\nNow do the same here.\n"
-                f"User idea: {user_prompt}\nYou add:"
+                f"{SCENE_DIRECTION_SYSTEM}\nNow do the same here.\n"
+                f"User idea: {user_prompt}\n"
             )
-            improved = _enrich_idea(user_prompt, ask(instruction, [], 120, 0.5))
+            raw = ask(instruction, [], 220, 0.4)
+            slots = _parse_scene(raw)
+            improved = (
+                _compose_scene(user_prompt, slots) if slots
+                else _enrich_idea(user_prompt, raw)
+            )
+            description = " · ".join(f"{k.lower()}: {v}" for k, v in slots.items())
 
         if not _keeps_intent(user_prompt, improved):
             log(req_id, f"discarding rewrite {improved!r}: it lost the request", "warn")
