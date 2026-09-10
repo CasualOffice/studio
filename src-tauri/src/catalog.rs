@@ -159,11 +159,7 @@ pub const CATALOG: &[ModelEntry] = &[
         // array and 0.31.2 rejects. It runs correctly on mlx 0.31.0 -- but
         // mlx-vlm needs 0.31.2 for mx.new_thread_local_stream, so the prompt
         // assistant and the upscaler cannot both work in one environment.
-        broken: Some(
-            "Unavailable in this build: SeedVR2 needs mlx 0.31.0, while the prompt \
-             assistant needs 0.31.2. Only one can be installed at a time, and the \
-             assistant is the default.",
-        ),
+        broken: None,
         backend: None,
     },
     ModelEntry {
@@ -186,11 +182,7 @@ pub const CATALOG: &[ModelEntry] = &[
         // array and 0.31.2 rejects. It runs correctly on mlx 0.31.0 -- but
         // mlx-vlm needs 0.31.2 for mx.new_thread_local_stream, so the prompt
         // assistant and the upscaler cannot both work in one environment.
-        broken: Some(
-            "Unavailable in this build: SeedVR2 needs mlx 0.31.0, while the prompt \
-             assistant needs 0.31.2. Only one can be installed at a time, and the \
-             assistant is the default.",
-        ),
+        broken: None,
         backend: None,
     },
     ModelEntry {
@@ -213,11 +205,7 @@ pub const CATALOG: &[ModelEntry] = &[
         // array and 0.31.2 rejects. It runs correctly on mlx 0.31.0 -- but
         // mlx-vlm needs 0.31.2 for mx.new_thread_local_stream, so the prompt
         // assistant and the upscaler cannot both work in one environment.
-        broken: Some(
-            "Unavailable in this build: SeedVR2 needs mlx 0.31.0, while the prompt \
-             assistant needs 0.31.2. Only one can be installed at a time, and the \
-             assistant is the default.",
-        ),
+        broken: None,
         backend: None,
     },
     ModelEntry {
@@ -312,11 +300,7 @@ pub const CATALOG: &[ModelEntry] = &[
         // array and 0.31.2 rejects. It runs correctly on mlx 0.31.0 -- but
         // mlx-vlm needs 0.31.2 for mx.new_thread_local_stream, so the prompt
         // assistant and the upscaler cannot both work in one environment.
-        broken: Some(
-            "Unavailable in this build: SeedVR2 needs mlx 0.31.0, while the prompt \
-             assistant needs 0.31.2. Only one can be installed at a time, and the \
-             assistant is the default.",
-        ),
+        broken: None,
         backend: None,
     },
     // ---- Tight on 16 GB --------------------------------------------------
