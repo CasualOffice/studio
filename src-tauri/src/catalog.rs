@@ -48,6 +48,10 @@ pub struct ModelEntry {
     /// Set when the model cannot currently run regardless of hardware, e.g. an
     /// upstream defect. Shown to the user instead of a memory verdict.
     pub broken: Option<&'static str>,
+    /// Which engine path runs this. `None` means MLX-Gen's unified router;
+    /// a value names an mflux backend, used for FLUX.1, which that router
+    /// does not cover.
+    pub backend: Option<&'static str>,
 }
 
 pub const CATALOG: &[ModelEntry] = &[
@@ -70,6 +74,7 @@ pub const CATALOG: &[ModelEntry] = &[
                 Small enough to stay loaded beside an image model. Runs entirely \
                 on this Mac — nothing is sent anywhere.",
         broken: None,
+        backend: None,
     },
     // ---- Comfortable on 16 GB -------------------------------------------
     ModelEntry {
@@ -95,6 +100,7 @@ pub const CATALOG: &[ModelEntry] = &[
             "Broken in mlx-gen 0.36.0: the Bonsai route raises AttributeError on \
              compiled_predict_cache. Nothing to do but wait for an upstream fix.",
         ),
+        backend: None,
     },
     ModelEntry {
         id: "flux2-klein-4b-4bit",
@@ -112,6 +118,7 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 1.0,
         notes: "Best all-rounder under 16 GB: does both generation and instruction editing.",
         broken: None,
+        backend: None,
     },
     ModelEntry {
         id: "flux2-klein-base-4b-4bit",
@@ -130,6 +137,7 @@ pub const CATALOG: &[ModelEntry] = &[
         notes: "Same size as the distilled Klein but accepts guidance and negative prompts, \
                 so prompts steer harder. Needs more steps in exchange.",
         broken: None,
+        backend: None,
     },
     ModelEntry {
         id: "seedvr2-3b-4bit",
@@ -156,6 +164,7 @@ pub const CATALOG: &[ModelEntry] = &[
              assistant needs 0.31.2. Only one can be installed at a time, and the \
              assistant is the default.",
         ),
+        backend: None,
     },
     ModelEntry {
         id: "seedvr2-3b-8bit",
@@ -182,6 +191,7 @@ pub const CATALOG: &[ModelEntry] = &[
              assistant needs 0.31.2. Only one can be installed at a time, and the \
              assistant is the default.",
         ),
+        backend: None,
     },
     ModelEntry {
         id: "seedvr2-7b-4bit",
@@ -208,6 +218,7 @@ pub const CATALOG: &[ModelEntry] = &[
              assistant needs 0.31.2. Only one can be installed at a time, and the \
              assistant is the default.",
         ),
+        backend: None,
     },
     ModelEntry {
         id: "z-image-4bit",
@@ -225,6 +236,7 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 10.0,
         notes: "Base checkpoint, so it accepts real guidance and negative prompts.",
         broken: None,
+        backend: None,
     },
     ModelEntry {
         id: "z-image-turbo-4bit",
@@ -242,6 +254,7 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 1.0,
         notes: "Few-step distilled variant. Also handles edits. No guidance or negative prompt.",
         broken: None,
+        backend: None,
     },
     ModelEntry {
         id: "flux2-klein-4b-8bit",
@@ -259,6 +272,7 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 1.0,
         notes: "Higher quality than the q4 package; passed strict outpaint validation.",
         broken: None,
+        backend: None,
     },
     ModelEntry {
         id: "flux2-klein-9b-4bit",
@@ -276,6 +290,7 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 1.0,
         notes: "Gated, non-commercial source terms. Accept the licence on Hugging Face first.",
         broken: None,
+        backend: None,
     },
     ModelEntry {
         id: "seedvr2-7b-8bit",
@@ -302,6 +317,7 @@ pub const CATALOG: &[ModelEntry] = &[
              assistant needs 0.31.2. Only one can be installed at a time, and the \
              assistant is the default.",
         ),
+        backend: None,
     },
     // ---- Tight on 16 GB --------------------------------------------------
     ModelEntry {
@@ -320,6 +336,7 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 1.0,
         notes: "Adds native inpainting (10.57 GiB peak) and latent img2img (11.49 GiB peak).",
         broken: None,
+        backend: None,
     },
     ModelEntry {
         id: "fibo-4bit",
@@ -337,6 +354,7 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 12.0,
         notes: "Mixed q4/BF16 policy. Text-to-image only; FIBO Edit is a separate model.",
         broken: None,
+        backend: None,
     },
     ModelEntry {
         id: "ernie-image-turbo-8bit",
@@ -354,6 +372,64 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 1.0,
         notes: "Good latent restyle. The published -4bit repo is mislabelled q8; avoid it.",
         broken: None,
+        backend: None,
+    },
+    // ---- FLUX.1, through mflux rather than the unified router -------------
+    ModelEntry {
+        id: "flux1-kontext-4bit",
+        repo: "akx/FLUX.1-Kontext-dev-mflux-4bit",
+        name: "FLUX.1 Kontext (q4) — instruction editing",
+        family: Some("flux"),
+        tasks: &[Task::Edit],
+        quantize: None,
+        package_gib: 8.95,
+        peak_gib: 11.2,
+        peak_estimated: true,
+        steps_default: 20,
+        max_edit_images: 1,
+        guidance_default: 2.5,
+        guidance_max: 8.0,
+        notes: "The strongest open model for changing one thing and leaving the \
+                rest alone. 11.9B at 4-bit, so it sits near this Mac's ceiling.",
+        broken: None,
+        backend: Some("dev_kontext"),
+    },
+    ModelEntry {
+        id: "flux1-schnell-4bit",
+        repo: "dhairyashil/FLUX.1-schnell-mflux-4bit",
+        name: "FLUX.1 schnell (q4)",
+        family: Some("flux"),
+        tasks: &[Task::TextToImage],
+        quantize: None,
+        package_gib: 8.96,
+        peak_gib: 11.2,
+        peak_estimated: true,
+        steps_default: 4,
+        max_edit_images: 1,
+        guidance_default: 1.0,
+        guidance_max: 1.0,
+        notes: "Few-step FLUX.1. Distilled, so guidance is fixed at 1.",
+        broken: None,
+        backend: Some("schnell"),
+    },
+    ModelEntry {
+        id: "flux1-dev-4bit",
+        repo: "dhairyashil/FLUX.1-dev-mflux-4bit",
+        name: "FLUX.1 dev (q4)",
+        family: Some("flux"),
+        tasks: &[Task::TextToImage],
+        quantize: None,
+        package_gib: 8.96,
+        peak_gib: 11.2,
+        peak_estimated: true,
+        steps_default: 20,
+        max_edit_images: 1,
+        guidance_default: 3.5,
+        guidance_max: 8.0,
+        notes: "Full FLUX.1 dev. Takes real guidance and negative prompts, at \
+                the cost of more steps than schnell.",
+        broken: None,
+        backend: Some("dev"),
     },
     // ---- Video -----------------------------------------------------------
     ModelEntry {
@@ -375,6 +451,7 @@ pub const CATALOG: &[ModelEntry] = &[
         notes: "The smallest Wan that can run here. Text-to-video and latent \
                 video. Keep clips short: attention cost is quadratic in frames.",
         broken: None,
+        backend: None,
     },
     ModelEntry {
         id: "bernini-r-1.3b",
@@ -398,6 +475,7 @@ pub const CATALOG: &[ModelEntry] = &[
                 still picture. BF16 only; MLX-Gen reports its visual quality \
                 gate as failing, so treat output as experimental.",
         broken: None,
+        backend: None,
     },
     // ---- Documented but out of reach on 16 GB ---------------------------
     ModelEntry {
@@ -416,6 +494,7 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 12.0,
         notes: "Needs roughly 24 GB of unified memory.",
         broken: None,
+        backend: None,
     },
     ModelEntry {
         id: "qwen-image-edit-2511-4bit",
@@ -433,6 +512,7 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 12.0,
         notes: "Strongest open editor, but MLX-Gen puts Qwen edit routes at the 64 GB tier.",
         broken: None,
+        backend: None,
     },
     ModelEntry {
         id: "qwen-image-edit-2511-8bit",
@@ -450,6 +530,7 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 12.0,
         notes: "30.91 GiB measured peak at only 768x432. Needs a 64 GB machine.",
         broken: None,
+        backend: None,
     },
     ModelEntry {
         id: "qwen-image-2512-8bit",
@@ -467,6 +548,7 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 12.0,
         notes: "Memory fits 16 GB, but the 27.5 GiB package will not fit your free disk.",
         broken: None,
+        backend: None,
     },
     ModelEntry {
         id: "wan22-ti2v-5b-8bit",
@@ -484,6 +566,7 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 12.0,
         notes: "103.7 GiB peak at 1280x704. Listed for completeness; a 128 GB-class workload.",
         broken: None,
+        backend: None,
     },
     ModelEntry {
         id: "wan22-t2v-a14b-8bit",
@@ -501,6 +584,7 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 12.0,
         notes: "33 GiB peak for a 384x224, 33-frame clip. 64 GB is the first sane tier.",
         broken: None,
+        backend: None,
     },
 ];
 

@@ -720,7 +720,7 @@ async fn run_job(
                 "{} cannot run here: its weights alone are ~{:.1} GiB against ~{:.1} GiB \
                  usable. Low-RAM mode trims transient memory, not resident weights.",
                 entry.name,
-                models::weight_floor_gib(entry.package_gib),
+                models::weight_floor_gib(entry.package_gib, entry.peak_gib),
                 host.usable_ram_gib
             )));
         }
@@ -732,7 +732,7 @@ async fn run_job(
                 entry.name,
                 entry.peak_gib,
                 host.usable_ram_gib,
-                models::weight_floor_gib(entry.package_gib)
+                models::weight_floor_gib(entry.package_gib, entry.peak_gib)
             )));
         }
     }
@@ -780,6 +780,9 @@ async fn run_job(
         // Routing hint. MLX-Gen otherwise infers the family from the
         // repository name and refuses anything it cannot place.
         "family": entry.family.clone(),
+        // Names an mflux backend for FLUX.1, which the unified router does not
+        // cover. Absent for everything else.
+        "backend": entry.backend.clone(),
         "prompt": args.prompt,
         "width": args.width,
         "height": args.height,

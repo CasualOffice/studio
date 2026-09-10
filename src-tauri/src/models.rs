@@ -60,6 +60,8 @@ pub struct ModelStatus {
     pub guidance_max: f32,
     pub notes: String,
     pub broken: Option<String>,
+    /// Which engine path runs this, when it is not the unified router.
+    pub backend: Option<String>,
     pub custom: bool,
     pub installed: bool,
     pub installed_bytes: u64,
@@ -149,21 +151,30 @@ pub fn is_installed(paths: &AppPaths, repo: &str) -> (bool, u64) {
     (complete, bytes)
 }
 
-/// Resident weight floor. Published package size is a close proxy: quantized
-/// weights land in memory at roughly their on-disk size.
-pub fn weight_floor_gib(package_gib: f32) -> f32 {
-    package_gib
+/// Resident weight floor: what must stay in memory for the whole run.
+///
+/// Package size is a reasonable proxy for a plain image model, whose weights
+/// land in memory at roughly their on-disk size. It is badly wrong for models
+/// that ship large companions they load and release -- Bernini's download is
+/// 16.4 GiB, most of it a UMT5 text encoder, and it peaks at 9.1 GB. Taking
+/// the package at face value marked it unrunnable on a machine its own
+/// measured benchmark says it fits.
+///
+/// Peak is the ceiling for anything resident, so it bounds the floor too.
+pub fn weight_floor_gib(package_gib: f32, peak_gib: f32) -> f32 {
+    package_gib.min(peak_gib)
 }
 
 /// Low-RAM mode caps the MLX buffer cache and releases the text encoder. It
 /// bounds transients, never the resident weights -- so it can only close a gap
 /// that sits *above* the weight floor.
 fn low_ram_helps(package_gib: f32, peak_gib: f32, host: &HostInfo) -> bool {
-    peak_gib > host.usable_ram_gib && weight_floor_gib(package_gib) < host.usable_ram_gib * 0.92
+    peak_gib > host.usable_ram_gib
+        && weight_floor_gib(package_gib, peak_gib) < host.usable_ram_gib * 0.92
 }
 
-fn is_hopeless(package_gib: f32, host: &HostInfo) -> bool {
-    weight_floor_gib(package_gib) >= host.usable_ram_gib
+fn is_hopeless(package_gib: f32, peak_gib: f32, host: &HostInfo) -> bool {
+    weight_floor_gib(package_gib, peak_gib) >= host.usable_ram_gib
 }
 
 /// The smallest common Apple Silicon memory configuration that would run a
@@ -200,11 +211,11 @@ fn classify(
     let have_disk = host.free_disk_gib - host.disk_headroom_gib;
 
     if peak_gib > host.usable_ram_gib {
-        let reason = if is_hopeless(package_gib, host) {
+        let reason = if is_hopeless(package_gib, peak_gib, host) {
             format!(
                 "Weights alone are ~{:.1} GiB against ~{:.1} GiB usable. Reduced-memory mode \
                  cannot help: it trims transients, not resident weights.{}",
-                weight_floor_gib(package_gib),
+                weight_floor_gib(package_gib, peak_gib),
                 host.usable_ram_gib,
                 describe_elsewhere(peak_gib)
             )
@@ -213,7 +224,7 @@ fn classify(
                 "Peak ~{peak_gib:.1} GiB exceeds ~{:.1} GiB usable, but the ~{:.1} GiB weight \
                  floor fits. Reduced-memory mode may close the gap.{}",
                 host.usable_ram_gib,
-                weight_floor_gib(package_gib),
+                weight_floor_gib(package_gib, peak_gib),
                 describe_elsewhere(peak_gib)
             )
         };
@@ -322,12 +333,13 @@ fn status_from_entry(entry: &ModelEntry, paths: &AppPaths, host: &HostInfo) -> M
         guidance_max: entry.guidance_max,
         notes: entry.notes.into(),
         broken: entry.broken.map(|b| b.to_string()),
+        backend: entry.backend.map(|b| b.to_string()),
         custom: false,
         installed,
         installed_bytes,
         low_ram_may_help: entry.broken.is_none()
             && low_ram_helps(entry.package_gib, entry.peak_gib, host),
-        hopeless: is_hopeless(entry.package_gib, host),
+        hopeless: is_hopeless(entry.package_gib, entry.peak_gib, host),
         measured_ms_per_step_mpx: measured(paths, entry.id).0,
         measured_runs: measured(paths, entry.id).1,
         measured_load_ms: measured(paths, entry.id).2,
@@ -369,11 +381,12 @@ fn status_from_custom(m: &CustomModel, paths: &AppPaths, host: &HostInfo) -> Mod
         guidance_max: 1.0,
         notes: "Added by you. Memory is estimated, not a published benchmark.".to_string(),
         broken: None,
+        backend: None,
         custom: true,
         installed,
         installed_bytes,
         low_ram_may_help: low_ram_helps(package_gib, peak_gib, host),
-        hopeless: is_hopeless(package_gib, host),
+        hopeless: is_hopeless(package_gib, peak_gib, host),
         measured_ms_per_step_mpx: measured(paths, &m.id).0,
         measured_runs: measured(paths, &m.id).1,
         measured_load_ms: measured(paths, &m.id).2,
@@ -454,4 +467,59 @@ pub fn delete(paths: &AppPaths, repo: &str) -> Result<u64> {
         std::fs::remove_dir_all(&dir)?;
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fixed machine. Probing the real one made the disk assertions depend
+    /// on whatever happened to be free when the suite ran.
+    fn host(usable: f32) -> HostInfo {
+        let mut h = HostInfo::probe_for(std::path::Path::new("/"));
+        h.usable_ram_gib = usable;
+        h.free_disk_gib = 20.0;
+        h.disk_headroom_gib = 6.0;
+        h
+    }
+
+    /// Download size and resident size are different things.
+    ///
+    /// Bernini ships a 16.4 GiB set, most of it a UMT5 text encoder that is
+    /// loaded, used, and released. Its measured peak is 9.1 GB. Treating the
+    /// package as the floor marked it unrunnable on a machine its own
+    /// benchmark says it fits.
+    #[test]
+    fn a_large_download_with_a_small_peak_is_not_hopeless() {
+        assert!(!is_hopeless(16.4, 9.5, &host(12.5)));
+    }
+
+    #[test]
+    fn a_model_whose_weights_exceed_memory_is_hopeless() {
+        // Qwen Image Edit at q4: 17 GiB of weights, 20 GiB peak.
+        assert!(is_hopeless(17.0, 20.0, &host(12.5)));
+    }
+
+    #[test]
+    fn a_huge_package_that_fits_in_memory_is_a_disk_problem_only() {
+        // Qwen Image 2512 q8: 27.5 GiB on disk, but it peaks at 10.7.
+        assert!(!is_hopeless(27.5, 10.73, &host(12.5)));
+        let (fit, _) = classify(27.5, 10.73, None, &host(12.5), false);
+        assert_eq!(fit, Fit::TooMuchDisk, "should fail on disk, not memory");
+    }
+
+    #[test]
+    fn the_floor_never_exceeds_the_peak() {
+        // Nothing resident can be larger than the run's high-water mark.
+        assert_eq!(weight_floor_gib(16.4, 9.5), 9.5);
+        assert_eq!(weight_floor_gib(4.3, 5.6), 4.3);
+    }
+
+    #[test]
+    fn low_ram_helps_only_when_the_gap_is_transient() {
+        // Peak above the ceiling, weights below it: recoverable.
+        assert!(low_ram_helps(8.0, 13.0, &host(12.5)));
+        // Weights themselves above the ceiling: not recoverable.
+        assert!(!low_ram_helps(17.0, 20.0, &host(12.5)));
+    }
 }

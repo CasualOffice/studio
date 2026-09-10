@@ -1778,7 +1778,146 @@ def _run_expand(req_id, req, loaded, gen_kw, optional_kw, slots, images, seeds,
     return out
 
 
+
+# --------------------------------------------------------------------------
+# FLUX.1 backend
+# --------------------------------------------------------------------------
+
+# MLX-Gen's unified router covers seven families; FLUX.1 is not among them, so
+# it is driven through mflux's own classes. That family is worth the second
+# path: Kontext is the strongest open instruction editor, and Fill is real
+# mask-based inpainting rather than the outpaint-adjacent route Klein offers.
+#
+# Each entry maps a catalog id to the class that runs it and the ModelConfig
+# that describes its weights.
+MFLUX_BACKENDS: dict[str, tuple[str, str, str]] = {
+    # config factory      module                                              class
+    "dev": ("mflux.models.flux.variants.txt2img.flux", "Flux1", "dev"),
+    "schnell": ("mflux.models.flux.variants.txt2img.flux", "Flux1", "schnell"),
+    "dev_kontext": ("mflux.models.flux.variants.kontext.flux_kontext",
+                    "Flux1Kontext", "dev_kontext"),
+    "dev_fill": ("mflux.models.flux.variants.fill.flux_fill", "Flux1Fill", "dev_fill"),
+}
+
+
+def _load_mflux_model(req_id: str, backend: str, model_path: str | None,
+                      quantize: int | None,
+                      loras: list[dict[str, Any]] | None = None) -> tuple[Any, float]:
+    """Construct a FLUX.1 model directly, honouring the one-resident rule."""
+    import importlib
+
+    from mflux.models.common.config.model_config import ModelConfig
+
+    spec = MFLUX_BACKENDS.get(backend)
+    if spec is None:
+        raise ValueError(f"unknown FLUX.1 backend {backend!r}")
+    module_name, class_name, factory = spec
+
+    key = f"mflux::{backend}::{model_path}::{quantize}"
+    if loras:
+        key += "::lora:" + ",".join(f"{l['path']}@{l.get('scale', 1.0)}" for l in loras)
+
+    cached = CACHE.get(key)
+    if cached is not None:
+        log(req_id, f"reusing resident model ({CACHE.label})")
+        return cached, 0.0
+
+    global _POLICY_APPLIED
+    if not _POLICY_APPLIED:
+        _POLICY_APPLIED = True
+        log(req_id, f"resource policy: {apply_resource_policy()}")
+
+    CACHE.unload()
+    if _ASSIST.get("model") is not None:
+        _unload_assistant()
+
+    log(req_id, f"loading {backend} via mflux (quantize={quantize})")
+    emit({"id": req_id, "type": "progress", "phase": "load", "progress": 0.0,
+          "message": f"Loading {backend}"})
+
+    cls = getattr(importlib.import_module(module_name), class_name)
+    t0 = time.time()
+    kwargs: dict[str, Any] = {
+        "model_config": getattr(ModelConfig, factory)(),
+        "quantize": quantize,
+        "model_path": model_path,
+    }
+    if loras:
+        kwargs["lora_paths"] = [l["path"] for l in loras]
+        kwargs["lora_scales"] = [float(l.get("scale", 1.0)) for l in loras]
+
+    with _downloads_allowed(req_id):
+        model = call_tolerant(req_id, cls, {}, kwargs)
+
+    CACHE.put(key, model, backend)
+    load_ms = (time.time() - t0) * 1000.0
+    log(req_id, f"loaded in {load_ms / 1000:.1f}s")
+    return model, load_ms
+
+
+def _run_mflux(req_id: str, req: dict[str, Any], backend: str) -> dict[str, Any]:
+    """Generate or edit through a FLUX.1 model.
+
+    These classes produce one image per call rather than taking a seed list,
+    so the multi-image loop lives here instead of in the runtime wrapper.
+    """
+    slots = req.get("vault_slots") or []
+    if not slots:
+        raise ValueError("this route needs a vault slot to write into")
+
+    seeds = req.get("seeds") or [req.get("seed", 0)]
+    staged = _stage_vault_inputs(req.get("vault_inputs") or [])
+    mask_staged = _stage_vault_inputs([req["mask"]] if req.get("mask") else [])
+
+    try:
+        model, load_ms = _load_mflux_model(
+            req_id, backend,
+            req.get("model_path") or req.get("model"),
+            req.get("quantize"),
+            req.get("loras") or [],
+        )
+
+        base: dict[str, Any] = {"prompt": req.get("prompt", "")}
+        optional: dict[str, Any] = {}
+        for src, dst in (("steps", "num_inference_steps"), ("width", "width"),
+                         ("height", "height"), ("guidance", "guidance"),
+                         ("image_strength", "image_strength")):
+            if req.get(src) is not None:
+                optional[dst] = req[src]
+        if staged:
+            optional["image_path"] = staged[0]
+        if mask_staged:
+            # Fill takes the mask separately; the name differs from the
+            # unified router's `mask_path`.
+            optional["masked_image_path"] = mask_staged[0]
+
+        preview = _attach_live_preview(req_id, model) if req.get("preview", True) else None
+        artifacts = []
+        gen_started = time.time()
+        try:
+            for seed in seeds:
+                artifacts.append(call_tolerant(
+                    req_id, model.generate_image,
+                    {**base, "seed": int(seed),
+                     "progress_callback": _make_progress_handler(req_id)},
+                    optional,
+                ))
+        finally:
+            _detach_live_preview(model, preview)
+        generate_ms = (time.time() - gen_started) * 1000.0
+
+        out = _seal_results(req_id, artifacts, slots, req.get("model", backend), list(seeds))
+        out["load_ms"] = round(load_ms)
+        out["generate_ms"] = round(generate_ms)
+        return out
+    finally:
+        _discard_staged(staged)
+        _discard_staged(mask_staged)
+
+
 def op_generate(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
+    if req.get("backend"):
+        return _run_mflux(req_id, req, req["backend"])
     return _run_generation(req_id, req, "text-to-image", image_count=0)
 
 
@@ -1790,6 +1929,8 @@ def op_edit(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     count = len(req.get("images") or []) + len(req.get("vault_inputs") or [])
     if count == 0:
         raise ValueError("edit requires at least one input image")
+    if req.get("backend"):
+        return _run_mflux(req_id, req, req["backend"])
     if count == 1:
         req.setdefault("i2i_mode", "edit")
     else:
