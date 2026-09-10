@@ -314,8 +314,8 @@ def _idle_reaper() -> None:
             busy = bool(_ACTIVE)
         if busy:
             continue
-        if CACHE.loaded is not None or _ASSIST.get("model") is not None:
-            freed = CACHE.label or _ASSIST.get("key")
+        if CACHE.loaded is not None or _helpers_resident() is not None:
+            freed = CACHE.label or _helpers_resident()
             CACHE.unload()
             _unload_assistant()
             emit({"id": "idle", "type": "log", "level": "info",
@@ -590,8 +590,8 @@ def _load_model(req_id: str, model: str, quantize: int | None,
     # Free whatever is resident *before* pulling the new one into memory --
     # including the assistant, which competes for the same budget.
     CACHE.unload()
-    if _ASSIST.get("model") is not None:
-        log(req_id, "releasing the prompt assistant to make room for the model")
+    if _helpers_resident() is not None:
+        log(req_id, "releasing the prompt helper to make room for the model")
         _unload_assistant()
     log(req_id, f"loading {model} (quantize={quantize})")
     emit({"id": req_id, "type": "progress", "phase": "load", "progress": 0.0,
@@ -822,6 +822,21 @@ def _seal_results(req_id: str, results: Any, slots: list[dict[str, Any]],
 # beside a 5.6 GiB image model; on a 16 GB machine that combination paged, and
 # a prompt rewrite that should take two seconds took minutes.
 _ASSIST: dict[str, Any] = {"key": None, "model": None, "processor": None, "config": None}
+
+
+def _helpers_resident() -> str | None:
+    """Which prompt helper is holding memory, if any.
+
+    There are two of them now -- the reader that looks at pictures and the
+    writer that composes prose -- and every guard that made room for "the
+    assistant" was written when there was one. Missing the writer meant a
+    3.2 GiB model could still be resident when a 9.5 GiB video model loaded,
+    which is 12.7 GiB against a 12.5 GiB budget and precisely the swapping the
+    one-resident rule exists to prevent.
+    """
+    return _ASSIST.get("key") if _ASSIST.get("model") is not None else (
+        _WRITER.get("key") if _WRITER.get("model") is not None else None
+    )
 
 
 def _load_assistant(req_id: str, repo: str) -> tuple[Any, Any, Any]:
@@ -1100,34 +1115,6 @@ def _keeps_intent(original: str, rewritten: str) -> bool:
     got = words(rewritten)
     return any(any(w.startswith(g[:4]) or g.startswith(w[:4]) for g in got) for w in wanted)
 
-
-def _trim_to_sentence(text: str, max_words: int = 90) -> str:
-    """Cut back to the last complete sentence.
-
-    A token limit lands wherever it lands, so the model regularly stops
-    mid-clause. Handing the generator "...warm rim light throug" is worse than
-    handing it one shorter finished sentence, and the same limit also means the
-    stated word count is routinely ignored.
-    """
-    text = text.strip()
-    if not text:
-        return text
-
-    words = text.split()
-    if len(words) > max_words:
-        text = " ".join(words[:max_words])
-
-    if text.endswith((".", "!", "?")):
-        return text
-    cut = max(text.rfind("."), text.rfind("!"), text.rfind("?"))
-    if cut > 20:
-        return text[: cut + 1]
-    # No sentence break to fall back on: end at the last clause instead of
-    # leaving a dangling half-word.
-    comma = text.rfind(",")
-    if comma > 20:
-        return text[:comma] + "."
-    return text.rstrip(" ,;:-") + "."
 
 
 def _clean_assist(text: str, fallback: str) -> str:
@@ -1410,57 +1397,6 @@ def _strip_empty_modifiers(text: str) -> str:
     return " ".join(out.split()).strip(" ,")
 
 
-def _compose_scene(user_prompt: str, slots: dict[str, str]) -> str:
-    """Assemble scene direction into flowing prose.
-
-    Ordered subject, action, setting, then light, then camera, because that is
-    the order these models resolve a scene in: what, doing what, where, lit
-    how, seen how. Written as sentences rather than a keyword list, since the
-    T5 encoder reads grammar.
-    """
-    idea = user_prompt.strip().rstrip(".,")
-    if not slots:
-        return f"{idea}."
-
-    subject = _strip_empty_modifiers(slots.get("SUBJECT", "")) or idea
-    # If the described subject shares nothing with what was asked for, the
-    # model drifted. Lead with the request and let the description follow it,
-    # rather than bracketing the request as an afterthought.
-    drifted = not set(_significant(idea)) & set(_significant(subject))
-    if drifted and _significant(idea):
-        subject = f"{idea}: {subject}"
-
-    opening = ", ".join(
-        p for p in (
-            subject,
-            # A clip has MOTION where a still has ACTION; both answer "doing
-            # what", and only one of them is ever present.
-            _strip_empty_modifiers(slots.get("ACTION", ""))
-            or _strip_empty_modifiers(slots.get("MOTION", "")),
-            _strip_empty_modifiers(slots.get("SETTING", "")),
-        ) if p
-    )
-
-    tail = [
-        _strip_empty_modifiers(slots.get(k, ""))
-        for k in ("LIGHT", "CAMERA", "MOOD")
-    ]
-    sentences = [opening] + [t for t in tail if t]
-    return ". ".join(s[0].upper() + s[1:] if s else s for s in sentences).rstrip(".") + "."
-
-
-def _enrich_idea(user_prompt: str, detail: str) -> str:
-    """Fallback for a model that ignored the slot format entirely."""
-    idea = user_prompt.strip().rstrip(".,")
-    extra = _strip_empty_modifiers(
-        _collapse_repetition(_clean_assist(detail, "")).strip().rstrip(".")
-    )
-    low = extra.lower()
-    if low.startswith(idea.lower()):
-        extra = extra[len(idea):].lstrip(" ,")
-    if not extra:
-        return f"{idea}."
-    return _trim_to_sentence(f"{idea}, {extra}.", max_words=90)
 
 
 def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
@@ -2367,7 +2303,7 @@ def _load_mflux_model(req_id: str, backend: str, model_path: str | None,
         log(req_id, f"resource policy: {apply_resource_policy()}")
 
     CACHE.unload()
-    if _ASSIST.get("model") is not None:
+    if _helpers_resident() is not None:
         _unload_assistant()
 
     log(req_id, f"loading {backend} via mflux (quantize={quantize})")

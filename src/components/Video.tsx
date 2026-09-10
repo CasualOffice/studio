@@ -58,7 +58,10 @@ export default function Video({
   const model = usable.find((m) => m.id === modelId) ?? usable[0];
 
   const assistantReady = useMemo(
-    () => models.some((m) => m.tasks.includes("assist" as never) && m.installed),
+    // The writer, specifically. There are two assist models now, and `.some`
+    // was satisfied by the picture-reader alone -- so the button looked ready
+    // and then failed with "the prompt writer is not installed".
+    () => models.some((m) => m.id === "qwen3-4b-instruct-4bit" && m.installed),
     [models]
   );
 
@@ -209,7 +212,7 @@ export default function Video({
             </button>
             {!assistantReady && (
               <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5 }}>
-                Needs the prompt writer — a 2.3 GB download in the Models tab.
+                Needs the prompt writer — a 2.1 GB download in the Models tab.
                 It runs on this Mac; nothing is sent anywhere.
               </div>
             )}

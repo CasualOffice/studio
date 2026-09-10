@@ -391,7 +391,7 @@ pub async fn bootstrap(report: Reporter<'_>, paths: &AppPaths, force: bool) -> R
     let probe = Command::new(paths.venv_python())
         .args([
             "-c",
-            "import json,sys,mlx.core as mx,mlxgen,cryptography;from importlib.metadata import version;print(json.dumps({'py':sys.version.split()[0],'mlxgen':version('mlx-gen'),'mlx':getattr(mx,'__version__','unknown')}))",
+            "import json,sys,mlx.core as mx,mlxgen,cryptography,mlx_lm;from importlib.metadata import version;print(json.dumps({'py':sys.version.split()[0],'mlxgen':version('mlx-gen'),'mlx':getattr(mx,'__version__','unknown'),'mlx_lm':version('mlx-lm')}))",
         ])
         .output()
         .await?;
