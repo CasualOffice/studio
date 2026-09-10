@@ -11,6 +11,7 @@ than raising. Loading actual weights is out of scope here.
 """
 
 import importlib.util
+import io
 import os
 import secrets
 import sys
@@ -173,6 +174,56 @@ class Downscale(unittest.TestCase):
             small = os.path.join(d, "small.png")
             Image.new("RGB", (320, 240)).save(small)
             self.assertEqual(worker._downscale_for_assist([small]), [small])
+
+
+class Staging(unittest.TestCase):
+    """One input must produce exactly one path.
+
+    Staging returned the original *and* its converted copy, because the same
+    list was used both to feed the model and to clean up afterwards. A single
+    HEIC or WebP source therefore reached the model as two images.
+    """
+
+    def _sealed(self, tmp, fmt, ext):
+        import secrets
+        from PIL import Image
+        try:
+            import pillow_heif
+            pillow_heif.register_heif_opener()
+        except Exception:
+            pass
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 48), (10, 120, 200)).save(buf, format=fmt)
+        key, fid = secrets.token_bytes(32), secrets.token_bytes(16)
+        path = os.path.join(tmp, f"blob-{ext}")
+        vc.write_sealed(path, key, fid, buf.getvalue())
+        return {"id": f"i{ext}", "file_id": fid.hex(), "key": key.hex(),
+                "path": path, "ext": ext}
+
+    def test_one_path_per_input_whatever_the_format(self):
+        for fmt, ext in (("PNG", "png"), ("WEBP", "webp"), ("JPEG", "jpg"), ("BMP", "bmp")):
+            with tempfile.TemporaryDirectory() as tmp:
+                entry = self._sealed(tmp, fmt, ext)
+                staged = worker._stage_vault_inputs([entry])
+                self.assertEqual(len(staged), 1, f"{ext} produced {len(staged)} paths")
+                worker._discard_staged(staged)
+
+    def test_two_inputs_produce_two_paths_in_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a = self._sealed(tmp, "WEBP", "webp")
+            b = self._sealed(tmp, "PNG", "png")
+            staged = worker._stage_vault_inputs([a, b])
+            self.assertEqual(len(staged), 2)
+            worker._discard_staged(staged)
+
+    def test_cleanup_removes_the_converted_copy_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = self._sealed(tmp, "WEBP", "webp")
+            staged = worker._stage_vault_inputs([entry])
+            worker._discard_staged(staged)
+            leftovers = [f for f in os.listdir(worker._stage_dir())
+                         if f.startswith("iwebp")]
+            self.assertEqual(leftovers, [], "conversion left a file behind")
 
 
 if __name__ == "__main__":

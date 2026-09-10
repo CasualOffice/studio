@@ -499,20 +499,31 @@ def _to_model_readable(path: str) -> str:
         return path
 
 
+# Intermediates created while staging, keyed by the path actually handed to a
+# model. Kept apart from the returned list because the two are different things:
+# one is "files to feed the model", the other "files to delete afterwards".
+# Conflating them meant a converted source was passed twice -- once as the
+# original and once as the PNG -- so a single picture reached the model as two.
+_STAGE_INTERMEDIATES: dict[str, list[str]] = {}
+
+
 def _stage_vault_inputs(inputs: list[dict[str, Any]]) -> list[str]:
     """Decrypt sealed source images so mlx-gen, which loads by path, can read them.
 
     Each entry carries only that blob's own file key, so the engine can open
     exactly the inputs this job was given and nothing else in the vault.
+
+    Returns exactly one path per input, in order.
     """
     if not inputs:
         return []
     import vaultcrypto as vc
 
-    staged: list[str] = []
+    usable: list[str] = []
     try:
         for entry in inputs:
-            sealed = open(entry["path"], "rb").read()
+            with open(entry["path"], "rb") as fh:
+                sealed = fh.read()
             plain = vc.open_with_file_key(bytes.fromhex(entry["key"]), sealed)
             # Keep the original extension so PIL can sniff the format.
             suffix = entry.get("ext") or "png"
@@ -520,22 +531,25 @@ def _stage_vault_inputs(inputs: list[dict[str, Any]]) -> list[str]:
             fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "wb") as f:
                 f.write(plain)
+
             readable = _to_model_readable(dest)
             if readable != dest:
-                staged.append(dest)
-            staged.append(readable)
+                _STAGE_INTERMEDIATES.setdefault(readable, []).append(dest)
+            usable.append(readable)
     except BaseException:
-        _discard_staged(staged)
+        _discard_staged(usable)
         raise
-    return staged
+    return usable
 
 
 def _discard_staged(paths: list[str]) -> None:
+    """Remove staged files and anything created alongside them."""
     for p in paths:
-        try:
-            os.unlink(p)
-        except OSError:
-            pass
+        for victim in [p, *_STAGE_INTERMEDIATES.pop(p, [])]:
+            try:
+                os.unlink(victim)
+            except OSError:
+                pass
 
 
 def _seal_results(req_id: str, results: Any, slots: list[dict[str, Any]],
