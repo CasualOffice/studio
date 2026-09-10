@@ -142,7 +142,9 @@ export default function Studio({
       const r = await api.assistPrompt(id, prompt, mode, mode === "edit" ? images : []);
       setUndoPrompt(prompt);
       setPrompt(r.prompt);
-      notify(r.saw_image ? "Rewritten, using your image for context." : "Prompt rewritten.");
+      notify(r.saw_image
+        ? "Added detail from your picture. Your request is unchanged."
+        : "Added detail. Your idea still leads the prompt.");
     } catch (e) {
       notify(errText(e), true);
     } finally {
@@ -350,7 +352,7 @@ export default function Studio({
                   style={{ padding: "1px 7px", fontSize: 10.5 }}
                   onClick={() => { setPrompt(undoPrompt); setUndoPrompt(null); }}
                 >
-                  Undo rewrite
+                  Undo
                 </button>
               )}
             </label>
@@ -367,14 +369,14 @@ export default function Studio({
               disabled={assisting || running || !prompt.trim()}
               onClick={improve}
               title={assistantReady
-                ? "Rewrites your wording into something the model follows better"
+                ? "Keeps your words and adds detail the model can act on"
                 : "Needs the prompt assistant from the Models tab"}
             >
               {assisting
-                ? "Rewriting…"
+                ? "Looking…"
                 : mode === "edit" && images.length > 0
-                  ? "✨ Improve this, using my picture"
-                  : "✨ Improve my wording"}
+                  ? "✨ Add detail from my picture"
+                  : "✨ Add detail to my idea"}
             </button>
             {!assistantReady && (
               <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5 }}>

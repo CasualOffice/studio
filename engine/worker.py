@@ -624,27 +624,35 @@ def _unload_assistant() -> None:
         pass
 
 
-GENERATE_SYSTEM = (
-    "Rewrite the user's idea as a single vivid prompt for an image generator.\n"
-    "Rules:\n"
-    "- Keep every subject, object and detail they mentioned.\n"
-    "- Add concrete visuals: lighting, materials, colour, framing, mood.\n"
-    "- Never add text, logos or watermarks.\n"
-    "- Output one sentence, ending with a full stop. Under 45 words.\n\n"
+# For edits the model reports facts about the picture. It never writes the
+# instruction: that is assembled from the user's words plus these facts.
+SCENE_SYSTEM = (
+    "Describe this picture as four short labelled lines and nothing else.\n"
+    "Each value is a phrase of two to six words. No sentences. No opinions.\n"
+    "If something is unclear, write: unknown\n\n"
+    "SUBJECT: what the main thing is, with colour or material\n"
+    "SURFACE: its texture or finish\n"
+    "LIGHT: the lighting and its direction\n"
+    "SETTING: what it sits on and what is behind it\n\n"
     "Example\n"
-    "User idea: a cat\n"
-    "You write: a tabby cat curled on a windowsill in low afternoon sun, warm "
-    "rim light through dusty glass, shallow depth of field, soft muted colours.\n"
+    "SUBJECT: a beige ceramic teapot\n"
+    "SURFACE: smooth glazed stoneware\n"
+    "LIGHT: soft daylight from the left\n"
+    "SETTING: crumpled linen cloth, pale wall\n"
 )
 
-# For edits the model is asked one narrow question and nothing more.
-SUBJECT_SYSTEM = (
-    "Name the main subject of this picture as a short noun phrase.\n"
+# For text-only ideas the model supplies extra detail, not a replacement.
+DETAIL_SYSTEM = (
+    "The user has an idea for a picture. Add visual detail to it.\n"
     "Rules:\n"
-    "- Two to five words. No sentence, no punctuation, no description.\n"
-    "- Say what the thing is, with its colour or material if obvious.\n\n"
-    "Examples: a beige ceramic teapot / a woman in a green jacket / "
-    "a red sports car\n"
+    "- Do NOT restate their idea. Write only what should be ADDED.\n"
+    "- Lighting, materials, colour palette, camera framing, mood.\n"
+    "- A few comma-separated phrases. Under 25 words. No full sentence.\n"
+    "- Never add text, logos or watermarks.\n\n"
+    "Example\n"
+    "User idea: a cat\n"
+    "You add: curled on a windowsill, low afternoon sun, warm rim light, "
+    "shallow depth of field, muted colours\n"
 )
 
 # Words that carry no intent, so their presence proves nothing about whether a
@@ -782,6 +790,33 @@ def _collapse_repetition(text: str) -> str:
     return out if out.endswith((".", "!", "?")) else out.rstrip(" ,;:") + "."
 
 
+def _significant(text: str) -> list[str]:
+    """Content words, ignoring filler that carries no meaning."""
+    cleaned = "".join(c.lower() if c.isalnum() else " " for c in text)
+    return [w for w in cleaned.split() if len(w) > 3 and w not in _STOPWORDS]
+
+
+def _parse_scene(text: str) -> dict[str, str]:
+    """Pull the labelled facts out of the model's answer.
+
+    Tolerant on purpose: a small model will drop a line, change the case, or
+    wrap the whole thing in prose. Anything missing simply is not used.
+    """
+    facts: dict[str, str] = {}
+    for line in (text or "").splitlines():
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip().strip("-*# ").upper()
+        value = " ".join(value.split()).strip(" .")
+        if key in ("SUBJECT", "SURFACE", "LIGHT", "SETTING") and value:
+            if value.lower() in ("unknown", "n/a", "none"):
+                continue
+            # Guard against an answer that turns into a paragraph.
+            facts[key] = " ".join(value.split()[:8])
+    return facts
+
+
 def _compose_edit_instruction(user_prompt: str, subject: str) -> str:
     """Build the edit instruction from the user's own words.
 
@@ -814,6 +849,83 @@ def _compose_edit_instruction(user_prompt: str, subject: str) -> str:
     # Collapse any double spaces the substitution introduced.
     text = " ".join(text.split())
     return f"{text}, keeping everything else in the picture unchanged."
+
+
+def _enrich_edit_instruction(user_prompt: str, facts: dict[str, str]) -> str:
+    """Deepen the request with what the picture shows, without replacing it.
+
+    The user's words lead the sentence and are never paraphrased. What the
+    model observed is appended as context to preserve, which is the part an
+    editor actually needs: told only "make it blue", it is free to discard the
+    glaze, the lighting and the backdrop along the way.
+    """
+    head = _compose_edit_instruction(user_prompt, facts.get("SUBJECT", ""))
+    if not facts:
+        return head
+
+    # Drop the generic tail; the specific one below replaces it.
+    head = head.replace(", keeping everything else in the picture unchanged.", "")
+
+    def conflicts(fact: str) -> bool:
+        """Is the user already asking to change this?
+
+        Told "put it on a dark wooden table", appending "leaving the linen
+        cloth unchanged" instructs the editor to preserve the exact thing being
+        replaced. A preservation hint that contradicts the request is worse
+        than no hint, so anything the request touches is left out.
+        """
+        request = set(_significant(user_prompt))
+        return bool(request & set(_significant(fact)))
+
+    # Words naming the parts of a scene, so "move it to a table" is understood
+    # to be about the setting even when it shares no word with the observation.
+    SETTING_WORDS = {"background", "behind", "table", "floor", "wall", "surface",
+                     "scene", "setting", "backdrop", "place", "put", "move"}
+    LIGHT_WORDS = {"light", "lighting", "shadow", "bright", "dark", "dim",
+                   "sunlit", "exposure", "glow"}
+    SURFACE_WORDS = {"texture", "material", "finish", "glossy", "matte",
+                     "smooth", "rough", "shiny"}
+
+    request_words = set(_significant(user_prompt)) | set(user_prompt.lower().split())
+
+    preserve = []
+    for key, guard in (("SURFACE", SURFACE_WORDS), ("LIGHT", LIGHT_WORDS)):
+        fact = facts.get(key)
+        if fact and not conflicts(fact) and not (request_words & guard):
+            preserve.append(fact)
+
+    keep = facts.get("SETTING")
+    if keep and (conflicts(keep) or (request_words & SETTING_WORDS)):
+        keep = None
+
+    clauses = [head]
+    if preserve:
+        clauses.append("preserving its " + " and ".join(preserve))
+    if keep:
+        clauses.append(f"and leaving {keep} unchanged")
+    elif preserve:
+        clauses.append("and leaving the rest of the picture unchanged")
+    else:
+        clauses.append("keeping everything else in the picture unchanged")
+    return ", ".join(clauses).replace(", and ", " and ") + "."
+
+
+def _enrich_idea(user_prompt: str, detail: str) -> str:
+    """Put the user's idea first, then the added detail.
+
+    The earlier version asked for a whole new sentence, which is how "a cat"
+    became a paragraph about a room with no cat in it. Leading with their exact
+    words means the subject cannot be lost.
+    """
+    idea = user_prompt.strip().rstrip(".,")
+    extra = _collapse_repetition(_clean_assist(detail, "")).strip().rstrip(".")
+    # Strip a restatement if the model ignored the instruction not to.
+    low = extra.lower()
+    if low.startswith(idea.lower()):
+        extra = extra[len(idea):].lstrip(" ,")
+    if not extra:
+        return f"{idea}."
+    return _trim_to_sentence(f"{idea}, {extra}.")
 
 
 def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
@@ -850,25 +962,19 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             # composed from the user's words, not written by the model.
             emit({"id": req_id, "type": "progress", "phase": "denoise",
                   "progress": None, "message": "Looking at your picture"})
-            subject = _clean_assist(ask(SUBJECT_SYSTEM, staged, 24, 0.1), "")
-            # Guard against a model that answers with a paragraph anyway.
-            subject = " ".join(subject.replace("\n", " ").split()[:6]).strip(" .,")
-            description = subject
-            log(req_id, f"subject: {subject!r}")
-            improved = _compose_edit_instruction(user_prompt, subject)
+            raw = ask(SCENE_SYSTEM, staged, 90, 0.1)
+            facts = _parse_scene(raw)
+            description = " · ".join(f"{k.lower()}: {v}" for k, v in facts.items())
+            log(req_id, f"scene: {description or 'nothing readable'}")
+            improved = _enrich_edit_instruction(user_prompt, facts)
         else:
             emit({"id": req_id, "type": "progress", "phase": "denoise",
                   "progress": None, "message": "Writing the prompt"})
             instruction = (
-                f"{GENERATE_SYSTEM}\nNow do the same here.\n"
-                f"User idea: {user_prompt}\nYou write:"
+                f"{DETAIL_SYSTEM}\nNow do the same here.\n"
+                f"User idea: {user_prompt}\nYou add:"
             )
-            # Room to finish a sentence; the trim enforces the length.
-            improved = _trim_to_sentence(
-                _collapse_repetition(
-                    _clean_assist(ask(instruction, [], 220, 0.4), user_prompt)
-                )
-            )
+            improved = _enrich_idea(user_prompt, ask(instruction, [], 120, 0.5))
 
         if not _keeps_intent(user_prompt, improved):
             log(req_id, f"discarding rewrite {improved!r}: it lost the request", "warn")

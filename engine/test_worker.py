@@ -316,5 +316,108 @@ class Repetition(unittest.TestCase):
         self.assertTrue(worker._collapse_repetition("a cat, a dog").endswith("."))
 
 
+
+
+class Enhancement(unittest.TestCase):
+    """Deepen the request; never replace it.
+
+    The instruction has to keep working as an instruction: the user's words
+    lead, and what the picture shows is appended as context to preserve.
+    """
+
+    FACTS = {
+        "SUBJECT": "a beige ceramic teapot",
+        "SURFACE": "smooth glazed stoneware",
+        "LIGHT": "soft daylight from the left",
+        "SETTING": "crumpled linen cloth, pale wall",
+    }
+
+    def test_request_leads_and_survives(self):
+        out = worker._enrich_edit_instruction("make it blue", self.FACTS)
+        self.assertTrue(out.lower().startswith("make a beige ceramic teapot blue"), out)
+        self.assertIn("blue", out)
+
+    def test_image_facts_are_added_as_context(self):
+        out = worker._enrich_edit_instruction("make it blue", self.FACTS)
+        self.assertIn("glazed stoneware", out)
+        self.assertIn("daylight", out)
+        self.assertIn("linen", out)
+
+    def test_degrades_to_the_plain_instruction(self):
+        out = worker._enrich_edit_instruction("make it blue", {})
+        self.assertIn("make it blue", out)
+        self.assertIn("unchanged", out)
+
+    def test_partial_facts_are_fine(self):
+        out = worker._enrich_edit_instruction("add steam", {"SUBJECT": "a teapot"})
+        self.assertIn("add steam", out)
+        self.assertIn("teapot", out)
+
+    def test_scene_parsing_tolerates_mess(self):
+        facts = worker._parse_scene(
+            "Here you go:\n"
+            "- SUBJECT: a red car\n"
+            "surface: glossy paint\n"
+            "LIGHT: unknown\n"
+            "SETTING: a wet street\n"
+        )
+        self.assertEqual(facts.get("SUBJECT"), "a red car")
+        self.assertEqual(facts.get("SURFACE"), "glossy paint")
+        self.assertNotIn("LIGHT", facts, "'unknown' should be dropped, not used")
+
+
+class IdeaEnrichment(unittest.TestCase):
+    """The user's idea must be the head of the prompt, not a casualty."""
+
+    def test_idea_comes_first(self):
+        out = worker._enrich_idea("a cat", "curled on a windowsill, warm rim light")
+        self.assertTrue(out.startswith("a cat,"), out)
+        self.assertIn("windowsill", out)
+
+    def test_restatement_is_stripped(self):
+        out = worker._enrich_idea("a cat", "a cat curled on a sill, soft light")
+        self.assertEqual(out.lower().count("a cat"), 1, out)
+
+    def test_survives_an_empty_addition(self):
+        self.assertEqual(worker._enrich_idea("a cat", ""), "a cat.")
+
+
+
+
+class NoContradiction(unittest.TestCase):
+    """Never ask the editor to preserve what the user asked to change.
+
+    Told "put it on a dark wooden table", appending "leaving the linen cloth
+    unchanged" instructs the model to keep the exact thing being replaced.
+    """
+
+    FACTS = {
+        "SUBJECT": "a beige ceramic teapot",
+        "SURFACE": "smooth glazed stoneware",
+        "LIGHT": "soft daylight from the left",
+        "SETTING": "crumpled linen cloth, pale wall",
+    }
+
+    def test_setting_is_not_preserved_when_it_is_the_target(self):
+        for request in ("put it on a dark wooden table",
+                        "change the background to a forest",
+                        "move it to the floor"):
+            out = worker._enrich_edit_instruction(request, self.FACTS)
+            self.assertNotIn("linen", out, f"contradicted itself for {request!r}: {out}")
+
+    def test_lighting_is_not_preserved_when_it_is_the_target(self):
+        out = worker._enrich_edit_instruction("make the lighting darker", self.FACTS)
+        self.assertNotIn("daylight", out, out)
+
+    def test_surface_is_not_preserved_when_it_is_the_target(self):
+        out = worker._enrich_edit_instruction("give it a rough matte finish", self.FACTS)
+        self.assertNotIn("glazed", out, out)
+
+    def test_unrelated_request_still_gets_the_context(self):
+        out = worker._enrich_edit_instruction("make it blue", self.FACTS)
+        self.assertIn("glazed stoneware", out)
+        self.assertIn("linen", out)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
