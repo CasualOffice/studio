@@ -47,7 +47,9 @@ export default function AddModel({
     if (!resolved) return;
     setBusy(true);
     try {
-      await api.addCustomModel(resolved.model, name, resolved.tasks, resolved.bytes, null);
+      await api.addCustomModel(
+        resolved.model, name, resolved.tasks, resolved.bytes, null, resolved.family
+      );
       notify(`Added ${name}. Download it from the list below.`);
       onAdded();
       reset();

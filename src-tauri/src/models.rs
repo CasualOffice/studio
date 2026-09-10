@@ -31,6 +31,10 @@ pub struct CustomModel {
     pub repo: String,
     pub name: String,
     pub tasks: Vec<String>,
+    /// Router family, worked out when the repository was inspected. Without
+    /// it MLX-Gen cannot place a repository whose name it does not recognise.
+    #[serde(default)]
+    pub family: Option<String>,
     pub quantize: Option<u8>,
     pub package_gib: f32,
     pub steps_default: u32,
@@ -348,7 +352,7 @@ fn status_from_custom(m: &CustomModel, paths: &AppPaths, host: &HostInfo) -> Mod
         id: m.id.clone(),
         repo: m.repo.clone(),
         name: m.name.clone(),
-        family: None,
+        family: m.family.clone(),
         tasks_str: tasks.iter().map(|t| task_name(*t).to_string()).collect(),
         tasks,
         quantize: m.quantize,

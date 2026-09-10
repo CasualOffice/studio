@@ -48,8 +48,9 @@ export const api = {
   deleteModel: (modelId: string) => invoke<number>("delete_model", { modelId }),
   resolveModel: (repo: string) => invoke<ResolvedModel>("resolve_model", { repo }),
   addCustomModel: (
-    repo: string, name: string, tasks: string[], bytes: number, quantize: number | null
-  ) => invoke<void>("add_custom_model", { repo, name, tasks, bytes, quantize }),
+    repo: string, name: string, tasks: string[], bytes: number,
+    quantize: number | null, family: string | null
+  ) => invoke<void>("add_custom_model", { repo, name, tasks, bytes, quantize, family }),
   removeCustomModel: (modelId: string) =>
     invoke<void>("remove_custom_model", { modelId }),
   unloadModel: () => invoke<void>("unload_model"),

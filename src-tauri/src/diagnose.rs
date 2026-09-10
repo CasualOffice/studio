@@ -31,6 +31,12 @@ pub fn humanize(raw: &str) -> String {
                 Models tab."
             .into();
     }
+    if lower.contains("could not infer a supported backend") || lower.contains("pass family") {
+        return "This model is not one the engine recognises. If it is a variant \
+                of a supported family, remove it and add it again so its family \
+                can be detected; otherwise it cannot run here."
+            .into();
+    }
     if lower.contains("does not support") || lower.contains("is not a parameter") {
         return format!(
             "This model does not support that combination of settings. {}",
@@ -48,6 +54,14 @@ pub fn humanize(raw: &str) -> String {
     if lower.contains("engine process exited") || lower.contains("could not reach the engine") {
         return "The engine stopped unexpectedly. It restarts on the next run; \
                 if this keeps happening, the Activity tab has the details."
+            .into();
+    }
+    if lower.contains("cas client error")
+        || lower.contains("file reconstruction error")
+        || lower.contains("error decoding response body")
+    {
+        return "The download was interrupted partway through. This is usually \
+                temporary: start it again and it will resume."
             .into();
     }
     if lower.contains("connection") || lower.contains("timed out") || lower.contains("timeout") {
@@ -112,6 +126,29 @@ mod tests {
     #[test]
     fn full_disk_says_how_to_fix_it() {
         assert!(humanize("OSError: [Errno 28] No space left on device").contains("disk is full"));
+    }
+
+    #[test]
+    fn an_interrupted_transfer_says_to_retry() {
+        // Hugging Face's chunked backend fails this way on a truncated
+        // response, and the raw text names none of that.
+        let out = humanize(
+            "RuntimeError: Task error: File reconstruction error: CAS Client Error: \
+             Format error: I/O error: error decoding response body",
+        );
+        assert!(out.contains("interrupted"), "{out}");
+        assert!(!out.contains("CAS"), "internals leaked: {out}");
+    }
+
+    #[test]
+    fn an_unplaceable_model_explains_itself() {
+        // The engine names the option but not the value, which is no help.
+        let out = humanize(
+            "TaskInferenceError: could not infer a supported backend for model \
+             'someone/unusual-repo', pass family=",
+        );
+        assert!(out.contains("not one the engine recognises"), "{out}");
+        assert!(!out.contains("pass family"), "internals leaked: {out}");
     }
 
     #[test]

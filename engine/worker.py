@@ -334,6 +334,11 @@ def _downloads_allowed(req_id: str):
         yield
 
 
+# The router families MLX-Gen knows. Used to identify a repository the
+# resolver cannot place on its own.
+ROUTER_FAMILIES = ("flux2", "qwen", "z-image", "ernie-image", "fibo", "bonsai", "wan")
+
+
 def _load_model(req_id: str, model: str, quantize: int | None,
                 model_path: str | None, image_count: int,
                 release_text_encoder: bool = False,
@@ -344,7 +349,33 @@ def _load_model(req_id: str, model: str, quantize: int | None,
 
     if loras:
         plan_kw["has_lora"] = True
-    runtime = resolve_generation_runtime(model=model, image_count=image_count, **plan_kw)
+
+    def resolve(**extra: Any) -> Any:
+        return resolve_generation_runtime(
+            model=model, image_count=image_count, **{**plan_kw, **extra}
+        )
+
+    try:
+        runtime = resolve()
+    except Exception as exc:
+        # "could not infer a supported backend for model ... pass family=".
+        # The message names the option but not the value, so try each family
+        # rather than making the user work it out. A caller that already knows
+        # the family never reaches this.
+        if "family" not in plan_kw and "family" in str(exc).lower():
+            for candidate in ROUTER_FAMILIES:
+                try:
+                    runtime = resolve(family=candidate)
+                    plan_kw["family"] = candidate
+                    log(req_id, f"router family resolved as {candidate!r}")
+                    break
+                except Exception:
+                    continue
+            else:
+                raise
+        else:
+            raise
+
     key = str(runtime.cache_key(quantize=quantize, model_path=model_path))
 
     # Adapters change the weights, so they have to change the identity. Reusing
@@ -1097,8 +1128,27 @@ def op_resolve(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     modes: list[str] = []
     tasks: list[str] = []
     route_error: str | None = None
+    family: str | None = None
+
+    def probe(**kw: Any) -> Any:
+        return get_model_capabilities(model=repo, **kw)
+
     try:
-        caps = get_model_capabilities(model=repo)
+        try:
+            caps = probe()
+        except Exception:
+            # The resolver could not place this repository from its name. Try
+            # each family rather than making the user guess -- the error it
+            # raises names the option but not the value.
+            for candidate in ROUTER_FAMILIES:
+                try:
+                    caps = probe(family=candidate)
+                    family = candidate
+                    break
+                except Exception:
+                    continue
+            else:
+                raise
         modes = [c.mode for c in caps.capabilities]
         # Map MLX-Gen's internal modes onto the app's four task buckets.
         if any(m in ("text-only", "text-to-image") for m in modes):
@@ -1131,6 +1181,7 @@ def op_resolve(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "model": repo,
+        "family": family,
         "modes": modes,
         "tasks": tasks,
         "bytes": size,
@@ -1212,6 +1263,23 @@ def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     env = dict(os.environ)
     env.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
 
+    def run_download(cmd: list[str], environ: dict[str, str]) -> subprocess.CompletedProcess:
+        return subprocess.run(cmd, env=environ, capture_output=True, text=True)
+
+    def failed_in_transfer(proc: subprocess.CompletedProcess) -> bool:
+        """Did this fail in the chunked transfer layer rather than legitimately?
+
+        Hugging Face's xet backend reconstructs files from content-addressed
+        chunks, and a truncated response surfaces as a CAS or reconstruction
+        error partway through a large download. Retrying the same way tends to
+        fail the same way; falling back to plain HTTP range requests does not.
+        """
+        text = ((proc.stderr or "") + (proc.stdout or "")).lower()
+        return any(m in text for m in (
+            "cas client error", "file reconstruction error", "xet_get",
+            "error decoding response body",
+        ))
+
     # Not every model belongs to MLX-Gen. The prompt assistant is a VLM loaded
     # by mlx-vlm, and `mlxgen download` exits 0 without fetching anything for a
     # repo it does not recognise -- which looked like a successful zero-byte
@@ -1224,7 +1292,12 @@ def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             # not the weight/tokenizer subset it fetches for a model.
             cli = Path(sys.executable).parent / "mlxgen"
             cmd = [str(cli), "download", "--model", repo_id, "--all-files"]
-            proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            proc = run_download(cmd, env)
+            if proc.returncode != 0 and failed_in_transfer(proc):
+                log(req_id, "chunked transfer failed; retrying over plain HTTP", "warn")
+                retry_env = dict(env)
+                retry_env["HF_HUB_DISABLE_XET"] = "1"
+                proc = run_download(cmd, retry_env)
             if proc.returncode != 0:
                 tail = (proc.stderr or proc.stdout or "").strip().splitlines()
                 raise RuntimeError("adapter download failed:\n" + "\n".join(tail[-8:]))
@@ -1237,7 +1310,16 @@ def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             cmd = [str(cli), "download", "--model", repo_id] if cli.exists() else [
                 sys.executable, "-m", "mlxgen", "download", "--model", repo_id
             ]
-            proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            proc = run_download(cmd, env)
+            if proc.returncode != 0 and failed_in_transfer(proc):
+                # A large model can lose an hour to this, so it is worth one
+                # automatic retry down the slower but sturdier path.
+                log(req_id, "chunked transfer failed; retrying over plain HTTP", "warn")
+                retry_env = dict(env)
+                retry_env["HF_HUB_DISABLE_XET"] = "1"
+                emit({"id": req_id, "type": "progress", "phase": "download",
+                      "progress": None, "message": "Transfer failed; retrying"})
+                proc = run_download(cmd, retry_env)
             if proc.returncode != 0:
                 tail = (proc.stderr or proc.stdout or "").strip().splitlines()
                 raise RuntimeError("download failed:\n" + "\n".join(tail[-8:]))
@@ -1479,6 +1561,12 @@ def _run_generation(req_id: str, req: dict[str, Any], task: str,
     # masked, reframe and outpaint -- and picks between them from these hints.
     # They must be supplied at load time, not with the generation call.
     plan_kw: dict[str, Any] = {}
+    if req.get("family"):
+        # Without this, MLX-Gen infers the router family from the repository
+        # name and fails outright on anything it does not recognise:
+        # "could not infer a supported backend for model ... pass family=".
+        # The catalog knows the family for every model it lists.
+        plan_kw["family"] = req["family"]
     if req.get("i2i_mode"):
         plan_kw["i2i_mode"] = req["i2i_mode"]
     if req.get("mask"):
@@ -1777,6 +1865,8 @@ def op_video(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         # animate (reference_image_count) and rejects image input outright.
         # Offering both lets the resolver pick whichever this model supports.
         plan_kw: dict[str, Any] = {}
+        if req.get("family"):
+            plan_kw["family"] = req["family"]
         if staged:
             plan_kw["reference_image_count"] = len(staged)
 

@@ -589,6 +589,7 @@ pub fn add_custom_model(
     tasks: Vec<String>,
     bytes: u64,
     quantize: Option<u8>,
+    family: Option<String>,
 ) -> Result<()> {
     let repo = normalize_repo(&repo)?;
     if tasks.is_empty() {
@@ -611,6 +612,7 @@ pub fn add_custom_model(
             tasks,
             quantize,
             package_gib: bytes as f32 / 1024.0 / 1024.0 / 1024.0,
+            family,
             steps_default: 8,
             added_at: chrono::Local::now().to_rfc3339(),
         },
@@ -770,6 +772,9 @@ async fn run_job(
     let mut params = json!({
         "model": entry.repo.clone(),
         "quantize": entry.quantize,
+        // Routing hint. MLX-Gen otherwise infers the family from the
+        // repository name and refuses anything it cannot place.
+        "family": entry.family.clone(),
         "prompt": args.prompt,
         "width": args.width,
         "height": args.height,
@@ -963,6 +968,7 @@ pub async fn upscale(
             json!({
                 "model": entry.repo.clone(),
                 "quantize": entry.quantize,
+                "family": entry.family.clone(),
                 "resolution": resolution,
                 "low_ram": low_ram,
                 "seed": 0,
@@ -1143,6 +1149,7 @@ pub async fn generate_video(
     let mut params = json!({
         "model": entry.repo.clone(),
         "quantize": entry.quantize,
+        "family": entry.family.clone(),
         "prompt": prompt,
         "width": width,
         "height": height,

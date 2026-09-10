@@ -157,6 +157,8 @@ export interface ResolvedModel {
   private: boolean;
   gated: boolean;
   routable: boolean;
+  /** Router family, detected if the resolver could not infer it. */
+  family: string | null;
   error: string | null;
   /** Verdict computed against this machine before anything is downloaded. */
   package_gib: number;
