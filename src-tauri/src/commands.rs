@@ -654,6 +654,9 @@ pub struct GenerateArgs {
     /// Show the picture forming, step by step.
     #[serde(default = "default_true")]
     pub preview: bool,
+    /// Adapter handles with their strengths.
+    #[serde(default)]
+    pub loras: Vec<(String, f32)>,
     /// Vault id of a painted mask: white where the model may change the image.
     pub mask: Option<String>,
     /// CSS-like padding for outpainting, e.g. "10%,25%,10%,25%".
@@ -772,6 +775,13 @@ async fn run_job(
         params["low_ram"] = json!(true);
     }
     params["preview"] = json!(args.preview);
+    if !args.loras.is_empty() {
+        params["loras"] = json!(args
+            .loras
+            .iter()
+            .map(|(path, scale)| json!({ "path": path, "scale": scale }))
+            .collect::<Vec<_>>());
+    }
     if let Some(c) = args.cache_limit_gb {
         params["cache_limit_gb"] = json!(c);
     }
@@ -1143,6 +1153,113 @@ pub async fn generate_video(
         })?;
     }
     Ok(produced)
+}
+
+
+/// An adapter the user has installed, remembered between launches.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct Lora {
+    /// `owner/repo:file.safetensors` -- the handle MLX-Gen expects.
+    pub handle: String,
+    pub repo: String,
+    pub name: String,
+    pub bytes: u64,
+    pub scale: f32,
+    /// True while its weights are present locally.
+    #[serde(default)]
+    pub installed: bool,
+}
+
+fn loras_path(paths: &AppPaths) -> std::path::PathBuf {
+    paths.root.join("loras.json")
+}
+
+fn load_loras(paths: &AppPaths) -> Vec<Lora> {
+    std::fs::read_to_string(loras_path(paths))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<Lora>>(&s).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut l| {
+            l.installed = models::is_installed(paths, &l.repo).0;
+            l
+        })
+        .collect()
+}
+
+fn save_loras(paths: &AppPaths, list: &[Lora]) -> Result<()> {
+    let tmp = loras_path(paths).with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(list)?)?;
+    std::fs::rename(&tmp, loras_path(paths))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_loras(state: State<'_, AppState>) -> Vec<Lora> {
+    load_loras(&state.paths())
+}
+
+/// Inspect an adapter repository before installing it.
+#[tauri::command]
+pub async fn resolve_lora(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    repo: String,
+) -> Result<serde_json::Value> {
+    let repo = normalize_repo(&repo)?;
+    let engine = state.engine(&app).await?;
+    engine
+        .request(&new_job_id(), "lora_info", json!({ "model": repo }))
+        .await
+}
+
+/// Download an adapter and remember it.
+///
+/// `handle` is `owner/repo:file.safetensors`; the file part matters because a
+/// repository may publish several adapters and MLX-Gen needs to know which.
+#[tauri::command]
+pub async fn add_lora(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+    repo: String,
+    file: String,
+    name: String,
+    bytes: u64,
+) -> Result<Vec<Lora>> {
+    let repo = normalize_repo(&repo)?;
+    let engine = state.engine(&app).await?;
+    engine
+        .request(
+            &job_id,
+            "download",
+            json!({ "model": repo.clone(), "expected_bytes": bytes, "via": "lora" }),
+        )
+        .await?;
+
+    let paths = state.paths();
+    let mut list = load_loras(&paths);
+    let handle = if file.is_empty() { repo.clone() } else { format!("{repo}:{file}") };
+    list.retain(|l| l.handle != handle);
+    list.push(Lora {
+        name: if name.trim().is_empty() { handle.clone() } else { name },
+        handle,
+        repo,
+        bytes,
+        scale: 1.0,
+        installed: true,
+    });
+    save_loras(&paths, &list)?;
+    Ok(load_loras(&paths))
+}
+
+#[tauri::command]
+pub fn remove_lora(state: State<'_, AppState>, handle: String) -> Result<Vec<Lora>> {
+    let paths = state.paths();
+    let mut list = load_loras(&paths);
+    list.retain(|l| l.handle != handle);
+    save_loras(&paths, &list)?;
+    Ok(load_loras(&paths))
 }
 
 

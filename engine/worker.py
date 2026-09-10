@@ -337,12 +337,23 @@ def _downloads_allowed(req_id: str):
 def _load_model(req_id: str, model: str, quantize: int | None,
                 model_path: str | None, image_count: int,
                 release_text_encoder: bool = False,
+                loras: list[dict[str, Any]] | None = None,
                 **plan_kw: Any) -> tuple[Any, float]:
     """Resolve the route, reuse the resident model when the cache key matches."""
     from mlxgen import load_generation_model, resolve_generation_runtime
 
+    if loras:
+        plan_kw["has_lora"] = True
     runtime = resolve_generation_runtime(model=model, image_count=image_count, **plan_kw)
     key = str(runtime.cache_key(quantize=quantize, model_path=model_path))
+
+    # Adapters change the weights, so they have to change the identity. Reusing
+    # a resident model across a LoRA change would silently apply the wrong
+    # style, or none at all, with nothing in the output to indicate it.
+    if loras:
+        key += "::lora:" + ",".join(
+            f"{l.get('path')}@{l.get('scale', 1.0)}" for l in loras
+        )
 
     cached = CACHE.get(key)
     if cached is not None:
@@ -1043,6 +1054,27 @@ def op_image_formats(req_id: str, _req: dict[str, Any]) -> dict[str, Any]:
     return {"extensions": useful, "heic": "heic" in useful}
 
 
+def op_lora_info(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
+    """Inspect an adapter repository before offering to install it."""
+    from huggingface_hub import HfApi
+
+    repo = req["model"].strip()
+    info = HfApi().model_info(repo, files_metadata=True)
+    files = [
+        {"name": s.rfilename, "bytes": getattr(s, "size", None) or 0}
+        for s in (info.siblings or [])
+        if s.rfilename.endswith(".safetensors")
+    ]
+    # A repo with several adapters needs the exact file naming its handle.
+    return {
+        "repo": repo,
+        "files": sorted(files, key=lambda f: -f["bytes"]),
+        "bytes": sum(f["bytes"] for f in files),
+        "gated": bool(getattr(info, "gated", False)),
+        "base_model": (getattr(info, "cardData", None) or {}).get("base_model"),
+    }
+
+
 def op_capabilities(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     from mlxgen import get_model_capabilities
 
@@ -1187,7 +1219,16 @@ def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     via = req.get("via") or "mlxgen"
 
     try:
-        if via == "hf":
+        if via == "lora":
+            # Adapter repositories are small and MLX-Gen wants the whole thing,
+            # not the weight/tokenizer subset it fetches for a model.
+            cli = Path(sys.executable).parent / "mlxgen"
+            cmd = [str(cli), "download", "--model", repo_id, "--all-files"]
+            proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            if proc.returncode != 0:
+                tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+                raise RuntimeError("adapter download failed:\n" + "\n".join(tail[-8:]))
+        elif via == "hf":
             from huggingface_hub import snapshot_download
 
             snapshot_download(repo_id=repo_id)
@@ -1447,9 +1488,15 @@ def _run_generation(req_id: str, req: dict[str, Any], task: str,
     if req.get("image_strength") is not None:
         plan_kw["has_image_strength"] = True
 
+    loras = req.get("loras") or []
+    if loras:
+        log(req_id, "adapters: " + ", ".join(
+            f"{l['path']} @ {l.get('scale', 1.0)}" for l in loras))
+
     loaded, load_ms = _load_model(
         req_id, model, quantize, model_path, image_count,
         release_text_encoder=bool(req.get("release_text_encoder")) or low_ram,
+        loras=loras,
         **plan_kw,
     )
 
@@ -1811,6 +1858,7 @@ def op_set_memory(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
 OPS = {
     "ping": op_ping,
     "capabilities": op_capabilities,
+    "lora_info": op_lora_info,
     "image_formats": op_image_formats,
     "resolve": op_resolve,
     "download": op_download,

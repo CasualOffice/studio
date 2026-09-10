@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errText, onEngineExit, onEngineProgress } from "./lib/api";
-import type { HostInfo, ModelStatus, SetupState, VaultItem, VaultStatus } from "./lib/types";
+import type { HostInfo, ModelStatus, Recipe, SetupState, VaultItem, VaultStatus } from "./lib/types";
 import Setup from "./components/Setup";
 import VaultGate from "./components/VaultGate";
 import Models from "./components/Models";
@@ -41,6 +41,7 @@ export default function App() {
   // Owned here so Generate and the Vault can both hand images to the Edit tab.
   const [editImages, setEditImages] = useState<string[]>([]);
   const [videoFrame, setVideoFrame] = useState<string[]>([]);
+  const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [upscaleImage, setUpscaleImage] = useState<string[]>([]);
 
   const notify = useCallback((msg: string, bad?: boolean) => setToast({ msg, bad }), []);
@@ -61,6 +62,33 @@ export default function App() {
   }, [notify]);
 
   const sendToEdit = useCallback((ids: string[]) => send("edit", ids), [send]);
+
+  /**
+   * Load a past run's settings back into the tab that produced it.
+   *
+   * Reproducing an image needs nothing new: the prompt, seed, size and steps
+   * were all recorded when it was made. Keeping the seed repeats it exactly;
+   * dropping it explores around it, which is what people actually want most of
+   * the time.
+   */
+  const reuse = useCallback((item: VaultItem, reuseSeed: boolean) => {
+    setRecipe({
+      kind: item.kind,
+      prompt: item.prompt,
+      modelName: item.model,
+      seed: item.seed,
+      width: item.width,
+      height: item.height,
+      steps: item.steps,
+      guidance: item.guidance,
+      inputs: item.inputs,
+      reuseSeed,
+    });
+    if (item.kind === "video") setTab("video");
+    else if (item.kind === "edit") { setEditImages(item.inputs); setTab("edit"); }
+    else setTab("generate");
+    notify(reuseSeed ? "Settings restored — same seed." : "Settings restored — new seed each run.");
+  }, [notify]);
 
   // Any tab can show that the engine is working, so leaving Generate mid-run
   // does not look like the job vanished.
@@ -287,6 +315,8 @@ export default function App() {
               onProduced={refreshItems}
               onSendToEdit={sendToEdit}
               send={send}
+              recipe={recipe?.kind !== "video" && recipe?.kind !== "edit" ? recipe : null}
+              onRecipeUsed={() => setRecipe(null)}
             />
           </div>
           <div style={{ display: tab === "edit" ? "block" : "none" }}>
@@ -298,6 +328,8 @@ export default function App() {
               images={editImages}
               onImagesChange={setEditImages}
               send={send}
+              recipe={recipe?.kind === "edit" ? recipe : null}
+              onRecipeUsed={() => setRecipe(null)}
             />
           </div>
           <div style={{ display: tab === "video" ? "block" : "none" }}>
@@ -329,6 +361,7 @@ export default function App() {
               notify={notify}
               send={send}
               models={models}
+              onReuse={reuse}
             />
           )}
           {tab === "activity" && <Activity notify={notify} />}

@@ -135,6 +135,8 @@ export interface GenerateArgs {
   preview: boolean;
   cache_limit_gb: number | null;
   allow_over_budget: boolean;
+  /** Adapter handles paired with their strengths. */
+  loras: [string, number][];
   /** Vault id of a painted mask: white where the model may change things. */
   mask: string | null;
   /** CSS-like padding for outpainting, e.g. "10%,25%,10%,25%". */
@@ -176,4 +178,41 @@ export interface RepairReport {
   recovered: number;
   dropped: number;
   unreadable: number;
+}
+
+/**
+ * Enough of a past run to reproduce or vary it.
+ *
+ * Everything here was already recorded when the item was made, so recreating
+ * costs nothing extra to store.
+ */
+export interface Recipe {
+  kind: string;
+  prompt: string;
+  modelName: string;
+  seed: number;
+  width: number | null;
+  height: number | null;
+  steps: number | null;
+  guidance: number | null;
+  inputs: string[];
+  /** Same seed reproduces it; a new seed varies it. */
+  reuseSeed: boolean;
+}
+
+export interface Lora {
+  handle: string;
+  repo: string;
+  name: string;
+  bytes: number;
+  scale: number;
+  installed: boolean;
+}
+
+export interface ResolvedLora {
+  repo: string;
+  files: { name: string; bytes: number }[];
+  bytes: number;
+  gated: boolean;
+  base_model: string | null;
 }

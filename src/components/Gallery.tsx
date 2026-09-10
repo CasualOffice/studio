@@ -5,7 +5,7 @@ import { exportItem } from "./shared";
 import SendTo, { type Destination } from "./SendTo";
 
 export default function Gallery({
-  items, onChanged, notify, send, models,
+  items, onChanged, notify, send, models, onReuse,
 }: {
   items: VaultItem[];
   onChanged: () => void;
@@ -13,6 +13,8 @@ export default function Gallery({
   /** Reuse a stored item anywhere else, without exporting it first. */
   send?: (dest: Destination, ids: string[]) => void;
   models: ModelStatus[];
+  /** Load this run's settings back into the tab that produced it. */
+  onReuse?: (item: VaultItem, reuseSeed: boolean) => void;
 }) {
   const [open, setOpen] = useState<VaultItem | null>(null);
 
@@ -142,6 +144,20 @@ export default function Gallery({
             <div style={{ display: "flex", gap: 7, marginTop: 12, flexWrap: "wrap" }}>
               {isImage(open) && send && (
                 <SendTo ids={[open.id]} send={send} models={models} />
+              )}
+              {onReuse && open.prompt && (
+                <>
+                  <button className="btn small primary" onClick={() => onReuse(open, false)}>
+                    Make another like this
+                  </button>
+                  <button
+                    className="btn small"
+                    title="Same prompt, same seed, same settings"
+                    onClick={() => onReuse(open, true)}
+                  >
+                    Recreate exactly
+                  </button>
+                </>
               )}
               <button className="btn small" onClick={() => exportItem(open, notify)}>
                 Export a copy…

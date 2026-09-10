@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, errText, fmtDuration, newJobId, onEnginePreview, onEngineProgress, vaultUrl } from "../lib/api";
-import type { EngineProgress, ModelStatus } from "../lib/types";
+import type { EngineProgress, ModelStatus, Recipe } from "../lib/types";
 import { autoPick, estimateSeconds, humanDuration, QUALITY_LABEL, SHAPES, stepsFor, type Quality } from "../lib/presets";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
 import MaskCanvas from "./MaskCanvas";
 import SendTo, { type Destination } from "./SendTo";
+import Loras from "./Loras";
 import { loadPref, savePref } from "../lib/prefs";
 
 export type Mode = "generate" | "edit";
 
 export default function Studio({
   mode, models, notify, onProduced, images: controlledImages, onImagesChange,
-  onSendToEdit, send,
+  onSendToEdit, send, recipe, onRecipeUsed,
 }: {
   mode: Mode;
   models: ModelStatus[];
@@ -28,6 +29,9 @@ export default function Studio({
   onSendToEdit?: (ids: string[]) => void;
   /** Carry a result into any other tab. */
   send?: (dest: Destination, ids: string[]) => void;
+  /** Settings restored from a past run. */
+  recipe?: Recipe | null;
+  onRecipeUsed?: () => void;
 }) {
   const wantTask = mode === "edit" ? "edit" : "text_to_image";
 
@@ -72,6 +76,7 @@ export default function Studio({
   const [fill, setFill] = useState("auto");
   const i2iMode: "edit" | "latent" = editKind === "latent" ? "latent" : "edit";
 
+  const [loras, setLoras] = useState<[string, number][]>([]);
   const [lowRam, setLowRam] = useState(false);
   const [capCache, setCapCache] = useState(false);
   const [cacheLimit, setCacheLimit] = useState(1);
@@ -120,6 +125,22 @@ export default function Studio({
   useEffect(() => {
     if (model && !advanced) setSteps(stepsFor(model, quality));
   }, [quality, model, advanced]);
+
+  // Restore a past run's settings. Applied once, then cleared, so editing a
+  // field afterwards is not undone by a re-render.
+  useEffect(() => {
+    if (!recipe) return;
+    setPrompt(recipe.prompt);
+    if (recipe.steps) { setSteps(recipe.steps); setAdvanced(true); }
+    if (recipe.guidance != null) setGuidance(recipe.guidance);
+    if (recipe.width && recipe.height) {
+      const i = SHAPES.findIndex((sh) => sh.w === recipe.width && sh.h === recipe.height);
+      if (i >= 0) setShape(i);
+    }
+    setRandomSeed(!recipe.reuseSeed);
+    if (recipe.reuseSeed) setSeed(recipe.seed);
+    onRecipeUsed?.();
+  }, [recipe]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { savePref("advanced", advanced); }, [advanced]);
   useEffect(() => { savePref(`shape:${mode}`, shape); }, [shape, mode]);
@@ -202,6 +223,7 @@ export default function Studio({
         images: mode === "edit" ? images : [],
         image_strength: mode === "edit" && i2iMode === "latent" ? strength : null,
         i2i_mode: mode === "edit" ? i2iMode : null,
+        loras,
         low_ram: lowRam,
         preview: showPreview,
         cache_limit_gb: capCache ? cacheLimit : null,
@@ -565,6 +587,8 @@ export default function Studio({
                 </div>
               </div>
             </div>
+
+            <Loras selected={loras} onSelectedChange={setLoras} notify={notify} />
 
             <div className="panel">
               <h2>Memory</h2>
