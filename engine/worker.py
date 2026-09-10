@@ -334,9 +334,55 @@ def _downloads_allowed(req_id: str):
         yield
 
 
-# The router families MLX-Gen knows. Used to identify a repository the
-# resolver cannot place on its own.
+# The router families MLX-Gen knows.
 ROUTER_FAMILIES = ("flux2", "qwen", "z-image", "ernie-image", "fibo", "bonsai", "wan")
+
+# Architecture names a repository declares, mapped to the router that handles
+# them. Matched against the pipeline or model class in the repo's own config,
+# which is evidence rather than a guess.
+_ARCHITECTURE_FAMILY = (
+    ("flux2", "flux2"),
+    ("fluxkontext", None),      # FLUX.1 lineage: not routable here at all
+    ("fluxpipeline", None),
+    ("fluxtransformer2d", None),
+    ("qwenimage", "qwen"),
+    ("zimage", "z-image"),
+    ("z_image", "z-image"),
+    ("ernie", "ernie-image"),
+    ("fibo", "fibo"),
+    ("bonsai", "bonsai"),
+    ("wan", "wan"),
+)
+
+
+def _detect_family(repo: str) -> str | None:
+    """Identify the router family from what the repository declares.
+
+    Reads the pipeline class out of `model_index.json`, falling back to
+    `config.json`. Returns None when there is no clear evidence, because a
+    wrong family is worse than an honest refusal: the weights would load
+    through an architecture they were not trained for.
+    """
+    import json as _json
+
+    from huggingface_hub import hf_hub_download
+
+    for filename in ("model_index.json", "config.json", "transformer/config.json"):
+        try:
+            path = hf_hub_download(repo_id=repo, filename=filename)
+            with open(path) as fh:
+                blob = _json.load(fh)
+        except Exception:
+            continue
+
+        declared = " ".join(
+            str(blob.get(k, "")) for k in ("_class_name", "architectures", "model_type")
+        ).lower().replace("-", "").replace("_", "")
+
+        for needle, family in _ARCHITECTURE_FAMILY:
+            if needle.replace("_", "") in declared:
+                return family
+    return None
 
 
 def _load_model(req_id: str, model: str, quantize: int | None,
@@ -363,16 +409,12 @@ def _load_model(req_id: str, model: str, quantize: int | None,
         # rather than making the user work it out. A caller that already knows
         # the family never reaches this.
         if "family" not in plan_kw and "family" in str(exc).lower():
-            for candidate in ROUTER_FAMILIES:
-                try:
-                    runtime = resolve(family=candidate)
-                    plan_kw["family"] = candidate
-                    log(req_id, f"router family resolved as {candidate!r}")
-                    break
-                except Exception:
-                    continue
-            else:
+            detected = _detect_family(model)
+            if detected is None:
                 raise
+            log(req_id, f"router family identified as {detected!r} from the model's config")
+            runtime = resolve(family=detected)
+            plan_kw["family"] = detected
         else:
             raise
 
@@ -1130,25 +1172,19 @@ def op_resolve(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     route_error: str | None = None
     family: str | None = None
 
-    def probe(**kw: Any) -> Any:
-        return get_model_capabilities(model=repo, **kw)
-
     try:
         try:
-            caps = probe()
+            caps = get_model_capabilities(model=repo)
         except Exception:
-            # The resolver could not place this repository from its name. Try
-            # each family rather than making the user guess -- the error it
-            # raises names the option but not the value.
-            for candidate in ROUTER_FAMILIES:
-                try:
-                    caps = probe(family=candidate)
-                    family = candidate
-                    break
-                except Exception:
-                    continue
-            else:
+            # The resolver could not place this repository from its name.
+            # Deliberately not probing families until one accepts: acceptance
+            # is not identification. FLUX.1 is accepted by the flux2 router and
+            # would load its weights through the wrong architecture. Identify
+            # it from what the repository declares, or not at all.
+            family = _detect_family(repo)
+            if family is None:
                 raise
+            caps = get_model_capabilities(model=repo, family=family)
         modes = [c.mode for c in caps.capabilities]
         # Map MLX-Gen's internal modes onto the app's four task buckets.
         if any(m in ("text-only", "text-to-image") for m in modes):
@@ -1178,6 +1214,14 @@ def op_resolve(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         if route_error is None:
             route_error = str(exc)
+
+    if route_error and "infer a supported backend" in route_error.lower():
+        route_error = (
+            "This model is not one the engine can run. It supports the FLUX.2, "
+            "Qwen-Image, Z-Image, ERNIE, FIBO, Bonsai and Wan families. Stable "
+            "Diffusion, SDXL and FLUX.1 are different architectures and are not "
+            "included."
+        )
 
     return {
         "model": repo,

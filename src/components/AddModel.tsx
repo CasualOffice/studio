@@ -86,8 +86,14 @@ export default function AddModel({
         />
         <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5, lineHeight: 1.55 }}>
           Paste a model link from huggingface.co, or type <code>owner/name</code>.
-          It is checked against this Mac before anything downloads. Pre-quantized
-          MLX packages work best — a full-precision repo is usually far too large.
+          It is checked against this Mac before anything downloads.
+          <div style={{ marginTop: 6 }}>
+            The engine runs the <b>FLUX.2</b>, <b>Qwen-Image</b>, <b>Z-Image</b>,
+            <b> ERNIE</b>, <b>FIBO</b>, <b>Bonsai</b> and <b>Wan</b> families.
+            Stable Diffusion, SDXL and FLUX.1 are different architectures and
+            will not run. Pre-quantized MLX packages work best — a
+            full-precision repository is usually far too large for this Mac.
+          </div>
         </div>
       </div>
 
