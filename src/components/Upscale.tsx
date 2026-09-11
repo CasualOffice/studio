@@ -70,6 +70,9 @@ export default function Upscale({
   const run = async () => {
     if (!model || images.length === 0) { notify("Add an image first.", true); return; }
     const id = newJobId();
+    // Clear the last result as the new run starts. Leaving it up made a
+    // second run look like nothing was happening.
+    setOut(null);
     setRunning(true); setJobId(id); setProg(null);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
     try {

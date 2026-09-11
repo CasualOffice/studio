@@ -138,6 +138,9 @@ export default function Video({
     if (!prompt.trim()) { notify("Describe the clip first.", true); return; }
     const id = newJobId();
     const s = randomSeed ? Math.floor(Math.random() * 2_000_000_000) : seed;
+    // Clear the last result as the new run starts. Leaving it up made a
+    // second run look like nothing was happening.
+    setOut(null); setTook(null);
     setRunning(true); setJobId(id); setProg(null); setTook(null);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
     const t0 = performance.now();

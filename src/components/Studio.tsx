@@ -207,6 +207,11 @@ export default function Studio({
     setRunning(true); setJobId(id); setProg(null); setTook(null);
 
     setPreview(null);
+    // The previous result goes now, not when the new one lands. It used to sit
+    // in front of the live preview for the whole run, so a second generation
+    // looked like nothing was happening.
+    setOutputs([]);
+    setSelected(0);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
     const unPrev = await onEnginePreview((f) => {
       if (f.jobId === id) setPreview(f.src);
@@ -687,7 +692,7 @@ export default function Studio({
 
       <div>
         <div className="canvas">
-          {outputs.length > 0 ? (
+          {outputs.length > 0 && !running ? (
             <img src={vaultUrl(outputs[selected])} alt="" />
           ) : preview ? (
             <div style={{ textAlign: "center" }}>
