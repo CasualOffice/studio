@@ -1471,17 +1471,38 @@ pub async fn enrich_panels(
 /// Composed in the engine rather than the browser because the panels are
 /// sealed: that is the process holding the keys, and the finished page is
 /// sealed again before it reaches disk.
+/// One board, ready to be set as pages.
+///
+/// A struct rather than eight positional arguments: five of them are parallel
+/// lists indexed by panel, and swapping two would be silent.
+#[derive(serde::Deserialize)]
+pub struct BoardPages {
+    /// Vault ids of the drawn panels, in reading order.
+    pub panels: Vec<String>,
+    pub captions: Vec<String>,
+    pub shots: Vec<String>,
+    pub dialogue: serde_json::Value,
+    /// Which scene each panel belongs to. Pages break where this changes.
+    pub scenes: Vec<u32>,
+    /// "page" for tiers, "strip" for a vertical scroll.
+    pub layout: String,
+}
+
 #[tauri::command]
 pub async fn compose_board(
     app: AppHandle,
     state: State<'_, AppState>,
     job_id: String,
-    panels: Vec<String>,
-    captions: Vec<String>,
-    shots: Vec<String>,
-    dialogue: serde_json::Value,
-    layout: String,
-) -> Result<String> {
+    board: BoardPages,
+) -> Result<Vec<String>> {
+    let BoardPages {
+        panels,
+        captions,
+        shots,
+        dialogue,
+        scenes,
+        layout,
+    } = board;
     state.require_unlocked()?;
     if panels.is_empty() {
         return Err(AppError::msg(
@@ -1504,7 +1525,25 @@ pub async fn compose_board(
         }));
     }
 
-    let (slot_id, file_id, key, path) = state.vault.reserve_slot()?;
+    // A board can run to several pages and the engine decides how many, so
+    // reserve the most it could need -- three panels is the smallest readable
+    // page -- and hand back whatever goes unused.
+    let max_pages = if layout == "page" {
+        panels.len().div_ceil(3).max(1)
+    } else {
+        1
+    };
+    let mut reserved = Vec::new();
+    let mut slot_json = Vec::new();
+    for _ in 0..max_pages {
+        let (id, file_id, key, path) = state.vault.reserve_slot()?;
+        slot_json.push(json!({
+            "id": id, "file_id": hex(&file_id),
+            "key": hex(&key), "path": path.to_string_lossy(),
+        }));
+        reserved.push(id);
+    }
+
     let started = std::time::Instant::now();
     let engine = state.engine(&app).await?;
     let result = match engine
@@ -1516,45 +1555,74 @@ pub async fn compose_board(
                 "captions": captions,
                 "shots": shots,
                 "dialogue": dialogue,
+                "scenes": scenes,
                 "layout": layout,
-                "vault_slots": [{
-                    "id": slot_id, "file_id": hex(&file_id),
-                    "key": hex(&key), "path": path.to_string_lossy(),
-                }],
+                "vault_slots": slot_json,
             }),
         )
         .await
     {
         Ok(r) => r,
         Err(e) => {
-            state.vault.discard_slots(&[slot_id]);
+            state.vault.discard_slots(&reserved);
             return Err(e);
         }
     };
 
-    let id = result["outputs"][0]
-        .as_str()
-        .ok_or_else(|| AppError::msg("the engine composed no page"))?
-        .to_string();
-    state.vault.commit_slot(VaultItem {
-        id: id.clone(),
-        content_hash: None,
-        kind: "image".into(),
-        name: format!("board-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S")),
-        mime: "image/png".into(),
-        bytes: result["sizes"][0].as_u64().unwrap_or(0),
-        model: "composed".into(),
-        prompt: format!("{} panels", panels.len()),
-        seed: 0,
-        width: result["width"].as_u64().map(|v| v as u32),
-        height: result["height"].as_u64().map(|v| v as u32),
-        steps: None,
-        guidance: None,
-        inputs: panels.clone(),
-        created_at: chrono::Local::now().to_rfc3339(),
-        duration_ms: started.elapsed().as_millis() as u64,
-    })?;
-    Ok(id)
+    let produced: Vec<String> = result["outputs"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    if produced.is_empty() {
+        state.vault.discard_slots(&reserved);
+        return Err(AppError::msg("the engine composed no pages"));
+    }
+
+    let sizes: Vec<u64> = result["sizes"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_u64()).collect())
+        .unwrap_or_default();
+    let total = produced.len();
+    for (i, id) in produced.iter().enumerate() {
+        let dims = &result["dimensions"][i];
+        state.vault.commit_slot(VaultItem {
+            id: id.clone(),
+            content_hash: None,
+            kind: "image".into(),
+            name: format!(
+                "page-{}-of-{}-{}.png",
+                i + 1,
+                total,
+                chrono::Local::now().format("%Y%m%d-%H%M%S")
+            ),
+            mime: "image/png".into(),
+            bytes: sizes.get(i).copied().unwrap_or(0),
+            model: "composed".into(),
+            prompt: format!("page {} of {}", i + 1, total),
+            seed: 0,
+            width: dims[0].as_u64().map(|v| v as u32),
+            height: dims[1].as_u64().map(|v| v as u32),
+            steps: None,
+            guidance: None,
+            inputs: panels.clone(),
+            created_at: chrono::Local::now().to_rfc3339(),
+            duration_ms: started.elapsed().as_millis() as u64,
+        })?;
+    }
+
+    // Hand back the pages this board turned out not to need.
+    let unused: Vec<String> = reserved
+        .into_iter()
+        .filter(|id| !produced.contains(id))
+        .collect();
+    if !unused.is_empty() {
+        state.vault.discard_slots(&unused);
+    }
+    Ok(produced)
 }
 
 /// Break a story into an ordered list of panels.

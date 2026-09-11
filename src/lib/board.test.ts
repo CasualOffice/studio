@@ -71,28 +71,28 @@ describe("panelPrompt with a worked-up scene", () => {
     // reconcile them.
     const out = panelPrompt(
       panel({ action: "stands in the hallway", setting: "a flat",
-              scene: "A narrow hallway, faded linoleum, dim light from a corner lamp." }),
+              description: "A narrow hallway, faded linoleum, dim light from a corner lamp." }),
       "anime", CHAR);
     expect(out).toContain("faded linoleum");
     expect(out).not.toContain("a flat");
   });
 
   it("falls back to the terse fields when the scene is empty", () => {
-    const out = panelPrompt(panel({ scene: "" }), "anime", CHAR);
+    const out = panelPrompt(panel({ description: "" }), "anime", CHAR);
     expect(out).toContain("stands in the hallway");
     expect(out).toContain("a narrow flat");
   });
 
   it("falls back when the scene is absent entirely", () => {
     const p = panel();
-    delete (p as { scene?: string }).scene;
+    delete (p as { description?: string }).description;
     expect(panelPrompt(p, "anime", CHAR)).toContain("a narrow flat");
   });
 
   it("still leaves the character out of a panel they are not in", () => {
     const out = panelPrompt(
       panel({ character_in_frame: false, subject: "a kitchen tap",
-              scene: "Water running into a steel sink, grey daylight." }),
+              description: "Water running into a steel sink, grey daylight." }),
       "anime", CHAR);
     expect(out).not.toContain("red scarf");
     expect(out).toContain("a kitchen tap");

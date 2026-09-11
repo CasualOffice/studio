@@ -44,9 +44,9 @@ export function panelPrompt(
   // so it replaces the terse fields rather than being appended to them --
   // otherwise the panel is described twice, once thinly and once properly,
   // and the model has to reconcile them.
-  const scene = (panel.scene ?? "").trim();
-  const body = scene
-    ? [who, scene]
+  const described = (panel.description ?? "").trim();
+  const body = described
+    ? [who, described]
     : [who, panel.action, panel.setting];
   return [styleWords(style), `${panel.shot} shot`, ...body]
     .map((b) => b.trim())

@@ -1414,10 +1414,13 @@ SHOTLIST_SYSTEM = (
     "3. Each panel is one moment. No cuts inside a panel, no passage of time.\n"
     "4. Vary the shot sizes. A page of close-ups reads as flat as a page of "
     "wides.\n"
-    "5. A caption carries what the picture cannot: what is felt, known, or "
+    "5. Group the panels into scenes. A scene is a continuous stretch in one "
+    "place: when the story moves somewhere else, or time passes, a new scene "
+    "begins. Number them from 1, in order, and give each a short title.\n"
+    "6. A caption carries what the picture cannot: what is felt, known, or "
     "about to happen. Never write a caption that describes the panel -- the "
     "reader is looking at it.\n"
-    "6. Every action must be something a camera records. A story beat that is "
+    "7. Every action must be something a camera records. A story beat that is "
     "heard, thought or felt has to become the visible thing that goes with "
     "it, or the panel is drawn as nonsense: \"hears the tap\" was rendered "
     "once as a flooded kitchen.\n\n"
@@ -1445,6 +1448,9 @@ def _shotlist_instruction(story: str, count: int) -> str:
         'the picture. Six to fourteen words. Empty string if the panel needs '
         'no words. It must belong to THIS panel: never a line about something '
         'that happens in a later one.\n'
+        '  "scene": the number of the scene this panel belongs to, from 1\n'
+        '  "scene_title": a short name for that scene, the same on every panel '
+        'of it\n'
         '  "dialogue": an array of what is spoken aloud in this panel, each '
         '{"speaker": who says it, "text": the words}. Use the story\'s own '
         'words where it has them. Empty array when nobody speaks -- most '
@@ -1501,6 +1507,11 @@ def _parse_shotlist(raw: str, count: int) -> list[dict[str, str]]:
             # What is actually said aloud. Bubbles are drawn over the panel, so
             # a long line covers the picture it belongs to -- hence the cap.
             "dialogue": _clean_dialogue(p.get("dialogue")),
+            # Which continuous stretch of story this belongs to. Pages are
+            # broken on scene boundaries, so this decides the shape of the
+            # finished thing more than any other field.
+            "scene": max(1, int(p.get("scene", 1) or 1)),
+            "scene_title": " ".join(str(p.get("scene_title", "")).split())[:60],
         })
     if not cleaned:
         raise ValueError("the writer returned no usable panels")
@@ -1549,27 +1560,97 @@ def _wrap(draw: Any, text: str, font: Any, width: int) -> list[str]:
     return lines
 
 
-def _rows_for(shots: list[str]) -> list[list[int]]:
-    """Group panels into rows the way a comic page is laid out.
+# What a page holds. Four to six panels is the working range in print comics;
+# fewer reads as padding, more forces every panel to be small and simple.
+PANELS_PER_PAGE = 5
+PAGE_MIN, PAGE_MAX = 3, 6
 
-    A wide shot takes the full width -- that is what makes it a wide. Anything
-    tighter pairs with its neighbour, which is how a page gets its rhythm:
-    a long establishing beat, then two quick ones. A strip of equal squares
-    reads as a contact sheet rather than a page.
+
+def _paginate(scenes: list[int]) -> list[list[int]]:
+    """Break the panels into pages, on scene boundaries where possible.
+
+    A scene is a continuous stretch in one place, and a page is the unit a
+    reader takes in at once, so the two should agree: a scene that starts
+    halfway down a page reads as a jump rather than a change. Scenes longer
+    than a page are split across several; short ones sharing a location are
+    not merged, because the break is doing work.
+
+    `scenes` is the scene number of each panel, in order. Returns the panel
+    indices for each page.
     """
-    rows: list[list[int]] = []
+    pages: list[list[int]] = []
+    run: list[int] = []
+    current: int | None = None
+
+    for i, scene in enumerate(scenes):
+        if current is not None and scene != current and run:
+            pages.extend(_split_run(run))
+            run = []
+        current = scene
+        run.append(i)
+    if run:
+        pages.extend(_split_run(run))
+
+    # A single panel alone on a page is an accident, not a splash: pull it
+    # back onto the previous page unless that would overfill it.
+    merged: list[list[int]] = []
+    for page in pages:
+        if (len(page) == 1 and merged
+                and len(merged[-1]) + 1 <= PAGE_MAX):
+            merged[-1].extend(page)
+        else:
+            merged.append(page)
+    return merged
+
+
+def _split_run(run: list[int]) -> list[list[int]]:
+    """Divide one scene into pages of a readable size, evenly.
+
+    Evenly matters: chunking greedily leaves the last page of a long scene
+    holding one or two panels, which reads as the scene trailing off.
+    """
+    n = len(run)
+    if n <= PAGE_MAX:
+        return [run]
+    pages_needed = max(1, round(n / PANELS_PER_PAGE))
+    pages_needed = max(pages_needed, (n + PAGE_MAX - 1) // PAGE_MAX)
+    size = n / pages_needed
+    out: list[list[int]] = []
+    start = 0.0
+    for k in range(pages_needed):
+        end = size * (k + 1)
+        out.append(run[round(start):round(end)])
+        start = end
+    return [p for p in out if p]
+
+
+def _tiers(shots: list[str]) -> list[list[int]]:
+    """Arrange one page's panels into tiers, as a comic page is built.
+
+    Print pages are read as horizontal bands: three of them, holding one to
+    three panels each. A wide shot takes its whole tier -- that is what makes
+    it establishing, and a large panel is what slows a reader down. Tighter
+    shots share, which speeds the page up. The alternation is the pacing.
+    """
+    tiers: list[list[int]] = []
     i = 0
     while i < len(shots):
         if shots[i] == "wide":
-            rows.append([i])
+            tiers.append([i])
             i += 1
-        elif i + 1 < len(shots) and shots[i + 1] != "wide":
-            rows.append([i, i + 1])
-            i += 2
-        else:
-            rows.append([i])
+            continue
+        # Take up to three consecutive tight shots, but never leave a single
+        # panel stranded as the last tier of a page.
+        group = [i]
+        i += 1
+        while i < len(shots) and shots[i] != "wide" and len(group) < 3:
+            remaining = sum(1 for j in range(i, len(shots)) if shots[j] != "wide")
+            if len(group) == 2 and remaining == 2:
+                break   # leave two for the next tier rather than 3 + 1
+            group.append(i)
             i += 1
-    return rows
+        tiers.append(group)
+    return tiers
 
 
 def _fit(im: Any, w: int, h: int) -> Any:
@@ -1626,110 +1707,190 @@ def _bubble(draw: Any, text: str, speaker: str, font: Any, small: Any,
     return used
 
 
-def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
-    """Lay the drawn panels out as a page, with captions and speech.
+def _render_page(panels: list[Any], idx: list[int], meta: dict[str, list[Any]],
+                 style: dict[str, Any]) -> Any:
+    """Draw one page of panels as tiers."""
+    from PIL import Image, ImageDraw
 
-    Composed here rather than in the browser because the panels are sealed:
-    this is the process that already holds the keys, and the finished page is
-    sealed again before it touches disk.
+    page_w, margin, gutter = style["width"], style["margin"], style["gutter"]
+    font, small, line_h = style["font"], style["small"], style["line_h"]
+    shots = [meta["shots"][i] for i in idx]
+    tiers = _tiers(shots)
+    inner = page_w - margin * 2
 
-    Two arrangements. `page` sets panels in rows with gutters, wides running
-    full width and tighter shots pairing up, which is what gives a page its
-    rhythm. `strip` stacks them at one width for vertical scrolling. A column
-    of equal squares reads as a contact sheet either way, so the page form is
-    the default.
+    probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+    plan, total_h = [], margin
+    for tier in tiers:
+        cell_w = (inner - gutter * (len(tier) - 1)) // len(tier)
+        # One panel across the page is an establishing beat, and is set
+        # shallower so the page does not become a ladder of squares.
+        cell_h = round(cell_w * (0.58 if len(tier) == 1 else 1.0))
+        plan.append((tier, cell_w, cell_h))
+        total_h += cell_h + gutter
+    total_h += margin - gutter
+
+    page = Image.new("RGB", (page_w, total_h), (243, 241, 236))
+    draw = ImageDraw.Draw(page)
+    y = margin
+    for tier, cell_w, cell_h in plan:
+        x = margin
+        for local in tier:
+            src = idx[local]
+            page.paste(_fit(panels[src], cell_w, cell_h), (x, y))
+            draw.rectangle([x, y, x + cell_w, y + cell_h],
+                           outline=(20, 20, 22), width=3)
+            cap = meta["captions"][src].strip()
+            if cap:
+                _caption_box(draw, cap, font,
+                             (x + 10, y + 10, min(cell_w - 20, 430), 0), line_h)
+            by = y + (78 if cap else 16)
+            for line in meta["dialogue"][src][:2]:
+                by += _bubble(draw, line.get("text", ""), line.get("speaker", ""),
+                              font, small, x + cell_w // 2, by,
+                              min(cell_w - 40, 380), line_h, tail_down=True)
+            x += cell_w + gutter
+        y += cell_h + gutter
+    return page
+
+
+def _render_strip(panels: list[Any], meta: dict[str, list[Any]],
+                  style: dict[str, Any]) -> Any:
+    """Draw the panels as one vertical scroll.
+
+    Not a page stretched tall, which is the mistake this form is known for.
+    A scroll reveals one moment at a time and the gap between panels is the
+    tempo: a short gap reads as a beat, a long one as a held breath. So the
+    gutter widens wherever the scene changes, and stays tight within one.
     """
     from PIL import Image, ImageDraw
+
+    width, margin = style["width"], style["margin"]
+    font, small, line_h = style["font"], style["small"], style["line_h"]
+    beat, breath = 46, 190
+
+    sized, gaps = [], []
+    for i, im in enumerate(panels):
+        sized.append(_fit(im, width - margin * 2, round((width - margin * 2) * 0.78)))
+        if i:
+            same = meta["scenes"][i] == meta["scenes"][i - 1]
+            gaps.append(beat if same else breath)
+
+    probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+    caps = [_wrap(probe, meta["captions"][i].strip(), font, width - margin * 2 - 40)
+            if meta["captions"][i].strip() else [] for i in range(len(panels))]
+
+    total = margin + sum(im.height for im in sized) + sum(gaps)
+    total += sum(len(c) * line_h + 18 for c in caps if c) + margin
+
+    page = Image.new("RGB", (width, total), (243, 241, 236))
+    draw = ImageDraw.Draw(page)
+    y = margin
+    for i, im in enumerate(sized):
+        page.paste(im, (margin, y))
+        draw.rectangle([margin, y, margin + im.width, y + im.height],
+                       outline=(20, 20, 22), width=3)
+        by = y + 16
+        for line in meta["dialogue"][i][:2]:
+            by += _bubble(draw, line.get("text", ""), line.get("speaker", ""),
+                          font, small, margin + im.width // 2, by,
+                          min(im.width - 40, 420), line_h, tail_down=True)
+        y += im.height
+        if caps[i]:
+            for n, line in enumerate(caps[i]):
+                draw.text((margin + 2, y + 10 + n * line_h), line, font=font,
+                          fill=(30, 30, 33))
+            y += len(caps[i]) * line_h + 18
+        if i < len(gaps):
+            y += gaps[i]
+    return page
+
+
+def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
+    """Set the drawn panels as pages, or as one vertical scroll.
+
+    Composed here rather than in the browser because the panels are sealed:
+    this is the process that already holds the keys, and each finished page is
+    sealed again before it touches disk.
+
+    Pages break where scenes do and are laid out in tiers, which is how a
+    print comic is read. The scroll is a different form with different rules,
+    not the same page made tall.
+    """
+    from PIL import Image
 
     slots = req.get("vault_slots") or []
     if not slots:
         raise ValueError("composing a page needs a vault slot to write into")
 
-    captions: list[str] = [str(c or "") for c in (req.get("captions") or [])]
-    speech: list[list[dict[str, str]]] = list(req.get("dialogue") or [])
-    shots: list[str] = [str(x or "medium") for x in (req.get("shots") or [])]
     staged = _stage_vault_inputs(req.get("vault_inputs") or [])
     if not staged:
         raise ValueError("there are no drawn panels to compose")
 
-    layout = str(req.get("layout") or "page")
-    page_w = int(req.get("page_width", 1240))
-    margin = int(req.get("margin", 34))
-    gutter = int(req.get("gutter", 18))
-    font = _caption_font(int(req.get("font_size", 19)))
-    small = _caption_font(13)
-    line_h = int(int(req.get("font_size", 19)) * 1.4)
+    n = len(staged)
 
+    def column(key: str, default: Any) -> list[Any]:
+        vals = list(req.get(key) or [])
+        vals += [default] * (n - len(vals))
+        return vals[:n]
+
+    meta = {
+        "captions": [str(c or "") for c in column("captions", "")],
+        "shots": [str(x or "medium") for x in column("shots", "medium")],
+        "dialogue": [list(d or []) for d in column("dialogue", [])],
+        "scenes": [int(x or 1) for x in column("scenes", 1)],
+    }
+    layout = str(req.get("layout") or "page")
+    size = int(req.get("font_size", 19))
+    style = {
+        "width": int(req.get("page_width", 1240 if layout == "page" else 860)),
+        "margin": int(req.get("margin", 34)),
+        "gutter": int(req.get("gutter", 18)),
+        "font": _caption_font(size),
+        "small": _caption_font(13),
+        "line_h": int(size * 1.4),
+    }
+
+    outputs: list[str] = []
+    sizes: list[int] = []
+    dims: list[list[int]] = []
     try:
         panels = []
         for path in staged:
             with Image.open(path) as im:
                 panels.append(im.convert("RGB"))
-        while len(shots) < len(panels):
-            shots.append("medium")
 
-        rows = (_rows_for(shots[:len(panels)]) if layout == "page"
-                else [[i] for i in range(len(panels))])
-        inner = page_w - margin * 2
-
-        # Measure the page before drawing it: row heights depend on how many
-        # panels share the row, and the captions wrap to the cell width.
-        probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
-        plan: list[tuple[list[int], int, int]] = []
-        total_h = margin
-        for row in rows:
-            cell_w = (inner - gutter * (len(row) - 1)) // len(row)
-            # A full-width panel is set shallower than a square so the page
-            # does not become a ladder; a paired one keeps more of its height.
-            cell_h = round(cell_w * (0.62 if len(row) == 1 and layout == "page" else 1.0))
-            plan.append((row, cell_w, cell_h))
-            total_h += cell_h + gutter
-        total_h += margin - gutter
-
-        page = Image.new("RGB", (page_w, total_h), (243, 241, 236))
-        draw = ImageDraw.Draw(page)
-
-        y = margin
-        for row, cell_w, cell_h in plan:
-            x = margin
-            for idx in row:
-                page.paste(_fit(panels[idx], cell_w, cell_h), (x, y))
-                draw.rectangle([x, y, x + cell_w, y + cell_h],
-                               outline=(20, 20, 22), width=3)
-
-                cap = captions[idx].strip() if idx < len(captions) else ""
-                if cap:
-                    _caption_box(draw, cap, font,
-                                 (x + 10, y + 10, min(cell_w - 20, 420), 0), line_h)
-
-                lines = speech[idx] if idx < len(speech) else []
-                # Balloons start below any narration box so the two never
-                # overlap, and stack downward from there.
-                by = y + (78 if cap else 16)
-                for n, line in enumerate(lines[:2]):
-                    by += _bubble(draw, line.get("text", ""), line.get("speaker", ""),
-                                  font, small, x + cell_w // 2, by,
-                                  min(cell_w - 40, 380), line_h, tail_down=True)
-                x += cell_w + gutter
-            y += cell_h + gutter
+        pages = (_paginate(meta["scenes"]) if layout == "page"
+                 else [list(range(n))])
+        if len(pages) > len(slots):
+            raise ValueError(
+                f"this board makes {len(pages)} pages but only {len(slots)} "
+                "were reserved; ask for that many again"
+            )
 
         import io
 
         import vaultcrypto as vc
 
-        buf = io.BytesIO()
-        page.save(buf, format="PNG")
-        data = buf.getvalue()
-        slot = slots[0]
-        vc.write_sealed(slot["path"], bytes.fromhex(slot["key"]),
-                        bytes.fromhex(slot["file_id"]), data)
-        log(req_id, f"sealed a {page.width}x{page.height} page into {slot['id']}")
+        for k, idx in enumerate(pages):
+            img = (_render_page(panels, idx, meta, style) if layout == "page"
+                   else _render_strip(panels, meta, style))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            data = buf.getvalue()
+            slot = slots[k]
+            vc.write_sealed(slot["path"], bytes.fromhex(slot["key"]),
+                            bytes.fromhex(slot["file_id"]), data)
+            outputs.append(slot["id"])
+            sizes.append(len(data))
+            dims.append([img.width, img.height])
+            log(req_id, f"sealed page {k + 1}/{len(pages)} "
+                        f"({img.width}x{img.height}) into {slot['id']}")
     finally:
         _discard_staged(staged)
 
-    return {"outputs": [slots[0]["id"]], "sealed": True, "sizes": [len(data)],
-            "width": page.width, "height": page.height,
-            "panels": len(staged), "layout": layout}
+    return {"outputs": outputs, "sealed": True, "sizes": sizes,
+            "dimensions": dims, "pages": len(outputs),
+            "panels": n, "layout": layout}
 
 
 def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
@@ -1771,16 +1932,16 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             raise
         except Exception as exc:
             log(req_id, f"panel {i + 1} not enriched: {exc}", "warn")
-            out.append({**p, "scene": ""})
+            out.append({**p, "description": ""})
             continue
 
-        scene = " ".join(raw.strip().splitlines()[0].split())
+        text = " ".join(raw.strip().splitlines()[0].split())
         # An enrichment that dropped the moment is worse than none: the panel
         # would be drawn as something the story does not contain.
-        if scene and not _keeps_intent(moment, scene):
+        if text and not _keeps_intent(moment, text):
             log(req_id, f"panel {i + 1} enrichment lost the moment; keeping it plain", "warn")
-            scene = ""
-        out.append({**p, "scene": scene[:400]})
+            text = ""
+        out.append({**p, "description": text[:400]})
 
     return {"panels": out}
 

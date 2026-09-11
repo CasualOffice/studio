@@ -701,41 +701,92 @@ class ShotListParsing(unittest.TestCase):
         self.assertLessEqual(len(panels[0]["dialogue"]), 2)
 
 
-class PageLayout(unittest.TestCase):
-    """How panels are grouped into rows is what makes a page a page."""
+class SceneNumbering(unittest.TestCase):
+    """Which scene a panel belongs to decides where pages break, so a missing
+    or malformed number must not silently become a page boundary."""
 
-    def test_a_wide_takes_the_whole_row(self):
-        self.assertEqual(worker._rows_for(["wide", "wide"]), [[0], [1]])
+    def test_a_scene_number_is_kept(self):
+        panels = worker._parse_shotlist(
+            '[{"shot":"wide","subject":"x","action":"y","setting":"z",'
+            '"scene":3,"scene_title":"The platform"}]', 1)
+        self.assertEqual(panels[0]["scene"], 3)
+        self.assertEqual(panels[0]["scene_title"], "The platform")
 
-    def test_tighter_shots_pair_up(self):
-        self.assertEqual(worker._rows_for(["medium", "close-up"]), [[0, 1]])
+    def test_a_missing_scene_defaults_to_the_first(self):
+        panels = worker._parse_shotlist(
+            '[{"shot":"wide","subject":"x","action":"y","setting":"z"}]', 1)
+        self.assertEqual(panels[0]["scene"], 1)
 
-    def test_a_wide_breaks_a_pair(self):
-        rows = worker._rows_for(["medium", "wide", "medium", "close-up"])
-        self.assertEqual(rows, [[0], [1], [2, 3]])
+    def test_a_nonsense_scene_number_does_not_break_pagination(self):
+        panels = worker._parse_shotlist(
+            '[{"shot":"wide","subject":"x","action":"y","setting":"z","scene":0}]', 1)
+        self.assertGreaterEqual(panels[0]["scene"], 1)
 
-    def test_a_trailing_panel_gets_its_own_row(self):
-        self.assertEqual(worker._rows_for(["medium"]), [[0]])
-        self.assertEqual(worker._rows_for(["medium", "close-up", "medium"]),
-                         [[0, 1], [2]])
+
+class TierLayout(unittest.TestCase):
+    """A page is read as horizontal bands, and the bands set the pace.
+
+    A wide shot takes its whole tier -- that is what makes it establishing,
+    and a large panel is what slows a reader down. Tighter shots share one,
+    which speeds the page up.
+    """
+
+    def test_a_wide_takes_its_own_tier(self):
+        self.assertEqual(worker._tiers(["wide", "wide"]), [[0], [1]])
+
+    def test_tighter_shots_share_a_tier(self):
+        self.assertEqual(worker._tiers(["medium", "close-up"]), [[0, 1]])
+
+    def test_a_tier_holds_at_most_three(self):
+        tiers = worker._tiers(["medium"] * 5)
+        self.assertTrue(all(len(t) <= 3 for t in tiers), tiers)
+
+    def test_a_wide_interrupts_a_group(self):
+        self.assertEqual(
+            worker._tiers(["medium", "wide", "medium", "close-up"]),
+            [[0], [1], [2, 3]])
+
+    def test_no_panel_is_stranded_alone_at_the_end(self):
+        # Three then one reads as a mistake; two and two reads as a pair.
+        self.assertEqual(worker._tiers(["medium"] * 4), [[0, 1], [2, 3]])
 
     def test_every_panel_appears_exactly_once(self):
         shots = ["wide", "medium", "close-up", "medium", "wide", "close-up", "medium"]
-        flat = [i for row in worker._rows_for(shots) for i in row]
+        flat = [i for t in worker._tiers(shots) for i in t]
         self.assertEqual(sorted(flat), list(range(len(shots))))
 
-    def test_an_unknown_shot_size_falls_back(self):
-        panels = worker._parse_shotlist(
-            '[{"shot":"dutch angle","subject":"x","action":"y","setting":"z"}]', 1)
-        self.assertEqual(panels[0]["shot"], "medium")
 
-    def test_prose_with_no_array_is_an_error(self):
-        with self.assertRaises(ValueError):
-            worker._parse_shotlist("I cannot do that.", 4)
+class Pagination(unittest.TestCase):
+    """Pages break where scenes do, because a scene starting halfway down a
+    page reads as a jump rather than a change of place."""
 
-    def test_an_empty_array_is_an_error(self):
-        with self.assertRaises(ValueError):
-            worker._parse_shotlist("[]", 4)
+    def test_one_scene_of_readable_length_is_one_page(self):
+        self.assertEqual(worker._paginate([1, 1, 1, 1]), [[0, 1, 2, 3]])
+
+    def test_a_new_scene_starts_a_new_page(self):
+        self.assertEqual(worker._paginate([1, 1, 1, 2, 2, 2]),
+                         [[0, 1, 2], [3, 4, 5]])
+
+    def test_a_long_scene_splits_evenly(self):
+        # Greedy chunking would leave the last page holding one panel, which
+        # reads as the scene trailing off.
+        pages = worker._paginate([1] * 10)
+        self.assertTrue(all(len(p) >= worker.PAGE_MIN for p in pages), pages)
+        self.assertEqual(sum(len(p) for p in pages), 10)
+
+    def test_a_lone_panel_joins_the_page_before_it(self):
+        # A single panel alone on a page is an accident, not a splash.
+        pages = worker._paginate([1, 1, 1, 2])
+        self.assertNotIn(1, [len(p) for p in pages])
+
+    def test_every_panel_lands_on_exactly_one_page(self):
+        scenes = [1, 1, 2, 2, 2, 2, 2, 3, 3, 4, 4, 4, 4, 4, 4, 4]
+        flat = [i for page in worker._paginate(scenes) for i in page]
+        self.assertEqual(flat, list(range(len(scenes))))
+
+    def test_no_page_exceeds_the_maximum(self):
+        pages = worker._paginate([1] * 17)
+        self.assertTrue(all(len(p) <= worker.PAGE_MAX for p in pages), pages)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

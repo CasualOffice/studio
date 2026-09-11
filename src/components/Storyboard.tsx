@@ -66,7 +66,7 @@ export default function Storyboard({
   const [redraws, setRedraws] = useState<number[]>([]);
   const [elapsed, setElapsed] = useState(0);
   const [composing, setComposing] = useState(false);
-  const [page, setPage] = useState<string | null>(null);
+  const [pages, setPages] = useState<string[]>([]);
   /** A page sets panels in rows with gutters; a strip stacks them at one
    *  width for scrolling. Different things, and people want both. */
   const [layout, setLayout] = useState(() => loadPref("boardLayout", "page"));
@@ -241,7 +241,7 @@ export default function Storyboard({
     try {
       const r = await api.enrichPanels(id, panels, styleWords(style));
       setPanels(r.panels);
-      const filled = r.panels.filter((p) => (p.scene ?? "").trim()).length;
+      const filled = r.panels.filter((p) => (p.description ?? "").trim()).length;
       notify(filled === r.panels.length
         ? "Every panel worked up. Read them before drawing."
         : `${filled} of ${r.panels.length} worked up; the rest stay as written.`);
@@ -279,25 +279,29 @@ export default function Storyboard({
   const compose = async () => {
     if (!panels) return;
     type Ready = { id: string; caption: string; shot: Panel["shot"];
-                   dialogue: { speaker: string; text: string }[] };
+                   dialogue: { speaker: string; text: string }[]; scene: number };
     const pairs = panels
       .map((p, i) => ({ id: drawn[i], caption: p.caption, shot: p.shot,
-                        dialogue: p.dialogue ?? [] }))
+                        dialogue: p.dialogue ?? [], scene: p.scene ?? 1 }))
       .filter((x): x is Ready => Boolean(x.id));
     if (pairs.length === 0) { notify("Draw at least one panel first.", true); return; }
 
     setComposing(true);
     try {
-      const id = await api.composeBoard(
+      const made = await api.composeBoard(
         newJobId(),
         pairs.map((p) => p.id),
         pairs.map((p) => p.caption),
         pairs.map((p) => p.shot),
         pairs.map((p) => p.dialogue ?? []),
+        pairs.map((p) => p.scene),
         layout);
-      setPage(id);
+      setPages(made);
       onProduced();
-      notify(`Composed a page from ${pairs.length} panels. It is in the Vault.`);
+      notify(made.length === 1
+        ? `Composed one page from ${pairs.length} panels. It is in the Vault.`
+        : `Composed ${made.length} pages from ${pairs.length} panels, broken `
+          + "where the scenes change. They are in the Vault.");
     } catch (e) {
       notify(errText(e), true);
     } finally {
@@ -579,12 +583,12 @@ export default function Storyboard({
                       }).filter((d) => d.text),
                     })}
                   />
-                  {(p.scene ?? "").trim() && (
+                  {(p.description ?? "").trim() && (
                     <textarea
-                      value={p.scene} disabled={busy} rows={3}
+                      value={p.description} disabled={busy} rows={3}
                       style={{ fontSize: 11.5, padding: "5px 6px", marginTop: 3,
                                color: "var(--text-dim)" }}
-                      onChange={(e) => edit(i, { scene: e.target.value })}
+                      onChange={(e) => edit(i, { description: e.target.value })}
                     />
                   )}
                 </div>
@@ -593,13 +597,23 @@ export default function Storyboard({
           </div>
         )}
 
-        {page && (
+        {pages.length > 0 && (
           <div className="panel">
-            <h2>The page</h2>
-            <img src={vaultUrl(page)} alt="Composed page"
-                 style={{ width: "100%", borderRadius: 6 }} />
-            <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 6 }}>
-              Sealed in the Vault like anything else. Export it from there.
+            <h2>{pages.length === 1 ? "The page" : `${pages.length} pages`}</h2>
+            {pages.map((id, i) => (
+              <div key={id} style={{ marginBottom: 14 }}>
+                {pages.length > 1 && (
+                  <div style={{ fontSize: 10.5, color: "var(--text-faint)",
+                                marginBottom: 4 }}>
+                    Page {i + 1} of {pages.length}
+                  </div>
+                )}
+                <img src={vaultUrl(id)} alt={`Page ${i + 1}`}
+                     style={{ width: "100%", borderRadius: 6 }} />
+              </div>
+            ))}
+            <div style={{ fontSize: 10.5, color: "var(--text-faint)" }}>
+              Sealed in the Vault like anything else. Export them from there.
             </div>
           </div>
         )}

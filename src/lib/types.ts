@@ -251,10 +251,13 @@ export interface Panel {
   character_in_frame: boolean;
   /** One line of narration under the panel. Empty when it needs no words. */
   caption: string;
+  /** Which continuous stretch of story this belongs to. Pages break here. */
+  scene?: number;
+  scene_title?: string;
   /** What is spoken aloud in this panel. Usually empty. */
   dialogue?: { speaker: string; text: string }[];
-  /** The worked-up scene: surface, background, light. Empty until the panel
-   *  has been through the enrich stage, and the prompt falls back to the
-   *  terse fields when it is. */
-  scene?: string;
+  /** The worked-up description: surface, background, light. Empty until the
+   *  panel has been through the enrich stage, and the prompt falls back to
+   *  the terse fields when it is. Distinct from `scene`, which is a number. */
+  description?: string;
 }
