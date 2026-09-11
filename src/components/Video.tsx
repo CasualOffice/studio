@@ -5,13 +5,28 @@ import { humanDuration } from "../lib/presets";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
 import { loadPref, savePref } from "../lib/prefs";
 
-/** Small canvases only: attention cost is quadratic in sequence length. */
+/**
+ * Canvas sizes, up to what these models were actually trained at.
+ *
+ * The list stopped at 480x272 while Wan VACE is trained at 832x480 -- a third
+ * of the pixels -- and running a video model far below its native size is a
+ * quality problem of its own, not a safe economy. The larger ones are offered
+ * with what they cost, because refusing to show them is not the same as them
+ * not existing.
+ *
+ * Attention is quadratic in sequence length, and sequence length is pixels
+ * times frames, so cost climbs fast in both.
+ */
 const SIZES: [string, number, number][] = [
+  ["Tiny", 320, 192],
   ["Small landscape", 384, 224],
   ["Small portrait", 224, 384],
   ["Square", 320, 320],
   ["Wider", 480, 272],
+  ["Large", 640, 368],
+  ["Native (832x480)", 832, 480],
 ];
+
 
 export default function Video({
   models, notify, onProduced, firstFrame: controlledFrame, onFirstFrameChange,
@@ -56,6 +71,14 @@ export default function Video({
   const [took, setTook] = useState<number | null>(null);
 
   const model = usable.find((m) => m.id === modelId) ?? usable[0];
+
+  // Cost grows with pixels and frames together and grows fast, but nobody has
+  // measured this machine at these sizes, so the warning says that plainly
+  // instead of inventing a number. The one figure here that is real is the
+  // catalog's, taken at 320x192 with 17 frames.
+  const [, sw, sh] = SIZES[sizeIdx];
+  const vsAnchor = (sw * sh * frames) / (320 * 192 * 17);
+  const risky = vsAnchor > 4;
 
   const assistantReady = useMemo(
     // The writer, specifically. There are two assist models now, and `.some`
@@ -233,6 +256,21 @@ export default function Video({
                 <option key={label} value={i}>{label} — {sw}×{sh}</option>
               ))}
             </select>
+            {model && (
+              <div style={{ fontSize: 10.5, marginTop: 5, lineHeight: 1.55,
+                            color: risky ? "var(--warn)" : "var(--text-faint)" }}>
+                {risky
+                  ? `About ${vsAnchor.toFixed(0)}× the work of the size this `
+                    + `model was measured at (${model.peak_gib.toFixed(1)} GiB `
+                    + `for 17 frames at 320×192). Expect it to be slow, and to `
+                    + `run out of memory before the largest sizes.`
+                  : `The measured figure for this model is `
+                    + `${model.peak_gib.toFixed(1)} GiB, at 320×192 with 17 `
+                    + `frames. Cost rises with pixels and frames together.`}
+                {" "}Running a video model well below the size it was trained
+                at is its own quality problem, so prefer the largest that runs.
+              </div>
+            )}
           </div>
 
           <div className="field">

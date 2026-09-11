@@ -497,7 +497,7 @@ pub const CATALOG: &[ModelEntry] = &[
         // measured 9.1-9.5 GiB at small sizes with low-RAM mode on.
         peak_gib: 9.5,
         peak_estimated: true,
-        steps_default: 20,
+        steps_default: 30,
         max_edit_images: 1,
         gated: false,
         video_from_image: false,
