@@ -243,4 +243,6 @@ export interface Panel {
   setting: string;
   /** Whether the person we follow is visible in this panel. */
   character_in_frame: boolean;
+  /** One line of narration under the panel. Empty when it needs no words. */
+  caption: string;
 }

@@ -164,6 +164,7 @@ pub fn run() {
             commands::add_custom_model,
             commands::remove_custom_model,
             commands::shot_list,
+            commands::compose_board,
             commands::hf_token_status,
             commands::set_hf_token,
             commands::unload_model,

@@ -644,6 +644,25 @@ class ShotListParsing(unittest.TestCase):
             '"setting":"a hallway"}]', 1)
         self.assertTrue(panels[0]["character_in_frame"])
 
+    def test_a_caption_is_kept_and_tidied(self):
+        panels = worker._parse_shotlist(
+            '[{"shot":"wide","subject":"Mira","action":"stands","setting":"a hall",'
+            '"caption":"  The door   was\\n open.  "}]', 1)
+        self.assertEqual(panels[0]["caption"], "The door was open.")
+
+    def test_a_missing_caption_is_empty_not_absent(self):
+        # The composer indexes captions positionally against panels, so a
+        # missing one has to still occupy its place.
+        panels = worker._parse_shotlist(
+            '[{"shot":"wide","subject":"x","action":"y","setting":"z"}]', 1)
+        self.assertEqual(panels[0]["caption"], "")
+
+    def test_a_runaway_caption_is_cut(self):
+        panels = worker._parse_shotlist(
+            '[{"shot":"wide","subject":"x","action":"y","setting":"z",'
+            f'"caption":"{"word " * 80}"}}]', 1)
+        self.assertLessEqual(len(panels[0]["caption"]), 120)
+
     def test_an_unknown_shot_size_falls_back(self):
         panels = worker._parse_shotlist(
             '[{"shot":"dutch angle","subject":"x","action":"y","setting":"z"}]', 1)

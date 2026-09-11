@@ -1429,6 +1429,89 @@ mod tests {
     }
 }
 
+/// Stack the drawn panels into one page, captions underneath.
+///
+/// Composed in the engine rather than the browser because the panels are
+/// sealed: that is the process holding the keys, and the finished page is
+/// sealed again before it reaches disk.
+#[tauri::command]
+pub async fn compose_board(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+    panels: Vec<String>,
+    captions: Vec<String>,
+) -> Result<String> {
+    state.require_unlocked()?;
+    if panels.is_empty() {
+        return Err(AppError::msg("draw the panels before making a page of them"));
+    }
+
+    let mut vault_inputs = Vec::new();
+    for id in &panels {
+        let (fid, k, p) = state.vault.input_key(id)?;
+        let ext = state
+            .vault
+            .get_item(id)
+            .ok()
+            .and_then(|i| ext_for_mime(&i.mime))
+            .unwrap_or("png");
+        vault_inputs.push(json!({
+            "id": id, "file_id": hex(&fid), "key": hex(&k),
+            "path": p.to_string_lossy(), "ext": ext,
+        }));
+    }
+
+    let (slot_id, file_id, key, path) = state.vault.reserve_slot()?;
+    let started = std::time::Instant::now();
+    let engine = state.engine(&app).await?;
+    let result = match engine
+        .request(
+            &job_id,
+            "compose_board",
+            json!({
+                "vault_inputs": vault_inputs,
+                "captions": captions,
+                "vault_slots": [{
+                    "id": slot_id, "file_id": hex(&file_id),
+                    "key": hex(&key), "path": path.to_string_lossy(),
+                }],
+            }),
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            state.vault.discard_slots(&[slot_id]);
+            return Err(e);
+        }
+    };
+
+    let id = result["outputs"][0]
+        .as_str()
+        .ok_or_else(|| AppError::msg("the engine composed no page"))?
+        .to_string();
+    state.vault.commit_slot(VaultItem {
+        id: id.clone(),
+        content_hash: None,
+        kind: "image".into(),
+        name: format!("board-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S")),
+        mime: "image/png".into(),
+        bytes: result["sizes"][0].as_u64().unwrap_or(0),
+        model: "composed".into(),
+        prompt: format!("{} panels", panels.len()),
+        seed: 0,
+        width: result["width"].as_u64().map(|v| v as u32),
+        height: result["height"].as_u64().map(|v| v as u32),
+        steps: None,
+        guidance: None,
+        inputs: panels.clone(),
+        created_at: chrono::Local::now().to_rfc3339(),
+        duration_ms: started.elapsed().as_millis() as u64,
+    })?;
+    Ok(id)
+}
+
 /// Break a story into an ordered list of panels.
 ///
 /// The first step of a picture board, and the one everything after it depends

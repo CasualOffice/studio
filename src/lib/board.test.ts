@@ -10,6 +10,7 @@ const panel = (over: Partial<Panel> = {}): Panel => ({
   action: "stands in the hallway",
   setting: "a narrow flat",
   character_in_frame: true,
+  caption: "",
   ...over,
 });
 

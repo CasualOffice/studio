@@ -61,6 +61,8 @@ export default function Storyboard({
   /** How many times each panel has been redrawn, so a retry gets a new seed. */
   const [redraws, setRedraws] = useState<number[]>([]);
   const [elapsed, setElapsed] = useState(0);
+  const [composing, setComposing] = useState(false);
+  const [page, setPage] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
 
   const busy = stage !== "idle";
@@ -207,6 +209,32 @@ export default function Storyboard({
     setStage("idle"); setProg(null); setJobId(null);
   };
 
+  /** Stack the drawn panels into one page, captions underneath.
+   *
+   *  Only the panels that actually exist go in: a half-drawn board still
+   *  makes a readable page, and a gap for a missing one would not.
+   */
+  const compose = async () => {
+    if (!panels) return;
+    const pairs = panels
+      .map((p, i) => ({ id: drawn[i], caption: p.caption }))
+      .filter((x): x is { id: string; caption: string } => Boolean(x.id));
+    if (pairs.length === 0) { notify("Draw at least one panel first.", true); return; }
+
+    setComposing(true);
+    try {
+      const id = await api.composeBoard(
+        newJobId(), pairs.map((p) => p.id), pairs.map((p) => p.caption));
+      setPage(id);
+      onProduced();
+      notify(`Composed a page from ${pairs.length} panels. It is in the Vault.`);
+    } catch (e) {
+      notify(errText(e), true);
+    } finally {
+      setComposing(false);
+    }
+  };
+
   const cancel = async () => {
     stop.current = true;
     if (jobId) { try { await api.cancelJob(jobId); } catch { /* already gone */ } }
@@ -314,6 +342,11 @@ export default function Storyboard({
               </button>
             )}
             {busy && <button className="btn small" onClick={cancel}>Cancel</button>}
+            {!busy && panels && drawn.some(Boolean) && (
+              <button className="btn small" onClick={() => void compose()}>
+                {composing ? "Composing…" : "Make a page"}
+              </button>
+            )}
           </div>
 
           {prog && <JobProgress p={prog} label={
@@ -412,12 +445,30 @@ export default function Storyboard({
                   <input
                     type="text" value={p.setting} disabled={busy}
                     placeholder="where"
-                    style={{ fontSize: 12, padding: "4px 6px" }}
+                    style={{ fontSize: 12, padding: "4px 6px", marginBottom: 3 }}
                     onChange={(e) => edit(i, { setting: e.target.value })}
+                  />
+                  <input
+                    type="text" value={p.caption} disabled={busy}
+                    placeholder="caption — what the picture cannot say"
+                    style={{ fontSize: 12, padding: "4px 6px",
+                             fontStyle: p.caption ? "italic" : "normal" }}
+                    onChange={(e) => edit(i, { caption: e.target.value })}
                   />
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {page && (
+          <div className="panel">
+            <h2>The page</h2>
+            <img src={vaultUrl(page)} alt="Composed page"
+                 style={{ width: "100%", borderRadius: 6 }} />
+            <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 6 }}>
+              Sealed in the Vault like anything else. Export it from there.
+            </div>
           </div>
         )}
 

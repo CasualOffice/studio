@@ -1414,7 +1414,10 @@ SHOTLIST_SYSTEM = (
     "3. Each panel is one moment. No cuts inside a panel, no passage of time.\n"
     "4. Vary the shot sizes. A page of close-ups reads as flat as a page of "
     "wides.\n"
-    "5. Every action must be something a camera records. A story beat that is "
+    "5. A caption carries what the picture cannot: what is felt, known, or "
+    "about to happen. Never write a caption that describes the panel -- the "
+    "reader is looking at it.\n"
+    "6. Every action must be something a camera records. A story beat that is "
     "heard, thought or felt has to become the visible thing that goes with "
     "it, or the panel is drawn as nonsense: \"hears the tap\" was rendered "
     "once as a flooded kitchen.\n\n"
@@ -1436,7 +1439,11 @@ def _shotlist_instruction(story: str, count: int) -> str:
         '  "action": what is happening, as a short phrase\n'
         '  "setting": where it takes place\n'
         '  "character_in_frame": true if the person we follow is visible in '
-        'this panel, false if it shows something else\n\n'
+        'this panel, false if it shows something else\n'
+        '  "caption": one short line to sit under the panel, in the voice of '
+        'the story. Narration, not description -- the reader can already see '
+        'the picture. Six to fourteen words. Empty string if the panel needs '
+        'no words.\n\n'
         "No prose before or after the JSON.\n\n"
         f"Story:\n{story}"
     )
@@ -1483,10 +1490,135 @@ def _parse_shotlist(raw: str, count: int) -> list[dict[str, str]]:
             # Default to showing them: a board is mostly about its character,
             # and a missing flag should not quietly write them out.
             "character_in_frame": True if in_frame is None else bool(in_frame),
+            # Narration, kept short. A caption that restates the picture is
+            # worse than none, and a long one stops being a caption.
+            "caption": " ".join(str(p.get("caption", "")).split())[:120],
         })
     if not cleaned:
         raise ValueError("the writer returned no usable panels")
     return cleaned
+
+
+# Fonts that ship with macOS, in order of preference. A board that falls back
+# to PIL's bitmap default is unreadable at panel width, so this is worth being
+# picky about.
+_CAPTION_FONTS = (
+    "/System/Library/Fonts/SFNS.ttf",
+    "/System/Library/Fonts/HelveticaNeue.ttc",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "/Library/Fonts/Arial.ttf",
+)
+
+
+def _caption_font(size: int) -> Any:
+    from PIL import ImageFont
+
+    for path in _CAPTION_FONTS:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                continue
+    return ImageFont.load_default()
+
+
+def _wrap(draw: Any, text: str, font: Any, width: int) -> list[str]:
+    """Break a caption to fit the panel, by measurement rather than by count.
+
+    Character counts guess wrong on a proportional face, and a caption that
+    overruns the panel is worse than one that wraps early.
+    """
+    words, lines, line = text.split(), [], ""
+    for word in words:
+        trial = f"{line} {word}".strip()
+        if draw.textlength(trial, font=font) <= width or not line:
+            line = trial
+        else:
+            lines.append(line)
+            line = word
+    if line:
+        lines.append(line)
+    return lines
+
+
+def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
+    """Stack the drawn panels into one page, captions underneath.
+
+    Composed here rather than in the browser because the panels are sealed:
+    this is the process that already holds the keys, and the finished page is
+    sealed again before it touches disk. Vertical, because that is how these
+    are read.
+    """
+    from PIL import Image, ImageDraw
+
+    slots = req.get("vault_slots") or []
+    if not slots:
+        raise ValueError("composing a page needs a vault slot to write into")
+
+    captions: list[str] = [str(c or "") for c in (req.get("captions") or [])]
+    staged = _stage_vault_inputs(req.get("vault_inputs") or [])
+    if not staged:
+        raise ValueError("there are no drawn panels to compose")
+
+    margin = int(req.get("margin", 28))
+    gap = int(req.get("gap", 22))
+    font_size = int(req.get("font_size", 21))
+
+    try:
+        panels = []
+        for path in staged:
+            with Image.open(path) as im:
+                panels.append(im.convert("RGB"))
+        width = max(im.width for im in panels)
+        font = _caption_font(font_size)
+        line_h = int(font_size * 1.45)
+
+        # Measure first: the page height depends on how the captions wrap, and
+        # wrapping depends on the width we have only just settled.
+        probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+        text_w = width - margin * 2
+        wrapped: list[list[str]] = []
+        for i, _ in enumerate(panels):
+            caption = captions[i].strip() if i < len(captions) else ""
+            wrapped.append(_wrap(probe, caption, font, text_w) if caption else [])
+
+        height = margin
+        for im, lines in zip(panels, wrapped):
+            scaled_h = round(im.height * (width / im.width))
+            height += scaled_h + (len(lines) * line_h if lines else 0) + gap
+        height += margin - gap
+
+        page = Image.new("RGB", (width + margin * 2, height), "white")
+        draw = ImageDraw.Draw(page)
+        y = margin
+        for im, lines in zip(panels, wrapped):
+            if im.width != width:
+                im = im.resize((width, round(im.height * (width / im.width))),
+                               Image.LANCZOS)
+            page.paste(im, (margin, y))
+            y += im.height
+            for line in lines:
+                draw.text((margin, y + 6), line, font=font, fill=(28, 28, 30))
+                y += line_h
+            y += gap
+
+        import io
+
+        import vaultcrypto as vc
+
+        buf = io.BytesIO()
+        page.save(buf, format="PNG")
+        data = buf.getvalue()
+        slot = slots[0]
+        vc.write_sealed(slot["path"], bytes.fromhex(slot["key"]),
+                        bytes.fromhex(slot["file_id"]), data)
+        log(req_id, f"sealed a {page.width}x{page.height} page into {slot['id']}")
+    finally:
+        _discard_staged(staged)
+
+    return {"outputs": [slots[0]["id"]], "sealed": True, "sizes": [len(data)],
+            "width": page.width, "height": page.height,
+            "panels": len(staged)}
 
 
 def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
@@ -2833,6 +2965,7 @@ OPS = {
     "unload": op_unload,
     "assist": op_assist,
     "shotlist": op_shotlist,
+    "compose_board": op_compose_board,
     "unload_assistant": op_unload_assistant,
     "set_memory": op_set_memory,
 }
