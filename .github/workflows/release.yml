@@ -1,0 +1,82 @@
+name: Release
+
+# Tag a version to cut a release:
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.1.0)"
+        required: true
+
+jobs:
+  build:
+    name: Build
+    # Apple Silicon only: MLX has no other backend, and the vault's key
+    # handling is macOS Keychain code. An Intel or Linux build is not a
+    # missing target, it is an impossible one.
+    runs-on: macos-14
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: release-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: release-cargo-
+
+      - run: npm ci
+
+      # The same gates CI runs. A release that skips them is a release that
+      # ships whatever happened to be on the branch.
+      - name: Checks
+        run: |
+          npx tsc --noEmit
+          npx vitest run
+          cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --lib
+
+      - name: Engine tests
+        run: |
+          python3 -m pip install --quiet pillow pillow-heif cryptography
+          python3 engine/test_worker.py
+
+      - name: Build
+        run: npm run tauri build -- --bundles app,dmg
+
+      # Ad-hoc signed, so macOS quarantines it on download. The instructions
+      # in the release notes cover clearing that; naming the file plainly
+      # helps people find the right one.
+      - name: Name the artifacts
+        id: pack
+        run: |
+          VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          VERSION="${VERSION#v}"
+          OUT=src-tauri/target/release/bundle
+          mkdir -p dist-release
+          cp "$OUT"/dmg/*.dmg "dist-release/ModelStudio-${VERSION}-AppleSilicon.dmg"
+          ditto -c -k --keepParent "$OUT/macos/Model Studio.app" \
+            "dist-release/ModelStudio-${VERSION}-AppleSilicon.app.zip"
+          shasum -a 256 dist-release/* > dist-release/SHA256SUMS.txt
+          cat dist-release/SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist-release/*
+          draft: true
+          generate_release_notes: true
+          body_path: .github/RELEASE_NOTES.md

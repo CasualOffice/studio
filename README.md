@@ -50,6 +50,26 @@ Measured timings for all of this are in
 [docs/measurements.md](docs/measurements.md) — taken on a 16 GB M4, not
 estimated.
 
+## Installing
+
+Download the latest `.dmg` from
+[Releases](https://github.com/CasualOffice/studio/releases), open it, and drag
+Model Studio to Applications.
+
+It will refuse to open the first time — macOS says any app not signed by a
+paid Apple Developer account "is damaged". It is not damaged, it is unsigned.
+Clear the quarantine flag once:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Model Studio.app"
+```
+
+On first launch the app provisions a private Python runtime (about 3 GB) under
+`~/Library/Application Support/com.melp.modelstudio`, then offers to install
+the models that make it work (about 9 GB for the starter set). Nothing is
+installed system-wide. Budget roughly 12 GB and twenty minutes before the
+first picture, most of it downloading.
+
 ## Licence
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
