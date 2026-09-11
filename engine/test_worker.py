@@ -97,18 +97,6 @@ class KeepsIntent(unittest.TestCase):
         self.assertFalse(worker._keeps_intent("add a hat", "make the image better"))
 
 
-class CleanAssist(unittest.TestCase):
-    def test_strips_labels_and_quotes(self):
-        self.assertEqual(worker._clean_assist('Prompt: "a red cube"', "fb"), "a red cube")
-        self.assertEqual(worker._clean_assist("You write: a cat", "fb"), "a cat")
-
-    def test_falls_back_when_empty(self):
-        self.assertEqual(worker._clean_assist("   ", "original"), "original")
-
-    def test_drops_trailing_commentary(self):
-        self.assertEqual(
-            worker._clean_assist("a red cube\n\nNote: I added detail.", "fb"), "a red cube")
-
 
 class SplitGenKwargs(unittest.TestCase):
     def test_required_and_optional_are_separated(self):
@@ -271,26 +259,6 @@ class EditInstruction(unittest.TestCase):
     def test_works_without_a_subject(self):
         out = worker._compose_edit_instruction("brighten the sky", "")
         self.assertTrue(out.lower().startswith("brighten the sky"))
-
-
-
-class Repetition(unittest.TestCase):
-    """Small models loop. The repeats crowd out the actual subject."""
-
-    def test_cuts_where_the_loop_starts(self):
-        looped = ("a sleek black cat, sleek and smooth, in a sleek black room, "
-                  "sleek black walls, sleek black floor, sleek black ceiling")
-        out = worker._collapse_repetition(looped)
-        self.assertIn("cat", out)
-        self.assertLess(out.lower().count("sleek"), looped.lower().count("sleek"))
-
-    def test_leaves_a_varied_prompt_alone(self):
-        good = ("a vivid orange sunset over a mountain range, vibrant red sky, "
-                "deep blue mountains, warm light.")
-        self.assertEqual(worker._collapse_repetition(good).rstrip("."), good.rstrip("."))
-
-    def test_always_ends_with_punctuation(self):
-        self.assertTrue(worker._collapse_repetition("a cat, a dog").endswith("."))
 
 
 

@@ -61,6 +61,8 @@ pub struct ModelStatus {
     pub peak_estimated: bool,
     pub steps_default: u32,
     pub max_edit_images: u32,
+    /// Needs a Hugging Face token to download.
+    pub gated: bool,
     /// Whether a video model can start from a still picture.
     pub video_from_image: bool,
     pub guidance_default: f32,
@@ -365,6 +367,7 @@ fn status_from_entry(entry: &ModelEntry, paths: &AppPaths, host: &HostInfo) -> M
         peak_estimated: entry.peak_estimated,
         steps_default: entry.steps_default,
         max_edit_images: entry.max_edit_images,
+        gated: entry.gated,
         video_from_image: entry.video_from_image,
         guidance_default: entry.guidance_default,
         guidance_max: entry.guidance_max,
@@ -414,6 +417,9 @@ fn status_from_custom(m: &CustomModel, paths: &AppPaths, host: &HostInfo) -> Mod
         // A user-added video model is asked about at generation time; the
         // engine refuses rather than silently ignoring a picture, so assume
         // it can take one until it says otherwise.
+        // A pasted repo was checked by the resolver, which reports gating
+        // separately and refuses before it gets this far.
+        gated: false,
         video_from_image: true,
         // Unknown route: assume no classifier-free guidance, which every route
         // accepts. Offering a value a distilled checkpoint rejects would fail

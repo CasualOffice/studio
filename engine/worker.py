@@ -1144,25 +1144,7 @@ def _keeps_intent(original: str, rewritten: str) -> bool:
 
 
 
-def _clean_assist(text: str, fallback: str) -> str:
-    """Trim the chatter models add around a rewritten prompt."""
-    out = (text or "").strip()
-    for marker in ("Prompt:", "prompt:", "Instruction:", "instruction:",
-                   "You write:", "Answer:", "Output:", "Subject:"):
-        if out.startswith(marker):
-            out = out[len(marker):].strip()
-    if len(out) > 1 and out[0] in "\"'" and out[-1] == out[0]:
-        out = out[1:-1].strip()
-    for sep in ("\n\n", "\nNote:", "\nThis "):
-        if sep in out:
-            out = out.split(sep)[0].strip()
-    return out or fallback
 
-
-# Longest edge handed to the vision model. Qwen2-VL uses dynamic resolution,
-# so cost scales with pixel count and does so brutally: measured on an M4,
-# 384px took 1.5s, 1024px 7.6s and 2048px 58.4s. A phone photo would stall for
-# minutes. 512px is ample for naming a subject.
 ASSIST_MAX_EDGE = 512
 
 
@@ -1192,36 +1174,6 @@ def _downscale_for_assist(paths: list[str]) -> list[str]:
             out.append(p)
     return out
 
-
-def _collapse_repetition(text: str) -> str:
-    """Cut a prompt short where a small model starts looping.
-
-    Asked for one vivid sentence, a 2B model will sometimes latch onto a phrase
-    and repeat it: "a sleek black cat, sleek and smooth, ... sleek black
-    curtains, sleek black blinds". The repetition adds nothing and crowds out
-    the actual subject, so the prompt is cut at the point it starts.
-    """
-    parts = [p.strip() for p in text.split(",") if p.strip()]
-    seen: set[str] = set()
-    kept: list[str] = []
-    for part in parts:
-        # Compare on content words, so "sleek black cat" and "sleek black
-        # curtains" are different but a verbatim repeat is caught.
-        key = " ".join(sorted(w.lower().strip(".") for w in part.split()))
-        if key in seen:
-            break
-        seen.add(key)
-        kept.append(part)
-
-        # Two consecutive clauses sharing every significant word is a loop.
-        if len(kept) >= 3:
-            a, b = set(kept[-1].lower().split()), set(kept[-2].lower().split())
-            if a and b and len(a & b) >= max(len(a), len(b)) - 1:
-                kept.pop()
-                break
-
-    out = ", ".join(kept)
-    return out if out.endswith((".", "!", "?")) else out.rstrip(" ,;:") + "."
 
 
 def _significant(text: str) -> list[str]:
@@ -1414,15 +1366,6 @@ _EMPTY_MODIFIERS = (
     "high quality", "highly detailed", "ultra detailed", "8k", "4k", "hdr",
     "award winning", "trending on artstation", "professional", "perfect",
 )
-
-
-def _strip_empty_modifiers(text: str) -> str:
-    """Remove quality-promising filler, keeping the description intact."""
-    out = text
-    for word in _EMPTY_MODIFIERS:
-        out = re.sub(rf"\b{re.escape(word)}\b,?\s*", "", out, flags=re.IGNORECASE)
-    return " ".join(out.split()).strip(" ,")
-
 
 
 

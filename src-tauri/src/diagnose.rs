@@ -11,6 +11,15 @@
 
 /// A failure, restated with a suggested next step where one exists.
 pub fn humanize(raw: &str) -> String {
+    // A gated repository answers with a bare 401 that says nothing about what
+    // to do, and three models in the catalog are behind a licence.
+    if raw.contains("GatedRepoError") || (raw.contains("401") && raw.contains("gated")) {
+        return "This model is behind a licence. Open its page on Hugging Face, \
+                accept the licence, then add an access token under Security \u{2014} \
+                the download will work after that."
+            .to_string();
+    }
+
     let lower = raw.to_lowercase();
 
     // Order matters: the memory ceiling is deliberately narrow, so check it
@@ -162,5 +171,14 @@ mod tests {
     fn a_dead_engine_says_it_recovers() {
         let out = humanize("the engine process exited unexpectedly");
         assert!(out.contains("restarts"), "{out}");
+    }
+
+    /// A bare 401 tells nobody anything.
+    #[test]
+    fn a_gated_repository_says_what_to_do() {
+        let out = humanize("GatedRepoError: 401 Client Error. Cannot access gated repo");
+        assert!(out.contains("licence"), "{out}");
+        assert!(out.contains("token"), "{out}");
+        assert!(!out.contains("401"), "the raw status helps nobody: {out}");
     }
 }

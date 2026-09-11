@@ -53,6 +53,8 @@ export interface ModelStatus {
   steps_default: number;
   /** How many source images an edit may take on this model. */
   max_edit_images: number;
+  /** Needs a Hugging Face token: the repository is behind a licence. */
+  gated: boolean;
   /** Whether a video model can start from a still picture. */
   video_from_image: boolean;
   guidance_default: number;

@@ -109,6 +109,14 @@ export default function Models({
           )}
         </div>
         <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>{m.fit_reason}</div>
+        {m.gated && !m.installed && (
+          <div style={{ fontSize: 10.5, color: "var(--warn)", marginTop: 5,
+                        lineHeight: 1.5 }}>
+            Behind a licence. Accept it on the model&rsquo;s Hugging Face page,
+            then add an access token under <b>Security</b> — otherwise the
+            download stops with a 401 partway through.
+          </div>
+        )}
 
         {busy === m.id ? (
           <>
