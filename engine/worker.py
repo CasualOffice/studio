@@ -1997,14 +1997,29 @@ def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             log(req_id, f"could not read repo size: {exc}", "warn")
 
     already = _dir_size(repo_dir)
+    # Not every model id is a repository id. The catalog lists Bernini as
+    # "bernini-r-1.3b", which MLX-Gen resolves to ByteDance/Bernini-R-1.3B-
+    # Diffusers -- so watching a directory named after the id showed 0.00 GB
+    # for an entire 16 GiB download. Measuring the cache as a whole works
+    # whatever the id turns out to resolve to, and downloads hold their own
+    # lane one at a time, so any growth is this one.
+    baseline = _dir_size(root)
+
     emit({"id": req_id, "type": "progress", "phase": "download", "progress": 0.0,
           "total_bytes": expected, "done_bytes": already})
 
     stop = threading.Event()
 
+    def measured() -> int:
+        direct = _dir_size(repo_dir)
+        if direct > already:
+            return direct
+        # The id was an alias: fall back to how much the cache has grown.
+        return already + max(0, _dir_size(root) - baseline)
+
     def poll() -> None:
         while not stop.wait(0.7):
-            done = _dir_size(repo_dir)
+            done = measured()
             frac = (done / expected) if expected else None
             emit({
                 "id": req_id, "type": "progress", "phase": "download",
@@ -2100,7 +2115,7 @@ def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         stop.set()
         poller.join(timeout=2)
 
-    size = _dir_size(repo_dir)
+    size = measured()
     # A downloader that reports success while fetching nothing must not be
     # recorded as an installed model.
     if size < 1024 * 1024:
@@ -2112,14 +2127,23 @@ def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     # against a published figure only ever approximates it -- the engine
     # fetches a subset, and the published figure is sometimes just wrong -- so
     # the downloader says so outright instead of leaving it to be inferred.
+    landed = repo_dir
+    if not landed.exists():
+        # An aliased id: the weights are under the repository name MLX-Gen
+        # resolved it to, so mark whichever cache entry was just written.
+        try:
+            fresh = [d for d in root.glob("models--*") if d.is_dir()]
+            landed = max(fresh, key=lambda d: d.stat().st_mtime)
+        except (OSError, ValueError):
+            landed = repo_dir
     try:
-        (repo_dir / ".melp-complete").write_text(str(size))
+        (landed / ".melp-complete").write_text(str(size))
     except OSError as exc:
         log(req_id, f"could not mark {repo_id} complete: {exc}", "warn")
 
     emit({"id": req_id, "type": "progress", "phase": "download", "progress": 1.0,
           "total_bytes": expected or size, "done_bytes": size})
-    return {"model": repo_id, "path": str(repo_dir), "bytes": size}
+    return {"model": repo_id, "path": str(landed), "bytes": size}
 
 
 # Every generate route takes these.

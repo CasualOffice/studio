@@ -490,7 +490,7 @@ pub const CATALOG: &[ModelEntry] = &[
         // the shared Wan2.1 tokenizer, UMT5, VAE and scheduler from one
         // repository plus the renderer from another. Only the alias fetches
         // both, and `--all-files` is rejected outright for it.
-        repo: "bernini-r-1.3b",
+        repo: "ByteDance/Bernini-R-1.3B-Diffusers",
         name: "Bernini-R 1.3B — image to video",
         family: Some("wan"),
         tasks: &[Task::Video],
