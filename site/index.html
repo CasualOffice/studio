@@ -293,24 +293,10 @@ pre {
   }
 }
 
-/* Sections hold their ink, and the thread runs between them. */
+/* Sections clip their ink, and keep their content above it. */
 .band, .caps, .flow, .compare, .install, .req { position: relative; overflow: hidden; }
 .shell { position: relative; z-index: 1; }
 
-/* One hairline threading the page, drawn as it is reached. It is the spine of
-   the story: pipeline, proof, price, install. */
-.thread {
-  position: absolute; left: 50%; top: 0; width: 1px; height: 100%;
-  background: linear-gradient(to bottom,
-    transparent, color-mix(in srgb, var(--accent) 34%, transparent), transparent);
-  transform-origin: top; z-index: 0; pointer-events: none;
-}
-@supports (animation-timeline: view()) {
-  @media (prefers-reduced-motion: no-preference) {
-    .thread { animation: draw linear both; animation-timeline: view(); animation-range: entry 0% cover 40%; }
-    @keyframes draw { from { transform: scaleY(0); } to { transform: scaleY(1); } }
-  }
-}
 
 /* ---- proof strip: measured, not marketing ---- */
 .proof { border-bottom: 1px solid var(--line-soft); padding: 34px 0; }
@@ -432,7 +418,6 @@ footer { border-top: 1px solid var(--line-soft); padding: 40px 0 56px; color: va
 </section>
 
 <section class="band">
-  <span class="thread"></span>
   <img class="ink ink-a" src="img/ink-window.webp" alt="" aria-hidden="true" loading="lazy">
   <div class="shell band-grid">
     <h2 class="statement">Some work cannot be uploaded.</h2>
@@ -481,7 +466,6 @@ footer { border-top: 1px solid var(--line-soft); padding: 40px 0 56px; color: va
 </section>
 
 <section class="flow" id="comic">
-  <span class="thread"></span>
   <img class="ink ink-b" src="img/ink-chair.webp" alt="" aria-hidden="true" loading="lazy">
   <div class="shell">
     <h2>Write a story. Get a comic.</h2>
