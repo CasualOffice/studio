@@ -67,6 +67,53 @@ the user to describe a character the story already describes. It asks for a
 page count before it has read a word. And when a frame is wrong it offers to
 roll the dice again rather than take a note.
 
+## Choosing a look, before spending twenty minutes on it
+
+The style picker is four words: anime, photographic, ink and wash, painted.
+Someone who has never used the tool cannot know what any of them will do to
+their story, and finds out only after the board is drawn. That is the single
+fastest way to lose this person, because the first failure on the list below
+is "it does not look like the thing in my head", and right now the tool asks
+them to commit twenty minutes to a guess.
+
+An artist would show you work before you hired them. So:
+
+- **Show the style, do not name it.** Each option carries a real example,
+  drawn by this tool, not a word.
+- **Show it on their story where possible.** A sample panel from their own
+  first scene is worth more than a stock example of somebody else's, and one
+  panel is forty-five seconds rather than twenty minutes.
+- **Let them describe a look that is not on the list.** The four presets are
+  a starting point, not the range of what the models can do. Someone who
+  wants "1950s newspaper strip" or "soft pencil, no ink" should be able to
+  say so and see it.
+- **Let them keep it.** A person drawing chapter eleven needs chapter eleven
+  to match chapter one. A look they arrived at is worth saving by name.
+
+## Knowing when the story moves
+
+A story is not a flat run of moments. It stays in a kitchen for six of them
+and then it is on a railway platform, and the reader needs to feel that
+change. It also returns: the kitchen in the last scene is the same kitchen as
+the first, and it must look like it.
+
+This is the difference between a comic and a sequence of pictures, and it is
+work the tool has to do because the prose already encodes it. The story says
+when it moves, in its own words, and the tool should read that rather than
+ask.
+
+What the reader should get from it:
+
+- **A continuing scene looks continuous.** Same room, same light, same
+  furniture, across every panel that happens there.
+- **A change of place reads as a change.** The page breaks, the establishing
+  shot returns, the reader is told where they now are.
+- **A place revisited is recognisably the same place.** Coming back to the
+  kitchen at the end should feel like coming back, not like arriving
+  somewhere new that happens to also be a kitchen.
+- **Time passing is visible.** The same room in the morning and at night is
+  one place under two lights, not two places.
+
 ## What they do not care about
 
 Worth stating, because it is where effort gets wasted:
