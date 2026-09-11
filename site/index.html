@@ -47,6 +47,8 @@
 }
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
+/* The nav is sticky, so an anchored section has to clear it. */
+section[id], header[id] { scroll-margin-top: 84px; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 body {
   margin: 0;
@@ -472,7 +474,7 @@ footer { border-top: 1px solid var(--line-soft); padding: 40px 0 56px; color: va
     <p class="section-lede">Paste prose. It is divided into scenes, one character is cast, each room is drawn once, and every panel is set against both so the same person appears in the same place throughout.</p>
     <div class="flow-track">
       <div class="step">
-        <figure><img src="img/character-sheet.webp" width="640" height="640" alt="A character reference sheet showing the same woman from three angles." loading="lazy"></figure>
+        <figure><img src="img/character-sheet.webp" width="640" height="640" alt="A character reference sheet: the same woman drawn from three angles in ink and wash." loading="lazy"></figure>
         <h3>Cast the character</h3>
         <p>Drawn once from your description, or bring a photograph of your own.</p>
       </div>
