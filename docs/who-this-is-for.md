@@ -67,6 +67,36 @@ the user to describe a character the story already describes. It asks for a
 page count before it has read a word. And when a frame is wrong it offers to
 roll the dice again rather than take a note.
 
+## They made one comic, so they should have one comic
+
+Today a board of twelve panels across two scenes puts seventeen separate
+items into the vault: a character sheet, two room sheets, twelve panels, and
+the two finished pages. All of them look alike in a flat gallery, and the
+person has to hunt for the two that are the thing they asked for.
+
+This is the clearest case of the tool's internals reaching the surface.
+Every generated image becomes a vault item because that is how generating an
+image works, and nobody asked what the person was making. They were not
+making seventeen pictures. They were making one comic.
+
+What they expect, because it is what every other tool that makes documents
+does:
+
+- **The board is the thing.** One entry, with a name, that opens to its
+  pages. Not seventeen siblings.
+- **The materials stay available but out of the way.** Character sheets and
+  room references are worth keeping: chapter twelve needs the same cast as
+  chapter eleven. They belong inside the board, not beside it.
+- **The panels are inside the pages.** A person wanting one panel on its own
+  should be able to reach it. A person wanting their comic should never have
+  to think about panels at all.
+- **Exporting means exporting the comic.** The pages, in order, in one
+  action. Not selecting two items out of seventeen and hoping they were the
+  right ones.
+
+The test: after making a board, the vault should have gained one entry, and
+opening it should show a comic.
+
 ## Choosing a look, before spending twenty minutes on it
 
 The style picker is four words: anime, photographic, ink and wash, painted.
