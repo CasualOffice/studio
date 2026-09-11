@@ -441,15 +441,23 @@ class MfluxBackendDetection(unittest.TestCase):
     def setUp(self):
         # These test the evidence rules, not Hugging Face. Blocking the lookup
         # keeps them fast and keeps them passing without a network.
-        import huggingface_hub
+        #
+        # The library is not installed everywhere the suite runs -- CI has only
+        # what the tests touch, and hugging_face_hub pulls a great deal it does
+        # not. When it is absent there is nothing to block: the detector treats
+        # a failed import exactly like a failed lookup.
+        try:
+            import huggingface_hub
+        except ImportError:
+            return
 
-        self._real = huggingface_hub.hf_hub_download
+        real = huggingface_hub.hf_hub_download
 
         def refuse(*a, **k):
             raise OSError("offline")
 
         huggingface_hub.hf_hub_download = refuse
-        self.addCleanup(setattr, huggingface_hub, "hf_hub_download", self._real)
+        self.addCleanup(setattr, huggingface_hub, "hf_hub_download", real)
 
     def test_weight_filename_names_the_variant(self):
         cases = {

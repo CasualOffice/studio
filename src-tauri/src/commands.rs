@@ -1444,7 +1444,9 @@ pub async fn compose_board(
 ) -> Result<String> {
     state.require_unlocked()?;
     if panels.is_empty() {
-        return Err(AppError::msg("draw the panels before making a page of them"));
+        return Err(AppError::msg(
+            "draw the panels before making a page of them",
+        ));
     }
 
     let mut vault_inputs = Vec::new();

@@ -541,7 +541,6 @@ pub fn set_hf_token(paths: &AppPaths, token: &str) -> Result<()> {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
-
 }
 
 #[cfg(test)]
@@ -557,8 +556,8 @@ mod tests {
 
     impl Scratch {
         fn new() -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("modelstudio-test-{}", uuid::Uuid::new_v4()));
+            let path =
+                std::env::temp_dir().join(format!("modelstudio-test-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&path).unwrap();
             Self { path }
         }
@@ -637,7 +636,10 @@ mod tests {
         std::fs::write(dir.join("blobs").join("part"), vec![0u8; 4096]).unwrap();
 
         let (installed, bytes) = is_installed(&paths, repo, 16.4);
-        assert!(!installed, "a fraction of 16.4 GiB must not count as installed");
+        assert!(
+            !installed,
+            "a fraction of 16.4 GiB must not count as installed"
+        );
         assert!(bytes > 0, "but what is present is still reported");
     }
 
@@ -708,7 +710,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(paths.hf_token()).unwrap().permissions().mode();
+            let mode = std::fs::metadata(paths.hf_token())
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o077, 0, "group and other must have no access");
         }
 
