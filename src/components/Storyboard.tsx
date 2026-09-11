@@ -1,7 +1,8 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errText, newJobId, onEngineProgress, vaultUrl } from "../lib/api";
 import type { EngineProgress, ModelStatus, Panel } from "../lib/types";
 import { ImageDrop, JobProgress } from "./shared";
+import { loadPref, savePref } from "../lib/prefs";
 import { STYLES, panelPrompt, panelSeed, sheetPrompt } from "../lib/board";
 
 /**
@@ -43,14 +44,17 @@ export default function Storyboard({
   const [modelId, setModelId] = useState("");
   const model = usable.find((m) => m.id === modelId) ?? usable[0];
 
-  const [story, setStory] = useState("");
-  const [count, setCount] = useState(6);
-  const [style, setStyle] = useState(STYLES[0].id);
-  const [character, setCharacter] = useState("");
+  const [story, setStory] = useState(() => loadPref("boardStory", ""));
+  const [count, setCount] = useState(() => loadPref("boardCount", 6));
+  const [style, setStyle] = useState(() => loadPref("boardStyle", STYLES[0].id));
+  const [character, setCharacter] = useState(() => loadPref("boardCharacter", ""));
 
-  const [panels, setPanels] = useState<Panel[] | null>(null);
-  const [sheet, setSheet] = useState<string | null>(null);
-  const [drawn, setDrawn] = useState<(string | null)[]>([]);
+  const [panels, setPanels] = useState<Panel[] | null>(
+    () => loadPref<Panel[] | null>("boardPanels", null));
+  const [sheet, setSheet] = useState<string | null>(
+    () => loadPref<string | null>("boardSheet", null));
+  const [drawn, setDrawn] = useState<(string | null)[]>(
+    () => loadPref<(string | null)[]>("boardDrawn", []));
   const [stage, setStage] = useState<Stage>("idle");
   const [prog, setProg] = useState<EngineProgress | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -68,6 +72,17 @@ export default function Storyboard({
    *  is, it anchors the character better than a description can. */
   const [ownSheet, setOwnSheet] = useState<string[]>([]);
   const timer = useRef<number | null>(null);
+
+
+  // A board is minutes of work, so it survives a quit. Only the text and the
+  // vault ids are stored; the pictures themselves stay sealed in the vault.
+  useEffect(() => { savePref("boardStory", story); }, [story]);
+  useEffect(() => { savePref("boardCount", count); }, [count]);
+  useEffect(() => { savePref("boardStyle", style); }, [style]);
+  useEffect(() => { savePref("boardCharacter", character); }, [character]);
+  useEffect(() => { savePref("boardPanels", panels); }, [panels]);
+  useEffect(() => { savePref("boardSheet", sheet); }, [sheet]);
+  useEffect(() => { savePref("boardDrawn", drawn); }, [drawn]);
 
   const busy = stage !== "idle";
 
