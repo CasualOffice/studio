@@ -36,9 +36,25 @@ export function JobProgress({ p, label }: { p: EngineProgress | null; label: str
   }
   const phase = PHASE_LABEL[p.phase] ?? p.phase;
   let right = "";
+  let note: string | null = null;
   if (p.phase === "download" && p.total_bytes) {
     const gb = (n: number) => (n / 1024 ** 3).toFixed(2);
     right = `${gb(p.done_bytes ?? 0)} / ${gb(p.total_bytes)} GB`;
+    // Slow and stuck look identical without this. One download ran for
+    // seventy-nine minutes before anyone noticed it had stopped.
+    const stalled = p.stalled_seconds ?? 0;
+    if (stalled >= 45) {
+      note = `no data for ${Math.round(stalled)}s — it may have stalled`;
+    } else {
+      const bps = p.bytes_per_second ?? 0;
+      const parts: string[] = [];
+      if (bps > 0) parts.push(`${(bps / 1024 ** 2).toFixed(1)} MB/s`);
+      if (p.eta_seconds != null && p.eta_seconds > 0) {
+        const m = Math.round(p.eta_seconds / 60);
+        parts.push(m >= 1 ? `about ${m} min left` : "less than a minute left");
+      }
+      note = parts.join(" · ") || null;
+    }
   } else if (p.step != null && p.total_steps) {
     right = `step ${p.step}/${p.total_steps}`;
   } else if (p.progress != null) {
@@ -53,6 +69,14 @@ export function JobProgress({ p, label }: { p: EngineProgress | null; label: str
         <span>{phase}{multi}{p.message ? ` — ${p.message}` : ""}</span>
         <span>{right}</span>
       </div>
+      {note && (
+        <div style={{
+          fontSize: 10.5, marginTop: 3,
+          color: (p.stalled_seconds ?? 0) >= 45 ? "var(--warn)" : "var(--text-faint)",
+        }}>
+          {note}
+        </div>
+      )}
       <Bar value={p.progress} />
     </div>
   );

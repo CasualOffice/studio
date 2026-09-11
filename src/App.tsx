@@ -9,6 +9,8 @@ import Gallery from "./components/Gallery";
 import Upscale from "./components/Upscale";
 import Video from "./components/Video";
 import Storyboard from "./components/Storyboard";
+import Welcome from "./components/Welcome";
+import { loadPref, savePref } from "./lib/prefs";
 import Security from "./components/Security";
 import Activity from "./components/Activity";
 import { Toast } from "./components/shared";
@@ -44,6 +46,9 @@ export default function App() {
   const [editImages, setEditImages] = useState<string[]>([]);
   const [videoFrame, setVideoFrame] = useState<string[]>([]);
   const [recipe, setRecipe] = useState<Recipe | null>(null);
+  /** Dismissed once, per install. Someone who has chosen their own models
+   *  should not be met by the starter list every launch. */
+  const [welcomed, setWelcomed] = useState(() => loadPref("welcomed", false));
   const [upscaleImage, setUpscaleImage] = useState<string[]>([]);
 
   const notify = useCallback((msg: string, bad?: boolean) => setToast({ msg, bad }), []);
@@ -100,7 +105,19 @@ export default function App() {
     onEngineProgress((p) => {
       const phase = p.phase === "download" ? "Downloading" :
         p.phase === "load" ? "Loading model" : "Working";
-      setBusyLabel(p.step && p.total_steps ? `${phase} ${p.step}/${p.total_steps}` : phase);
+      // A download is the one job long enough that you will leave the tab it
+      // started on, so the shell carries the same numbers the Models tab
+      // shows rather than a bare "Downloading" that tells you nothing.
+      if (p.phase === "download" && p.total_bytes) {
+        const gb = (n: number) => (n / 1024 ** 3).toFixed(1);
+        const pct = Math.round((p.progress ?? 0) * 100);
+        const stalled = (p.stalled_seconds ?? 0) >= 45;
+        setBusyLabel(stalled
+          ? `Downloading — stalled ${Math.round(p.stalled_seconds ?? 0)}s`
+          : `Downloading ${pct}% · ${gb(p.done_bytes ?? 0)}/${gb(p.total_bytes)} GB`);
+      } else {
+        setBusyLabel(p.step && p.total_steps ? `${phase} ${p.step}/${p.total_steps}` : phase);
+      }
       window.clearTimeout(idle);
       // Progress events stop when a job ends; treat silence as done.
       idle = window.setTimeout(() => setBusyLabel(null), 4000);
@@ -200,6 +217,30 @@ export default function App() {
   }
 
   const installedCount = models.filter((m) => m.installed).length;
+
+  // Nothing installed means no tab can do anything, so the first screen asks
+  // one question instead of presenting twenty-six models and a memory budget.
+  if (installedCount === 0 && !welcomed && models.length > 0) {
+    return (
+      <>
+        <div className="drag-region" data-tauri-drag-region />
+        <div className="shell">
+          <main className="main">
+            <div className="topbar" data-tauri-drag-region>
+              <h1 data-tauri-drag-region>Model Studio</h1>
+            </div>
+            <Welcome
+              models={models}
+              notify={notify}
+              onChanged={refreshModels}
+              onSkip={() => { setWelcomed(true); savePref("welcomed", true); setTab("models"); }}
+            />
+          </main>
+        </div>
+        {toast && <Toast msg={toast.msg} bad={toast.bad} onDone={() => setToast(null)} />}
+      </>
+    );
+  }
   const diskUsedFrac = host
     ? Math.min(1, 1 - host.free_disk_gib / Math.max(host.total_disk_gib, 1))
     : 0;
@@ -267,7 +308,12 @@ export default function App() {
           <h1 data-tauri-drag-region>{TABS.find(([id]) => id === tab)?.[2]}</h1>
           <div className="spacer" data-tauri-drag-region />
           {busyLabel && (
-            <span className="pill" title="A job is running in the engine">
+            <span
+              className={"pill" + (busyLabel.includes("stalled") ? " warn" : "")}
+              title={busyLabel.includes("stalled")
+                ? "No data has arrived for a while. It may need cancelling and retrying."
+                : "A job is running in the engine"}
+            >
               <span className="spin">◐</span> {busyLabel}
             </span>
           )}

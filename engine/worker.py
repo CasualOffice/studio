@@ -2018,13 +2018,31 @@ def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         return already + max(0, _dir_size(root) - baseline)
 
     def poll() -> None:
+        # Rate and stall are measured here rather than inferred in the UI,
+        # because only this side knows when the bytes actually moved. A
+        # download that quietly stopped used to look exactly like a slow one:
+        # one of them ran for 79 minutes before anyone noticed.
+        last_bytes, last_moved, last_t = already, time.time(), time.time()
         while not stop.wait(0.7):
             done = measured()
+            now = time.time()
+            if done > last_bytes:
+                rate = (done - last_bytes) / max(now - last_t, 1e-6)
+                last_bytes, last_moved, last_t = done, now, now
+            else:
+                # Chunked transfer writes in bursts, so a gap is normal until
+                # it is long. Hold the last known rate rather than showing 0.
+                rate = 0.0
+            stalled = now - last_moved
+            remaining = max(expected - done, 0) if expected else 0
             frac = (done / expected) if expected else None
             emit({
                 "id": req_id, "type": "progress", "phase": "download",
                 "progress": min(frac, 0.999) if frac is not None else None,
                 "total_bytes": expected, "done_bytes": done,
+                "bytes_per_second": round(rate),
+                "stalled_seconds": round(stalled),
+                "eta_seconds": round(remaining / rate) if rate > 0 else None,
             })
 
     poller = threading.Thread(target=poll, daemon=True)

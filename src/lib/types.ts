@@ -90,6 +90,12 @@ export interface EngineProgress {
   seed: number | null;
   item_index: number | null;
   item_count: number | null;
+  /** Downloads only. Measured engine-side, where the bytes actually land. */
+  bytes_per_second?: number | null;
+  eta_seconds?: number | null;
+  /** How long since the byte count last moved. A download that quietly
+   *  stopped is otherwise indistinguishable from a slow one. */
+  stalled_seconds?: number | null;
 }
 
 export interface VaultStatus {
