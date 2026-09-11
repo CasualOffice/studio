@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96"
+     role="img" aria-label="Model Studio">
+  <title>Model Studio</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1c1f2b"/>
+      <stop offset="1" stop-color="#0b0c12"/>
+    </linearGradient>
+    <linearGradient id="iris" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#a78bfa"/>
+      <stop offset="0.55" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+    <!-- Six wedges cut out of the ring, which is what makes it read as an
+         aperture rather than a plain circle. -->
+    <mask id="blades">
+      <rect width="96" height="96" fill="black"/>
+      <circle cx="48" cy="48" r="33" fill="white"/>
+      <g stroke="black" stroke-width="4.5" stroke-linecap="round">
+        <line x1="48" y1="48" x2="48" y2="14"/>
+        <line x1="48" y1="48" x2="77" y2="31"/>
+        <line x1="48" y1="48" x2="77" y2="65"/>
+        <line x1="48" y1="48" x2="48" y2="82"/>
+        <line x1="48" y1="48" x2="19" y2="65"/>
+        <line x1="48" y1="48" x2="19" y2="31"/>
+      </g>
+    </mask>
+  </defs>
+
+  <!-- The tile carries its own background, so the mark reads the same on a
+       light README and a dark one. -->
+  <rect width="96" height="96" rx="22" fill="url(#tile)"/>
+  <rect x="0.75" y="0.75" width="94.5" height="94.5" rx="21.25"
+        fill="none" stroke="#ffffff" stroke-opacity="0.10"/>
+
+  <!-- The ring, bladed. -->
+  <g mask="url(#blades)">
+    <circle cx="48" cy="48" r="33" fill="none" stroke="url(#iris)" stroke-width="17"/>
+  </g>
+
+  <!-- The opening, left dark: what is inside stays inside. -->
+  <circle cx="48" cy="48" r="12" fill="#0b0c12"/>
+  <circle cx="48" cy="48" r="12" fill="none" stroke="url(#iris)"
+          stroke-width="2" stroke-opacity="0.7"/>
+</svg>

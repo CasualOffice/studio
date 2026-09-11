@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Installing Model Studio</title>
+<meta name="description" content="How to install Model Studio on an Apple Silicon Mac, and what it needs to run.">
+<link rel="icon" href="img/logo.svg">
+<meta property="og:title" content="Model Studio">
+<meta property="og:description" content="Image models that run entirely on your Mac. Nothing is uploaded.">
+<meta property="og:type" content="website">
+
+<style>
+/* ---------------------------------------------------------------------------
+   Typeface: the system stack. This is a Mac app, so SF Pro is the platform's
+   own voice rather than a compromise, and it costs nothing to load.
+   Palette: one accent, locked across the page. Dark is the default because the
+   app is; light follows the reader's preference.
+--------------------------------------------------------------------------- */
+:root {
+  --bg:        #0b0d10;
+  --bg-raise:  #12151a;
+  --line:      #1e232b;
+  --line-soft: #171b21;
+  --ink:       #eef1f5;
+  --ink-dim:   #9aa4b2;
+  --ink-faint: #6b7480;
+  --accent:    #35c8e8;
+  --accent-ink:#04242c;
+  --warn:      #e0a44a;
+  --radius:    14px;
+  --shell:     1200px;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg:        #fbfcfd;
+    --bg-raise:  #ffffff;
+    --line:      #e2e7ed;
+    --line-soft: #edf1f5;
+    --ink:       #0e1319;
+    --ink-dim:   #55606d;
+    --ink-faint: #7b8593;
+    --accent:    #0a7d99;
+    --accent-ink:#ffffff;
+    --warn:      #9a6512;
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+img { max-width: 100%; display: block; }
+a { color: inherit; }
+.shell { max-width: var(--shell); margin: 0 auto; padding: 0 24px; }
+
+/* ---- navigation: one line, 68px ---- */
+.nav {
+  position: sticky; top: 0; z-index: 20;
+  height: 68px; display: flex; align-items: center; gap: 28px;
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line-soft);
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: -0.01em; text-decoration: none; }
+.brand img { width: 26px; height: 26px; border-radius: 7px; }
+.nav .spacer { flex: 1; }
+.nav a.link { color: var(--ink-dim); text-decoration: none; font-size: 14px; }
+.nav a.link:hover { color: var(--ink); }
+@media (max-width: 760px) { .nav a.link { display: none; } }
+
+/* ---- buttons: one radius system, pill for actions ---- */
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 11px 20px; border-radius: 999px;
+  font-size: 14.5px; font-weight: 560; letter-spacing: -0.01em;
+  text-decoration: none; white-space: nowrap; border: 1px solid transparent;
+  transition: transform .18s cubic-bezier(.16,1,.3,1), background .18s, border-color .18s;
+}
+.btn-primary { background: var(--accent); color: var(--accent-ink); }
+.btn-primary:hover { transform: translateY(-1px); }
+.btn-primary:active { transform: translateY(0) scale(.985); }
+.btn-ghost { border-color: var(--line); color: var(--ink); }
+.btn-ghost:hover { border-color: var(--ink-faint); transform: translateY(-1px); }
+@media (prefers-reduced-motion: reduce) { .btn:hover, .btn:active { transform: none; } }
+
+/* ---- hero: asymmetric split ---- */
+.hero { position: relative; overflow: hidden; padding: 56px 0 72px; border-bottom: 1px solid var(--line-soft); }
+@media (max-width: 900px) { .hero { padding: 44px 0 60px; } }
+.hero-grid { display: grid; grid-template-columns: 1.06fr .94fr; gap: 56px; align-items: center; }
+@media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; gap: 40px; } }
+h1 {
+  margin: 0 0 20px;
+  font-size: clamp(2rem, 3.3vw, 2.95rem);
+  line-height: 1.08; letter-spacing: -0.032em; font-weight: 640;
+}
+.lede { margin: 0 0 30px; font-size: 1.09rem; color: var(--ink-dim); max-width: 46ch; }
+.hero-cta { display: flex; gap: 12px; flex-wrap: wrap; }
+
+/* ---------------------------------------------------------------------------
+   The stack. This app makes pages, plural, so the hero shows three real ones
+   in depth rather than one flat crop. Tilt follows the pointer, written to two
+   custom properties from a single rAF tick so no work happens per event.
+--------------------------------------------------------------------------- */
+.stage {
+  position: relative;
+  perspective: 1400px;
+  perspective-origin: 58% 42%;
+  min-height: 520px;
+  display: grid;
+  place-items: center;
+}
+@media (max-width: 900px) { .stage { min-height: 400px; } }
+
+.stack {
+  position: relative;
+  width: min(430px, 84%);
+  transform-style: preserve-3d;
+  transform:
+    rotateX(calc(var(--ty, 0) * -7deg))
+    rotateY(calc(var(--tx, 0) * 11deg));
+  transition: transform .5s cubic-bezier(.16,1,.3,1);
+}
+.sheet {
+  position: absolute; inset: 0;
+  border-radius: 12px; overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--bg-raise);
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+.sheet img { width: 100%; height: auto; display: block; }
+/* Fanned back to front. The frontmost sheet is in normal flow so the stack
+   has a height; the two behind it are absolutely placed. */
+.sheet-1 { position: relative; z-index: 3;
+  transform: translateZ(70px);
+  box-shadow: 0 40px 90px -34px rgba(0,0,0,.72); }
+.sheet-2 { z-index: 2;
+  transform: translate3d(7%, -5%, 10px) rotate(3.2deg);
+  box-shadow: 0 30px 70px -36px rgba(0,0,0,.6); }
+.sheet-3 { z-index: 1;
+  transform: translate3d(13%, -10%, -50px) rotate(6.4deg);
+  box-shadow: 0 24px 60px -38px rgba(0,0,0,.5); }
+@media (prefers-color-scheme: light) {
+  .sheet-1 { box-shadow: 0 40px 80px -36px rgba(16,28,48,.34); }
+  .sheet-2 { box-shadow: 0 30px 64px -38px rgba(16,28,48,.26); }
+  .sheet-3 { box-shadow: 0 24px 54px -40px rgba(16,28,48,.2); }
+}
+
+/* A single soft field behind the stack, in the page accent. Not a mesh, not a
+   blob field: one light source, so the depth reads as lit rather than glowy. */
+.stage::before {
+  content: ""; position: absolute; z-index: 0;
+  width: 78%; aspect-ratio: 1; border-radius: 50%;
+  background: radial-gradient(circle,
+      color-mix(in srgb, var(--accent) 26%, transparent) 0%,
+      transparent 68%);
+  filter: blur(60px); opacity: .5; pointer-events: none;
+}
+@media (prefers-color-scheme: light) { .stage::before { opacity: .34; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .stack { transform: none; transition: none; }
+}
+
+/* ---- statement band ---- */
+.band { padding: 92px 0; border-bottom: 1px solid var(--line-soft); }
+.statement {
+  font-size: clamp(1.5rem, 2.9vw, 2.15rem);
+  line-height: 1.32; letter-spacing: -0.025em; font-weight: 560;
+  max-width: 20ch; margin: 0;
+}
+.band-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; align-items: start; }
+@media (max-width: 860px) { .band-grid { grid-template-columns: 1fr; gap: 28px; } .statement { max-width: none; } }
+.band p { color: var(--ink-dim); margin: 0 0 16px; max-width: 56ch; }
+
+/* ---- capability grid: real rhythm, not equal thirds ---- */
+.caps { padding: 92px 0; border-bottom: 1px solid var(--line-soft); }
+h2 { font-size: clamp(1.6rem, 2.6vw, 2.1rem); line-height: 1.18; letter-spacing: -0.03em; font-weight: 620; margin: 0 0 14px; }
+.section-lede { color: var(--ink-dim); max-width: 58ch; margin: 0 0 44px; }
+.cap-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 18px; }
+.cap {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg-raise); overflow: hidden;
+  transition: transform .4s cubic-bezier(.16,1,.3,1), border-color .4s;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .cap:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); }
+}
+.cap-wide { grid-column: span 4; }
+.cap-narrow { grid-column: span 2; }
+.cap-half { grid-column: span 3; }
+.cap-body { padding: 22px 24px 26px; }
+.cap h3 { margin: 0 0 7px; font-size: 1.02rem; font-weight: 600; letter-spacing: -0.015em; }
+.cap p { margin: 0; color: var(--ink-dim); font-size: .94rem; }
+.cap figure {
+  margin: 0; border-bottom: 1px solid var(--line-soft); background: var(--bg);
+  height: 210px; overflow: hidden;
+}
+.cap figure img { width: 100%; height: 100%; object-fit: cover; object-position: center 32%; }
+.cap-narrow figure { height: 210px; }
+@media (max-width: 860px) { .cap-grid { grid-template-columns: 1fr; } .cap-wide, .cap-narrow, .cap-half { grid-column: auto; } }
+
+/* ---- pipeline: horizontal sequence ---- */
+.flow { padding: 92px 0; border-bottom: 1px solid var(--line-soft); }
+.flow-track { display: grid; grid-template-columns: repeat(3, 1fr); gap: 26px; }
+@media (max-width: 860px) { .flow-track { grid-template-columns: 1fr; } }
+.step h3 { margin: 16px 0 6px; font-size: 1rem; font-weight: 600; letter-spacing: -0.015em; }
+.step p { margin: 0; color: var(--ink-dim); font-size: .93rem; }
+.step figure { height: 230px; overflow: hidden;
+  margin: 0; border: 1px solid var(--line); border-radius: var(--radius);
+  overflow: hidden; background: var(--bg-raise);
+  box-shadow: 0 20px 50px -40px rgba(0,0,0,.8);
+  transition: transform .4s cubic-bezier(.16,1,.3,1);
+}
+.step figure img { width: 100%; height: 100%; object-fit: cover; }
+@media (prefers-reduced-motion: no-preference) { .step:hover figure { transform: translateY(-4px); } }
+/* The three steps are a sequence, so they sit on a shallow arc rather than a
+   flat row. The middle one leads because it is the idea that does the work. */
+@media (min-width: 861px) and (prefers-reduced-motion: no-preference) {
+  .flow-track { perspective: 1200px; }
+  .step:nth-child(1) figure { transform: rotateY(4deg) translateZ(-18px); }
+  .step:nth-child(3) figure { transform: rotateY(-4deg) translateZ(-18px); }
+  .step:nth-child(1):hover figure { transform: rotateY(4deg) translateZ(-18px) translateY(-4px); }
+  .step:nth-child(3):hover figure { transform: rotateY(-4deg) translateZ(-18px) translateY(-4px); }
+}
+
+/* ---- install ---- */
+.install { padding: 92px 0; border-bottom: 1px solid var(--line-soft); }
+.install-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; }
+@media (max-width: 860px) { .install-grid { grid-template-columns: 1fr; gap: 34px; } }
+ol.steps { margin: 0; padding: 0; list-style: none; counter-reset: s; }
+ol.steps li { counter-increment: s; padding: 0 0 22px 40px; position: relative; color: var(--ink-dim); }
+ol.steps li::before {
+  content: counter(s); position: absolute; left: 0; top: 0;
+  width: 25px; height: 25px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--ink-faint);
+  font-size: 12px; font-variant-numeric: tabular-nums;
+  display: grid; place-items: center;
+}
+ol.steps b { color: var(--ink); font-weight: 580; display: block; margin-bottom: 3px; }
+pre {
+  margin: 12px 0 0; padding: 14px 16px; overflow-x: auto;
+  background: var(--bg-raise); border: 1px solid var(--line);
+  border-radius: 10px; color: var(--ink);
+  font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+}
+.note { border-left: 2px solid var(--warn); padding-left: 16px; color: var(--ink-dim); font-size: .94rem; }
+.note b { color: var(--ink); }
+
+/* ---- requirements: grouped, not a hairline table ---- */
+.req { padding: 92px 0 100px; }
+.req-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; margin-top: 40px; }
+@media (max-width: 860px) { .req-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 520px) { .req-grid { grid-template-columns: 1fr; } }
+.req-cell { border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; background: var(--bg-raise); }
+.req-cell .k { font-size: 1.45rem; font-weight: 600; letter-spacing: -0.03em; display: block; margin-bottom: 5px; }
+.req-cell .v { color: var(--ink-dim); font-size: .92rem; }
+
+/* ---------------------------------------------------------------------------
+   Ink layers. Drawn by the app itself, which is the only honest source of
+   decoration for a drawing tool. They drift at different rates as the page
+   moves, which is what gives the scroll depth rather than a flat slide.
+   Native scroll-driven animation: nothing listens to the scroll event.
+--------------------------------------------------------------------------- */
+.ink {
+  position: absolute; pointer-events: none; z-index: 0;
+  opacity: .05; filter: blur(.2px);
+  width: 300px; height: auto;
+}
+@media (prefers-color-scheme: light) { .ink { opacity: .07; filter: invert(1) blur(.2px); } }
+.ink-a { top: -40px; right: -70px; width: 380px; }
+.ink-b { bottom: -80px; left: -90px; width: 330px; }
+.ink-c { top: 40px; left: -60px; width: 280px; }
+@media (max-width: 900px) { .ink { display: none; } }
+
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .ink {
+      animation: drift linear both;
+      animation-timeline: view();
+      animation-range: cover;
+    }
+    @keyframes drift { from { transform: translateY(58px); } to { transform: translateY(-58px); } }
+    .ink-b { animation-name: drift-slow; }
+    @keyframes drift-slow { from { transform: translateY(30px) rotate(-3deg); } to { transform: translateY(-34px) rotate(3deg); } }
+  }
+}
+
+/* Sections hold their ink, and the thread runs between them. */
+.band, .caps, .flow, .compare, .install, .req { position: relative; overflow: hidden; }
+.shell { position: relative; z-index: 1; }
+
+/* One hairline threading the page, drawn as it is reached. It is the spine of
+   the story: pipeline, proof, price, install. */
+.thread {
+  position: absolute; left: 50%; top: 0; width: 1px; height: 100%;
+  background: linear-gradient(to bottom,
+    transparent, color-mix(in srgb, var(--accent) 34%, transparent), transparent);
+  transform-origin: top; z-index: 0; pointer-events: none;
+}
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .thread { animation: draw linear both; animation-timeline: view(); animation-range: entry 0% cover 40%; }
+    @keyframes draw { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+  }
+}
+
+/* ---- proof strip: measured, not marketing ---- */
+.proof { border-bottom: 1px solid var(--line-soft); padding: 34px 0; }
+.proof-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; }
+@media (max-width: 720px) { .proof-grid { grid-template-columns: repeat(2, 1fr); gap: 26px; } }
+.proof-grid div { display: flex; flex-direction: column; gap: 2px; }
+.proof .n {
+  font-size: 1.65rem; font-weight: 620; letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums; color: var(--ink);
+}
+.proof .l { font-size: .86rem; color: var(--ink-faint); }
+
+/* ---- comparison: the close ---- */
+.compare { padding: 92px 0; border-bottom: 1px solid var(--line-soft); }
+.vs { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 40px; }
+@media (max-width: 780px) { .vs { grid-template-columns: 1fr; } }
+.vs-col { border: 1px solid var(--line); border-radius: var(--radius); padding: 28px 28px 30px; }
+.vs-them { background: transparent; }
+.vs-us {
+  background: var(--bg-raise);
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  box-shadow: 0 30px 70px -52px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.vs-col h3 { margin: 0 0 18px; font-size: 1.02rem; font-weight: 620; letter-spacing: -0.015em; }
+.vs-them h3 { color: var(--ink-faint); }
+.vs-col ul { margin: 0; padding: 0; list-style: none; }
+.vs-col li { padding: 10px 0 10px 26px; position: relative; color: var(--ink-dim); font-size: .95rem; }
+.vs-them li::before {
+  content: ""; position: absolute; left: 4px; top: 18px;
+  width: 11px; height: 1px; background: var(--ink-faint);
+}
+.vs-us li { color: var(--ink); }
+.vs-us li::before {
+  content: ""; position: absolute; left: 2px; top: 15px;
+  width: 6px; height: 10px; border-right: 1.6px solid var(--accent);
+  border-bottom: 1.6px solid var(--accent); transform: rotate(42deg);
+}
+
+/* ---- close ---- */
+.close { padding: 104px 0 110px; text-align: center; border-bottom: 1px solid var(--line-soft); }
+.close-head { font-size: clamp(1.8rem, 3.4vw, 2.7rem); letter-spacing: -0.035em; margin: 0 0 12px; }
+.close-lede { color: var(--ink-dim); margin: 0 0 30px; font-size: 1.05rem; }
+.btn-lg { padding: 14px 30px; font-size: 1rem; }
+.close-fine { color: var(--ink-faint); font-size: .86rem; margin: 20px 0 0; }
+
+/* ---- footer ---- */
+footer { border-top: 1px solid var(--line-soft); padding: 40px 0 56px; color: var(--ink-faint); font-size: .88rem; }
+.foot { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; }
+.foot a { color: var(--ink-dim); text-decoration: none; }
+.foot a:hover { color: var(--ink); }
+.foot .spacer { flex: 1; }
+
+/* ---- entry motion: hierarchy only, and only if wanted ---- */
+@media (prefers-reduced-motion: no-preference) {
+  /* Sections arrive as they are reached, so the eye is led down the page
+     rather than meeting everything at once. Native scroll-driven animation,
+     so nothing listens to the scroll event. */
+  @supports (animation-timeline: view()) {
+    .band-grid, .cap, .step, .install-grid > div, .req-cell {
+      opacity: 0;
+      animation: rise-in linear both;
+      animation-timeline: view();
+      animation-range: entry 8% cover 26%;
+    }
+    @keyframes rise-in {
+      from { opacity: 0; transform: translateY(22px); }
+      to   { opacity: 1; transform: none; }
+    }
+  }
+  .rise { opacity: 0; transform: translateY(14px); animation: rise .7s cubic-bezier(.16,1,.3,1) forwards; }
+  .rise-2 { animation-delay: .07s; }
+  .rise-3 { animation-delay: .14s; }
+  @keyframes rise { to { opacity: 1; transform: none; } }
+}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="shell" style="display:flex;align-items:center;gap:28px;width:100%">
+    <a class="brand" href="index.html"><img src="img/logo.svg" alt="">Model Studio</a>
+    <span class="spacer"></span>
+    <a class="link" href="index.html#what">What it does</a>
+    <a class="link" href="index.html#comic">Comics</a>
+    <a class="link" href="install.html">Install</a>
+    <a class="link" href="https://github.com/CasualOffice/studio">Source</a>
+    <a class="btn btn-primary" href="https://github.com/CasualOffice/studio/releases/latest">Download for Mac</a>
+  </div>
+</nav>
+
+<header class="page-head">
+  <div class="shell">
+    <h1 class="page-title">Installing</h1>
+    <p class="lede">Two minutes of setup, then a download you start once and leave running.</p>
+  </div>
+</header>
+
+<section class="install" id="install" style="border-top:1px solid var(--line-soft)">
+  <div class="shell install-grid">
+    <div>
+      <h2>Installing</h2>
+      <ol class="steps">
+        <li><b>Download the disk image</b> and drag Model Studio to Applications.</li>
+        <li><b>Clear the quarantine flag, once.</b> macOS says any app not signed by a paid Apple Developer account is damaged. It is not damaged, it is unsigned.
+          <pre>xattr -dr com.apple.quarantine \
+  "/Applications/Model Studio.app"</pre>
+        </li>
+        <li><b>Open it.</b> First launch sets up a private Python runtime, then offers to install the models that make it work.</li>
+      </ol>
+      <a class="btn btn-primary" href="https://github.com/CasualOffice/studio/releases/latest">Download for Mac</a>
+    </div>
+    <div>
+      <p class="note"><b>Budget about 12 GB and twenty minutes</b> before the first picture, almost all of it downloading. Roughly 3 GB for the runtime and 9 GB for the starter models. Nothing is installed system-wide, and everything lives in one folder you can delete.</p>
+      <p style="color:var(--ink-dim);margin-top:26px">Model sizes are shown before you commit to a download, and the app tells you which models this Mac can actually run before you spend the disk.</p>
+    </div>
+  </div>
+</section>
+
+<section class="req">
+  <div class="shell">
+    <h2>What it needs</h2>
+    <p class="section-lede">Apple Silicon only, and that is not an oversight. MLX has no other backend and the key handling is macOS Keychain code, so an Intel or Linux build is not a missing target but an impossible one.</p>
+    <div class="req-grid">
+      <div class="req-cell"><span class="k">M1</span><span class="v">or later. Apple Silicon, any model.</span></div>
+      <div class="req-cell"><span class="k">macOS 13</span><span class="v">Ventura or newer.</span></div>
+      <div class="req-cell"><span class="k">16 GB</span><span class="v">to run the catalog comfortably. 8 GB runs the smaller models.</span></div>
+      <div class="req-cell"><span class="k">12 GB</span><span class="v">of disk to get started, more per model you add.</span></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="shell foot">
+    <span>GPL-3.0-or-later</span>
+    <span class="spacer"></span>
+    <a href="https://github.com/CasualOffice/studio">Source</a>
+    <a href="https://github.com/CasualOffice/studio/releases">Releases</a>
+    <a href="https://github.com/CasualOffice/studio/blob/main/docs/measurements.md">Measured timings</a>
+    <a href="https://github.com/CasualOffice/studio/issues">Issues</a>
+  </div>
+</footer>
+
+
+<script>
+/* Pointer tilt for the hero stack.
+   One rAF tick writes two custom properties. No per-event layout work, no
+   scroll listener, and it stands down entirely when the reader asks for less
+   motion or is on a touch device where there is no pointer to follow. */
+(function () {
+  var stage = document.getElementById("stage");
+  var stack = document.getElementById("stack");
+  if (!stage || !stack) return;
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+
+  var tx = 0, ty = 0, queued = false;
+  function apply() {
+    queued = false;
+    stack.style.setProperty("--tx", tx.toFixed(3));
+    stack.style.setProperty("--ty", ty.toFixed(3));
+  }
+  stage.addEventListener("pointermove", function (e) {
+    var r = stage.getBoundingClientRect();
+    tx = (e.clientX - r.left) / r.width - 0.5;
+    ty = (e.clientY - r.top) / r.height - 0.5;
+    if (!queued) { queued = true; requestAnimationFrame(apply); }
+  }, { passive: true });
+  stage.addEventListener("pointerleave", function () {
+    tx = ty = 0;
+    if (!queued) { queued = true; requestAnimationFrame(apply); }
+  }, { passive: true });
+})();
+</script>
+</body>
+</html>
