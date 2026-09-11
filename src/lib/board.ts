@@ -69,3 +69,25 @@ export function sheetPrompt(style: string, character: string): string {
 export function panelSeed(index: number, redraws: number): number {
   return 7 + index + redraws * 1000;
 }
+
+/** The prompt for a scene's location sheet: the room, empty. */
+export function placePrompt(style: string, place: string): string {
+  return `${styleWords(style)}. Empty interior, no people. ${place.trim()}.`;
+}
+
+/**
+ * Which reference images a panel is drawn against.
+ *
+ * The character sheet holds the person; the location sheet holds the room.
+ * Verified: passing both keeps consecutive panels in the same room rather
+ * than a similar one. A panel the character is not in gets the room only --
+ * handing it her sheet is what drew her into shots she does not appear in.
+ */
+export function panelReferences(
+  panel: Panel, sheet: string | null, place: string | null
+): string[] {
+  const refs: string[] = [];
+  if (panel.character_in_frame && sheet) refs.push(sheet);
+  if (place) refs.push(place);
+  return refs.length ? refs : (sheet ? [sheet] : []);
+}

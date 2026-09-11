@@ -143,7 +143,7 @@ pub const CATALOG: &[ModelEntry] = &[
         peak_gib: 5.6,
         peak_estimated: true,
         steps_default: 4,
-        max_edit_images: 1,
+        max_edit_images: 3,
         video_from_image: false,
         guidance_default: 1.0,
         guidance_max: 1.0,

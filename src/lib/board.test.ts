@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { panelPrompt, panelSeed, sheetPrompt, styleWords, STYLES } from "./board";
+import { panelPrompt, panelReferences, panelSeed, placePrompt, sheetPrompt,
+         styleWords, STYLES } from "./board";
 import type { Panel } from "./types";
 
 const CHAR = "a young woman with short black hair and a red scarf";
@@ -105,6 +106,40 @@ describe("sheetPrompt", () => {
     expect(out).toContain("reference sheet");
     expect(out).toContain("plain background");
     expect(out).toContain(CHAR);
+  });
+});
+
+describe("panelReferences", () => {
+  it("hands the drawer both the character and the room", () => {
+    // Verified against the model: two references keep consecutive panels in
+    // the same room rather than a similar one.
+    expect(panelReferences(panel(), "sheet", "room")).toEqual(["sheet", "room"]);
+  });
+
+  it("leaves the character out of a panel she is not in", () => {
+    // Handing her sheet to a shot of an empty tap is what drew her into it.
+    expect(panelReferences(panel({ character_in_frame: false }), "sheet", "room"))
+      .toEqual(["room"]);
+  });
+
+  it("falls back to the character alone when no room was built", () => {
+    expect(panelReferences(panel(), "sheet", null)).toEqual(["sheet"]);
+  });
+
+  it("never returns nothing when a sheet exists", () => {
+    // A panel with no references is drawn from the prompt alone, which is
+    // exactly the inconsistency this is here to prevent.
+    const out = panelReferences(
+      panel({ character_in_frame: false }), "sheet", null);
+    expect(out).toEqual(["sheet"]);
+  });
+});
+
+describe("placePrompt", () => {
+  it("asks for the room without anyone in it", () => {
+    const out = placePrompt("ink", "faded blue walls, worn pine boards");
+    expect(out).toContain("no people");
+    expect(out).toContain("worn pine boards");
   });
 });
 

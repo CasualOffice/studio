@@ -3,7 +3,8 @@ import { api, errText, newJobId, onEngineProgress, vaultUrl } from "../lib/api";
 import type { EngineProgress, ModelStatus, Panel } from "../lib/types";
 import { ImageDrop, JobProgress } from "./shared";
 import { loadPref, savePref } from "../lib/prefs";
-import { STYLES, panelPrompt, panelSeed, sheetPrompt, styleWords } from "../lib/board";
+import { STYLES, panelPrompt, panelReferences, panelSeed, placePrompt,
+         sheetPrompt, styleWords } from "../lib/board";
 
 /**
  * A story, divided into panels, drawn as one consistent character.
@@ -19,7 +20,7 @@ import { STYLES, panelPrompt, panelSeed, sheetPrompt, styleWords } from "../lib/
 const PANEL_W = 512;
 const PANEL_H = 512;
 
-type Stage = "idle" | "dividing" | "enriching" | "casting" | "drawing";
+type Stage = "idle" | "dividing" | "enriching" | "casting" | "building" | "drawing";
 
 export default function Storyboard({
   models, notify, onProduced,
@@ -74,6 +75,10 @@ export default function Storyboard({
    *  Their own face, an earlier board's sheet, a photograph -- whatever it
    *  is, it anchors the character better than a description can. */
   const [ownSheet, setOwnSheet] = useState<string[]>([]);
+  /** One location sheet per scene, keyed by scene number. The character sheet
+   *  holds the person; these hold the rooms. */
+  const [placeSheets, setPlaceSheets] = useState<Record<number, string>>(
+    () => loadPref<Record<number, string>>("boardPlaces", {}));
   const timer = useRef<number | null>(null);
 
 
@@ -87,6 +92,7 @@ export default function Storyboard({
   useEffect(() => { savePref("boardSheet", sheet); }, [sheet]);
   useEffect(() => { savePref("boardDrawn", drawn); }, [drawn]);
   useEffect(() => { savePref("boardLayout", layout); }, [layout]);
+  useEffect(() => { savePref("boardPlaces", placeSheets); }, [placeSheets]);
 
   const busy = stage !== "idle";
 
@@ -133,10 +139,11 @@ export default function Storyboard({
     // user brought their own, there is nothing to cast.
     if (ownSheet.length > 0) {
       setSheet(ownSheet[0]);
+      const places = await buildPlaces();
       setStage("drawing");
       for (let i = 0; i < panels.length; i++) {
         if (stop.current) { notify(`Stopped after ${i} panels.`); break; }
-        const ok = await drawOne(i, ownSheet[0]);
+        const ok = await drawOne(i, ownSheet[0], places);
         if (!ok && stop.current) break;
       }
       if (timer.current) { window.clearInterval(timer.current); timer.current = null; }
@@ -175,19 +182,70 @@ export default function Storyboard({
 
     // Panels run one at a time. Two models never share this machine's memory,
     // and a board of six is minutes of work either way.
+    const places = await buildPlaces();
     setStage("drawing");
     for (let i = 0; i < panels.length; i++) {
       if (stop.current) { notify(`Stopped after ${i} panels.`); break; }
-      const ok = await drawOne(i, sheetId);
+      const ok = await drawOne(i, sheetId, places);
       if (!ok && stop.current) break;
     }
     if (timer.current) { window.clearInterval(timer.current); timer.current = null; }
     setStage("idle"); setProg(null); setJobId(null);
   };
 
+  /** Draw each scene's room once, empty, for its panels to be set inside.
+   *
+   *  The same mechanism that holds the character, applied to the place. A
+   *  described room is drawn differently every time; a referenced one is not.
+   */
+  const buildPlaces = async (): Promise<Record<number, string>> => {
+    if (!model || !panels) return {};
+    const wanted = new Map<number, string>();
+    for (const p of panels) {
+      const key = p.scene ?? 1;
+      const place = (p.place ?? "").trim();
+      if (place && !wanted.has(key) && !placeSheets[key]) wanted.set(key, place);
+    }
+    if (wanted.size === 0) return placeSheets;
+
+    setStage("building");
+    const made: Record<number, string> = { ...placeSheets };
+    for (const [scene, place] of wanted) {
+      if (stop.current) break;
+      const id = newJobId();
+      setJobId(id);
+      const un = await onEngineProgress((e) => { if (e.job_id === id) setProg(e); });
+      try {
+        const res = await api.generate({
+          job_id: id, model_id: model.id,
+          prompt: placePrompt(style, place),
+          negative_prompt: null,
+          width: PANEL_W, height: PANEL_H,
+          steps: model.steps_default || 4,
+          guidance: Math.min(1.0, model.guidance_max),
+          seed: 21 + scene, count: 1, images: [], image_strength: null,
+          i2i_mode: null, low_ram: true, preview: false, cache_limit_gb: null,
+          allow_over_budget: false, loras: [], mask: null,
+          outpaint_padding: null, outpaint_fill: null,
+        });
+        if (res[0]) made[scene] = res[0];
+        onProduced();
+      } catch (e) {
+        // A missing room is survivable: the panel falls back to its written
+        // description, which is what it used before this existed.
+        notify(`Scene ${scene}: ${errText(e)}`, true);
+      } finally {
+        un();
+      }
+    }
+    setPlaceSheets(made);
+    return made;
+  };
+
   /** Draw a single panel against the sheet. Shared by the run and by redraw,
    *  so a board with one bad panel costs one panel to fix rather than six. */
-  const drawOne = async (i: number, sheetId: string): Promise<boolean> => {
+  const drawOne = async (i: number, sheetId: string,
+                         places: Record<number, string> = placeSheets): Promise<boolean> => {
     if (!model || !panels) return false;
     const id = newJobId();
     setJobId(id);
@@ -204,7 +262,8 @@ export default function Storyboard({
         // that was already rejected, so a redraw moves the seed on.
         seed: panelSeed(i, redraws[i] ?? 0),
         count: 1,
-        images: [sheetId],
+        images: panelReferences(panels[i], sheetId,
+                                places[panels[i].scene ?? 1] ?? null),
         // "edit" is the reference-conditioned route -- the model is handed
         // the sheet and the panel description together. "latent" would
         // instead redraw the sheet itself, which is not what a panel is.
@@ -436,6 +495,7 @@ export default function Storyboard({
             {panels && (
               <button className="btn primary small" disabled={busy} onClick={draw}>
                 {stage === "drawing" ? `Drawing ${done}/${panels.length}…`
+                  : stage === "building" ? "Building the rooms…"
                   : stage === "casting" ? "Casting…"
                   : `Draw ${panels.length} panels`}
               </button>
