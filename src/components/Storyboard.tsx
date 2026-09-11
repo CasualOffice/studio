@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { api, errText, newJobId, onEngineProgress, vaultUrl } from "../lib/api";
 import type { EngineProgress, ModelStatus, Panel } from "../lib/types";
-import { JobProgress } from "./shared";
+import { ImageDrop, JobProgress } from "./shared";
 import { STYLES, panelPrompt, panelSeed, sheetPrompt } from "../lib/board";
 
 /**
@@ -63,6 +63,10 @@ export default function Storyboard({
   const [elapsed, setElapsed] = useState(0);
   const [composing, setComposing] = useState(false);
   const [page, setPage] = useState<string | null>(null);
+  /** A character picture the user brought, used instead of casting one.
+   *  Their own face, an earlier board's sheet, a photograph -- whatever it
+   *  is, it anchors the character better than a description can. */
+  const [ownSheet, setOwnSheet] = useState<string[]>([]);
   const timer = useRef<number | null>(null);
 
   const busy = stage !== "idle";
@@ -90,8 +94,8 @@ export default function Storyboard({
   const draw = async () => {
     if (!model) { notify("No model that can both generate and edit is installed.", true); return; }
     if (!panels) return;
-    if (!character.trim()) {
-      notify("Describe the character, so every panel can hold the same one.", true);
+    if (!character.trim() && ownSheet.length === 0) {
+      notify("Describe the character, or bring a picture of them.", true);
       return;
     }
 
@@ -106,7 +110,21 @@ export default function Storyboard({
     setDrawn(new Array(panels.length).fill(null));
 
     // The sheet is the anchor. Every panel references it, which is the whole
-    // reason the character survives from one shot to the next.
+    // reason the character survives from one shot to the next -- so if the
+    // user brought their own, there is nothing to cast.
+    if (ownSheet.length > 0) {
+      setSheet(ownSheet[0]);
+      setStage("drawing");
+      for (let i = 0; i < panels.length; i++) {
+        if (stop.current) { notify(`Stopped after ${i} panels.`); break; }
+        const ok = await drawOne(i, ownSheet[0]);
+        if (!ok && stop.current) break;
+      }
+      if (timer.current) { window.clearInterval(timer.current); timer.current = null; }
+      setStage("idle"); setProg(null); setJobId(null);
+      return;
+    }
+
     const castId = newJobId();
     setStage("casting"); setJobId(castId);
     let un = await onEngineProgress((p) => { if (p.job_id === castId) setProg(p); });
@@ -287,6 +305,26 @@ export default function Storyboard({
           </div>
 
           <div className="field">
+            <label>
+              Or bring your own <em>optional</em>
+            </label>
+            <ImageDrop
+              images={ownSheet}
+              onChange={setOwnSheet}
+              max={1}
+              onError={(m) => notify(m, true)}
+            />
+            <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5,
+                          lineHeight: 1.55 }}>
+              {ownSheet.length > 0
+                ? "Every panel is drawn against this picture. No character sheet "
+                  + "is generated, so the board starts a minute sooner."
+                : "A picture of the character — a photo, a drawing, a sheet from "
+                  + "an earlier board. It anchors them better than words can."}
+            </div>
+          </div>
+
+          <div className="field">
             <label>Style</label>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               {STYLES.map(({ id, label }) => (
@@ -357,9 +395,9 @@ export default function Storyboard({
           {panels && stage === "idle" && drawn.every((d) => !d) && (
             <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 9,
                           lineHeight: 1.55 }}>
-              Expect roughly {Math.ceil((panels.length + 1) * 0.6)}–
-              {Math.ceil((panels.length + 1) * 2)} minutes for
-              {" "}{panels.length} panels and the character sheet. The range is
+              Expect roughly {Math.ceil((panels.length + (ownSheet.length ? 0 : 1)) * 0.6)}–
+              {Math.ceil((panels.length + (ownSheet.length ? 0 : 1)) * 2)} minutes for
+              {" "}{panels.length} panels{ownSheet.length ? "" : " and the character sheet"}. The range is
               wide because this Mac slows as it warms: measured panels ran 34
               seconds cold and 123 seconds after a few minutes of work.
             </div>
