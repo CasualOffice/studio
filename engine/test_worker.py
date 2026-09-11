@@ -671,6 +671,59 @@ class ShotListParsing(unittest.TestCase):
             f'"caption":"{"word " * 80}"}}]', 1)
         self.assertLessEqual(len(panels[0]["caption"]), 120)
 
+    def test_dialogue_is_normalised(self):
+        panels = worker._parse_shotlist(
+            '[{"shot":"medium","subject":"Josephine","action":"kneels",'
+            '"setting":"a door","dialogue":[{"speaker":"Josephine",'
+            '"text":"  Louise,   open the door!  "}]}]', 1)
+        d = panels[0]["dialogue"]
+        self.assertEqual(len(d), 1)
+        self.assertEqual(d[0]["text"], "Louise, open the door!")
+
+    def test_bare_strings_become_unattributed_lines(self):
+        panels = worker._parse_shotlist(
+            '[{"shot":"wide","subject":"x","action":"y","setting":"z",'
+            '"dialogue":["Go away."]}]', 1)
+        self.assertEqual(panels[0]["dialogue"], [{"speaker": "", "text": "Go away."}])
+
+    def test_a_panel_with_no_dialogue_gets_an_empty_list(self):
+        # The composer indexes dialogue positionally, so the slot must exist.
+        panels = worker._parse_shotlist(
+            '[{"shot":"wide","subject":"x","action":"y","setting":"z"}]', 1)
+        self.assertEqual(panels[0]["dialogue"], [])
+
+    def test_a_crowd_of_speakers_is_capped(self):
+        # Balloons sit on top of the panel; three of them leave no panel.
+        many = ",".join(f'{{"speaker":"S{i}","text":"line {i}"}}' for i in range(5))
+        panels = worker._parse_shotlist(
+            f'[{{"shot":"wide","subject":"x","action":"y","setting":"z",'
+            f'"dialogue":[{many}]}}]', 1)
+        self.assertLessEqual(len(panels[0]["dialogue"]), 2)
+
+
+class PageLayout(unittest.TestCase):
+    """How panels are grouped into rows is what makes a page a page."""
+
+    def test_a_wide_takes_the_whole_row(self):
+        self.assertEqual(worker._rows_for(["wide", "wide"]), [[0], [1]])
+
+    def test_tighter_shots_pair_up(self):
+        self.assertEqual(worker._rows_for(["medium", "close-up"]), [[0, 1]])
+
+    def test_a_wide_breaks_a_pair(self):
+        rows = worker._rows_for(["medium", "wide", "medium", "close-up"])
+        self.assertEqual(rows, [[0], [1], [2, 3]])
+
+    def test_a_trailing_panel_gets_its_own_row(self):
+        self.assertEqual(worker._rows_for(["medium"]), [[0]])
+        self.assertEqual(worker._rows_for(["medium", "close-up", "medium"]),
+                         [[0, 1], [2]])
+
+    def test_every_panel_appears_exactly_once(self):
+        shots = ["wide", "medium", "close-up", "medium", "wide", "close-up", "medium"]
+        flat = [i for row in worker._rows_for(shots) for i in row]
+        self.assertEqual(sorted(flat), list(range(len(shots))))
+
     def test_an_unknown_shot_size_falls_back(self):
         panels = worker._parse_shotlist(
             '[{"shot":"dutch angle","subject":"x","action":"y","setting":"z"}]', 1)

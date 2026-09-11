@@ -1443,7 +1443,12 @@ def _shotlist_instruction(story: str, count: int) -> str:
         '  "caption": one short line to sit under the panel, in the voice of '
         'the story. Narration, not description -- the reader can already see '
         'the picture. Six to fourteen words. Empty string if the panel needs '
-        'no words.\n\n'
+        'no words. It must belong to THIS panel: never a line about something '
+        'that happens in a later one.\n'
+        '  "dialogue": an array of what is spoken aloud in this panel, each '
+        '{"speaker": who says it, "text": the words}. Use the story\'s own '
+        'words where it has them. Empty array when nobody speaks -- most '
+        'panels. At most two lines, each under twelve words.\n\n'
         "No prose before or after the JSON.\n\n"
         f"Story:\n{story}"
     )
@@ -1493,6 +1498,9 @@ def _parse_shotlist(raw: str, count: int) -> list[dict[str, str]]:
             # Narration, kept short. A caption that restates the picture is
             # worse than none, and a long one stops being a caption.
             "caption": " ".join(str(p.get("caption", "")).split())[:120],
+            # What is actually said aloud. Bubbles are drawn over the panel, so
+            # a long line covers the picture it belongs to -- hence the cap.
+            "dialogue": _clean_dialogue(p.get("dialogue")),
         })
     if not cleaned:
         raise ValueError("the writer returned no usable panels")
@@ -1541,13 +1549,95 @@ def _wrap(draw: Any, text: str, font: Any, width: int) -> list[str]:
     return lines
 
 
+def _rows_for(shots: list[str]) -> list[list[int]]:
+    """Group panels into rows the way a comic page is laid out.
+
+    A wide shot takes the full width -- that is what makes it a wide. Anything
+    tighter pairs with its neighbour, which is how a page gets its rhythm:
+    a long establishing beat, then two quick ones. A strip of equal squares
+    reads as a contact sheet rather than a page.
+    """
+    rows: list[list[int]] = []
+    i = 0
+    while i < len(shots):
+        if shots[i] == "wide":
+            rows.append([i])
+            i += 1
+        elif i + 1 < len(shots) and shots[i + 1] != "wide":
+            rows.append([i, i + 1])
+            i += 2
+        else:
+            rows.append([i])
+            i += 1
+    return rows
+
+
+def _fit(im: Any, w: int, h: int) -> Any:
+    """Scale and centre-crop to fill a cell without distorting the drawing."""
+    from PIL import Image
+
+    scale = max(w / im.width, h / im.height)
+    im = im.resize((max(1, round(im.width * scale)), max(1, round(im.height * scale))),
+                   Image.LANCZOS)
+    left, top = (im.width - w) // 2, (im.height - h) // 2
+    return im.crop((left, top, left + w, top + h))
+
+
+def _caption_box(draw: Any, text: str, font: Any, box: tuple[int, int, int, int],
+                 line_h: int) -> None:
+    """A narration box in the corner of a panel, as a comic sets one."""
+    x, y, w, _ = box
+    lines = _wrap(draw, text, font, w - 18)
+    bh = len(lines) * line_h + 12
+    draw.rectangle([x, y, x + w, y + bh], fill=(250, 249, 245),
+                   outline=(20, 20, 22), width=2)
+    for n, line in enumerate(lines):
+        draw.text((x + 9, y + 6 + n * line_h), line, font=font, fill=(20, 20, 22))
+
+
+def _bubble(draw: Any, text: str, speaker: str, font: Any, small: Any,
+            cx: int, top: int, max_w: int, line_h: int, tail_down: bool) -> int:
+    """A speech balloon with a tail, returning the height it used."""
+    lines = _wrap(draw, text, font, max_w - 26)
+    tw = max((draw.textlength(l, font=font) for l in lines), default=0)
+    w = int(tw) + 26
+    h = len(lines) * line_h + 16
+    x0, y0 = cx - w // 2, top
+    draw.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=min(16, h // 2),
+                           fill=(252, 252, 250), outline=(20, 20, 22), width=2)
+    # The tail points at whoever is speaking, which is why it has a direction.
+    ty = y0 + h if tail_down else y0
+    dy = 14 if tail_down else -14
+    draw.polygon([(cx - 9, ty), (cx + 9, ty), (cx + 1, ty + dy)],
+                 fill=(252, 252, 250), outline=(20, 20, 22))
+    for n, line in enumerate(lines):
+        lw = draw.textlength(line, font=font)
+        draw.text((cx - lw / 2, y0 + 8 + n * line_h), line, font=font,
+                  fill=(20, 20, 22))
+    used = h + 18
+    if speaker:
+        # Below the balloon, not above it: narration boxes live at the top of
+        # a panel, and a label set there collides with them and is unreadable.
+        sw = draw.textlength(speaker, font=small)
+        sy = y0 + h + (14 if tail_down else 0) + 3
+        draw.rectangle([x0, sy, x0 + sw + 12, sy + 19], fill=(20, 20, 22))
+        draw.text((x0 + 6, sy + 3), speaker, font=small, fill=(248, 248, 245))
+        used += 24
+    return used
+
+
 def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
-    """Stack the drawn panels into one page, captions underneath.
+    """Lay the drawn panels out as a page, with captions and speech.
 
     Composed here rather than in the browser because the panels are sealed:
     this is the process that already holds the keys, and the finished page is
-    sealed again before it touches disk. Vertical, because that is how these
-    are read.
+    sealed again before it touches disk.
+
+    Two arrangements. `page` sets panels in rows with gutters, wides running
+    full width and tighter shots pairing up, which is what gives a page its
+    rhythm. `strip` stacks them at one width for vertical scrolling. A column
+    of equal squares reads as a contact sheet either way, so the page form is
+    the default.
     """
     from PIL import Image, ImageDraw
 
@@ -1556,51 +1646,72 @@ def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("composing a page needs a vault slot to write into")
 
     captions: list[str] = [str(c or "") for c in (req.get("captions") or [])]
+    speech: list[list[dict[str, str]]] = list(req.get("dialogue") or [])
+    shots: list[str] = [str(x or "medium") for x in (req.get("shots") or [])]
     staged = _stage_vault_inputs(req.get("vault_inputs") or [])
     if not staged:
         raise ValueError("there are no drawn panels to compose")
 
-    margin = int(req.get("margin", 28))
-    gap = int(req.get("gap", 22))
-    font_size = int(req.get("font_size", 21))
+    layout = str(req.get("layout") or "page")
+    page_w = int(req.get("page_width", 1240))
+    margin = int(req.get("margin", 34))
+    gutter = int(req.get("gutter", 18))
+    font = _caption_font(int(req.get("font_size", 19)))
+    small = _caption_font(13)
+    line_h = int(int(req.get("font_size", 19)) * 1.4)
 
     try:
         panels = []
         for path in staged:
             with Image.open(path) as im:
                 panels.append(im.convert("RGB"))
-        width = max(im.width for im in panels)
-        font = _caption_font(font_size)
-        line_h = int(font_size * 1.45)
+        while len(shots) < len(panels):
+            shots.append("medium")
 
-        # Measure first: the page height depends on how the captions wrap, and
-        # wrapping depends on the width we have only just settled.
+        rows = (_rows_for(shots[:len(panels)]) if layout == "page"
+                else [[i] for i in range(len(panels))])
+        inner = page_w - margin * 2
+
+        # Measure the page before drawing it: row heights depend on how many
+        # panels share the row, and the captions wrap to the cell width.
         probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
-        text_w = width - margin * 2
-        wrapped: list[list[str]] = []
-        for i, _ in enumerate(panels):
-            caption = captions[i].strip() if i < len(captions) else ""
-            wrapped.append(_wrap(probe, caption, font, text_w) if caption else [])
+        plan: list[tuple[list[int], int, int]] = []
+        total_h = margin
+        for row in rows:
+            cell_w = (inner - gutter * (len(row) - 1)) // len(row)
+            # A full-width panel is set shallower than a square so the page
+            # does not become a ladder; a paired one keeps more of its height.
+            cell_h = round(cell_w * (0.62 if len(row) == 1 and layout == "page" else 1.0))
+            plan.append((row, cell_w, cell_h))
+            total_h += cell_h + gutter
+        total_h += margin - gutter
 
-        height = margin
-        for im, lines in zip(panels, wrapped):
-            scaled_h = round(im.height * (width / im.width))
-            height += scaled_h + (len(lines) * line_h if lines else 0) + gap
-        height += margin - gap
-
-        page = Image.new("RGB", (width + margin * 2, height), "white")
+        page = Image.new("RGB", (page_w, total_h), (243, 241, 236))
         draw = ImageDraw.Draw(page)
+
         y = margin
-        for im, lines in zip(panels, wrapped):
-            if im.width != width:
-                im = im.resize((width, round(im.height * (width / im.width))),
-                               Image.LANCZOS)
-            page.paste(im, (margin, y))
-            y += im.height
-            for line in lines:
-                draw.text((margin, y + 6), line, font=font, fill=(28, 28, 30))
-                y += line_h
-            y += gap
+        for row, cell_w, cell_h in plan:
+            x = margin
+            for idx in row:
+                page.paste(_fit(panels[idx], cell_w, cell_h), (x, y))
+                draw.rectangle([x, y, x + cell_w, y + cell_h],
+                               outline=(20, 20, 22), width=3)
+
+                cap = captions[idx].strip() if idx < len(captions) else ""
+                if cap:
+                    _caption_box(draw, cap, font,
+                                 (x + 10, y + 10, min(cell_w - 20, 420), 0), line_h)
+
+                lines = speech[idx] if idx < len(speech) else []
+                # Balloons start below any narration box so the two never
+                # overlap, and stack downward from there.
+                by = y + (78 if cap else 16)
+                for n, line in enumerate(lines[:2]):
+                    by += _bubble(draw, line.get("text", ""), line.get("speaker", ""),
+                                  font, small, x + cell_w // 2, by,
+                                  min(cell_w - 40, 380), line_h, tail_down=True)
+                x += cell_w + gutter
+            y += cell_h + gutter
 
         import io
 
@@ -1618,32 +1729,7 @@ def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
 
     return {"outputs": [slots[0]["id"]], "sealed": True, "sizes": [len(data)],
             "width": page.width, "height": page.height,
-            "panels": len(staged)}
-
-
-ENRICH_SYSTEM = (
-    "You are a storyboard artist working up one panel into something that can "
-    "be drawn.\n\n"
-    "You are given the moment, and the style the board is drawn in. Write what "
-    "the camera sees.\n\n"
-    "Rules:\n"
-    "1. Everything the panel already states must survive. You are adding to "
-    "it, not replacing it.\n"
-    "2. Add only what the moment implies -- the surface a thing rests on, what "
-    "is behind it, where the light comes from, what the weather is doing. "
-    "Never a new character, never an event.\n"
-    "3. Say where the light is and what it is doing. A panel with no stated "
-    "light is drawn with no light.\n"
-    "4. Describe only what is visible. No sound, no thought, no dialogue.\n"
-    "5. Never write 'beautiful', 'cinematic', 'dramatic', 'high quality' or "
-    "'masterpiece'. They describe nothing.\n\n"
-    "One paragraph, at most forty words, no preamble.\n\n"
-    "Example\n"
-    "Panel: medium shot. Anna stands at the kitchen window. kitchen.\n"
-    "A narrow kitchen, rain running down the glass in front of her. Grey "
-    "afternoon light from outside, no lamp on. Worn wooden worktop, a cup "
-    "steaming beside the sink, allotments blurred beyond the window.\n"
-)
+            "panels": len(staged), "layout": layout}
 
 
 def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
@@ -1697,6 +1783,30 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         out.append({**p, "scene": scene[:400]})
 
     return {"panels": out}
+
+
+def _clean_dialogue(raw: Any) -> list[dict[str, str]]:
+    """Normalise spoken lines, and keep them short enough to letter.
+
+    A bubble sits on top of the panel it belongs to. Two of them, or one long
+    one, and there is no panel left to see -- so this caps both.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw[:2]:
+        if isinstance(item, str):
+            speaker, text = "", item
+        elif isinstance(item, dict):
+            speaker = str(item.get("speaker", ""))
+            text = str(item.get("text", ""))
+        else:
+            continue
+        text = " ".join(text.split()).strip('"\u201c\u201d')
+        if not text:
+            continue
+        out.append({"speaker": " ".join(speaker.split())[:40], "text": text[:90]})
+    return out
 
 
 def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:

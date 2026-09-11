@@ -1478,6 +1478,9 @@ pub async fn compose_board(
     job_id: String,
     panels: Vec<String>,
     captions: Vec<String>,
+    shots: Vec<String>,
+    dialogue: serde_json::Value,
+    layout: String,
 ) -> Result<String> {
     state.require_unlocked()?;
     if panels.is_empty() {
@@ -1511,6 +1514,9 @@ pub async fn compose_board(
             json!({
                 "vault_inputs": vault_inputs,
                 "captions": captions,
+                "shots": shots,
+                "dialogue": dialogue,
+                "layout": layout,
                 "vault_slots": [{
                     "id": slot_id, "file_id": hex(&file_id),
                     "key": hex(&key), "path": path.to_string_lossy(),

@@ -58,8 +58,11 @@ export const api = {
     ),
   enrichPanels: (jobId: string, panels: Panel[], style: string) =>
     invoke<{ panels: Panel[] }>("enrich_panels", { jobId, panels, style }),
-  composeBoard: (jobId: string, panels: string[], captions: string[]) =>
-    invoke<string>("compose_board", { jobId, panels, captions }),
+  composeBoard: (
+    jobId: string, panels: string[], captions: string[], shots: string[],
+    dialogue: { speaker: string; text: string }[][], layout: string
+  ) => invoke<string>("compose_board",
+                      { jobId, panels, captions, shots, dialogue, layout }),
   hfTokenStatus: () =>
     invoke<{ present: boolean; hint: string | null }>("hf_token_status"),
   setHfToken: (token: string) => invoke<void>("set_hf_token", { token }),

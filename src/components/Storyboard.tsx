@@ -67,6 +67,9 @@ export default function Storyboard({
   const [elapsed, setElapsed] = useState(0);
   const [composing, setComposing] = useState(false);
   const [page, setPage] = useState<string | null>(null);
+  /** A page sets panels in rows with gutters; a strip stacks them at one
+   *  width for scrolling. Different things, and people want both. */
+  const [layout, setLayout] = useState(() => loadPref("boardLayout", "page"));
   /** A character picture the user brought, used instead of casting one.
    *  Their own face, an earlier board's sheet, a photograph -- whatever it
    *  is, it anchors the character better than a description can. */
@@ -83,6 +86,7 @@ export default function Storyboard({
   useEffect(() => { savePref("boardPanels", panels); }, [panels]);
   useEffect(() => { savePref("boardSheet", sheet); }, [sheet]);
   useEffect(() => { savePref("boardDrawn", drawn); }, [drawn]);
+  useEffect(() => { savePref("boardLayout", layout); }, [layout]);
 
   const busy = stage !== "idle";
 
@@ -274,15 +278,23 @@ export default function Storyboard({
    */
   const compose = async () => {
     if (!panels) return;
+    type Ready = { id: string; caption: string; shot: Panel["shot"];
+                   dialogue: { speaker: string; text: string }[] };
     const pairs = panels
-      .map((p, i) => ({ id: drawn[i], caption: p.caption }))
-      .filter((x): x is { id: string; caption: string } => Boolean(x.id));
+      .map((p, i) => ({ id: drawn[i], caption: p.caption, shot: p.shot,
+                        dialogue: p.dialogue ?? [] }))
+      .filter((x): x is Ready => Boolean(x.id));
     if (pairs.length === 0) { notify("Draw at least one panel first.", true); return; }
 
     setComposing(true);
     try {
       const id = await api.composeBoard(
-        newJobId(), pairs.map((p) => p.id), pairs.map((p) => p.caption));
+        newJobId(),
+        pairs.map((p) => p.id),
+        pairs.map((p) => p.caption),
+        pairs.map((p) => p.shot),
+        pairs.map((p) => p.dialogue ?? []),
+        layout);
       setPage(id);
       onProduced();
       notify(`Composed a page from ${pairs.length} panels. It is in the Vault.`);
@@ -426,9 +438,19 @@ export default function Storyboard({
             )}
             {busy && <button className="btn small" onClick={cancel}>Cancel</button>}
             {!busy && panels && drawn.some(Boolean) && (
-              <button className="btn small" onClick={() => void compose()}>
-                {composing ? "Composing…" : "Make a page"}
-              </button>
+              <>
+                <select
+                  value={layout}
+                  style={{ width: "auto", fontSize: 11, padding: "2px 6px" }}
+                  onChange={(e) => setLayout(e.target.value)}
+                >
+                  <option value="page">Page</option>
+                  <option value="strip">Scrolling strip</option>
+                </select>
+                <button className="btn small" onClick={() => void compose()}>
+                  {composing ? "Composing…" : "Make a page"}
+                </button>
+              </>
             )}
           </div>
 
@@ -537,6 +559,25 @@ export default function Storyboard({
                     style={{ fontSize: 12, padding: "4px 6px",
                              fontStyle: p.caption ? "italic" : "normal" }}
                     onChange={(e) => edit(i, { caption: e.target.value })}
+                  />
+                  <input
+                    type="text"
+                    value={(p.dialogue ?? []).map(
+                      (d) => (d.speaker ? `${d.speaker}: ` : "") + d.text).join(" / ")}
+                    disabled={busy}
+                    placeholder="dialogue — Name: what they say"
+                    style={{ fontSize: 12, padding: "4px 6px", marginTop: 3 }}
+                    onChange={(e) => edit(i, {
+                      // "Name: line / Name: line" is quicker to correct than
+                      // a pair of fields per speaker, and matches how the
+                      // writer returns it.
+                      dialogue: e.target.value.split("/").map((raw) => {
+                        const [a, ...rest] = raw.split(":");
+                        return rest.length
+                          ? { speaker: a.trim(), text: rest.join(":").trim() }
+                          : { speaker: "", text: a.trim() };
+                      }).filter((d) => d.text),
+                    })}
                   />
                   {(p.scene ?? "").trim() && (
                     <textarea
