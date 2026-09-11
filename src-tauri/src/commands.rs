@@ -325,6 +325,18 @@ pub struct StorageInfo {
     pub is_external: bool,
 }
 
+/// What the cache is holding that nothing points at.
+#[tauri::command]
+pub fn find_orphans(state: State<'_, AppState>) -> models::Orphans {
+    models::find_orphans(&state.paths())
+}
+
+/// Delete it, returning the bytes recovered.
+#[tauri::command]
+pub fn sweep_orphans(state: State<'_, AppState>) -> Result<u64> {
+    models::sweep_orphans(&state.paths())
+}
+
 #[tauri::command]
 pub fn storage_info(state: State<'_, AppState>) -> StorageInfo {
     let root = state.paths().models_root().clone();

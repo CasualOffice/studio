@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   EngineProgress, GenerateArgs, HostInfo, ModelStatus,
-  Lora, Panel, RepairReport, ResolvedLora, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus,
+  Lora, Orphans, Panel, RepairReport, ResolvedLora, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus,
 } from "./types";
 
 /** Tauri rejects with our structured error; normalise it to a message. */
@@ -65,6 +65,8 @@ export const api = {
   ) => invoke<string[]>("compose_board",
                         { jobId, board: { panels, captions, shots, dialogue,
                                           scenes, layout } }),
+  findOrphans: () => invoke<Orphans>("find_orphans"),
+  sweepOrphans: () => invoke<number>("sweep_orphans"),
   hfTokenStatus: () =>
     invoke<{ present: boolean; hint: string | null }>("hf_token_status"),
   setHfToken: (token: string) => invoke<void>("set_hf_token", { token }),

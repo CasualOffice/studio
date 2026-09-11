@@ -157,6 +157,8 @@ pub fn run() {
             commands::add_lora,
             commands::remove_lora,
             commands::storage_info,
+            commands::find_orphans,
+            commands::sweep_orphans,
             commands::set_models_location,
             commands::download_model,
             commands::delete_model,

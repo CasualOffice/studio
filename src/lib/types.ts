@@ -264,3 +264,11 @@ export interface Panel {
    *  the terse fields when it is. Distinct from `scene`, which is a number. */
   description?: string;
 }
+
+/** Cached weight files nothing points at, left by interrupted downloads. */
+export interface Orphans {
+  bytes: number;
+  files: number;
+  /** Which repositories hold them, largest first. */
+  repos: [string, number][];
+}

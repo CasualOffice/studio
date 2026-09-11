@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, errText, fmtBytes } from "../lib/api";
-import type { StorageInfo } from "../lib/types";
+import type { Orphans, StorageInfo } from "../lib/types";
 
 /**
  * Where the weights live.
@@ -19,9 +19,26 @@ export default function Storage({
 }) {
   const [info, setInfo] = useState<StorageInfo | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [orphans, setOrphans] = useState<Orphans | null>(null);
 
   const refresh = async () => {
     try { setInfo(await api.storageInfo()); } catch (e) { notify(errText(e), true); }
+    // Cheap: a directory walk, no hashing. Worth doing on every visit so the
+    // waste is visible rather than something you have to suspect.
+    try { setOrphans(await api.findOrphans()); } catch { /* not fatal */ }
+  };
+
+  const sweep = async () => {
+    setBusy("Clearing…");
+    try {
+      const freed = await api.sweepOrphans();
+      notify(`Recovered ${fmtBytes(freed)}.`);
+      await refresh();
+    } catch (e) {
+      notify(errText(e), true);
+    } finally {
+      setBusy(null);
+    }
   };
   useEffect(() => { void refresh(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -41,6 +58,37 @@ export default function Storage({
   };
 
   return (
+    <>
+    {orphans && orphans.bytes > 50 * 1024 * 1024 && (
+      <div className="panel">
+        <h2>Leftover files</h2>
+        <div className="notice warn" style={{ marginBottom: 12 }}>
+          <strong>{fmtBytes(orphans.bytes)} is being held by nothing</strong>
+          {orphans.files} cached weight files that no installed model points
+          at. Interrupted and repeated downloads leave these behind, and
+          nothing collects them — the model looks correct, so the waste is
+          invisible.
+        </div>
+        {orphans.repos.slice(0, 4).map(([repo, bytes]) => (
+          <div key={repo} style={{ display: "flex", justifyContent: "space-between",
+                                   fontSize: 11.5, marginBottom: 3 }}>
+            <span style={{ color: "var(--text-dim)" }}>{repo}</span>
+            <span>{fmtBytes(bytes)}</span>
+          </div>
+        ))}
+        <div className="actions" style={{ marginTop: 12 }}>
+          <button className="btn primary small" disabled={!!busy} onClick={sweep}>
+            {busy ?? `Recover ${fmtBytes(orphans.bytes)}`}
+          </button>
+        </div>
+        <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 8,
+                      lineHeight: 1.55 }}>
+          Safe: a file no snapshot links to cannot be reached through the cache,
+          so removing it cannot break a model you have installed. Anything
+          still downloading is left alone.
+        </div>
+      </div>
+    )}
     <div className="panel">
       <h2>Model storage</h2>
       {info && (
@@ -86,5 +134,6 @@ export default function Storage({
         location; nothing needs re-downloading.
       </div>
     </div>
+    </>
   );
 }

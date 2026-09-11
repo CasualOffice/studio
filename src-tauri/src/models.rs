@@ -510,6 +510,150 @@ pub fn delete(paths: &AppPaths, repo: &str) -> Result<u64> {
     Ok(bytes)
 }
 
+/// A blob in the cache that no snapshot points at, and what it costs.
+#[derive(Serialize, Clone, Debug)]
+pub struct Orphans {
+    pub bytes: u64,
+    pub files: usize,
+    /// Which repositories are holding them, largest first.
+    pub repos: Vec<(String, u64)>,
+}
+
+/// Find cached weight files nothing refers to any more.
+///
+/// The Hugging Face cache stores content in `blobs/` and links it into
+/// `snapshots/`. When a download is interrupted and retried, or a repository
+/// publishes a new revision, the old blobs stay: nothing collects them, and
+/// they are invisible because the snapshot looks correct. One repository here
+/// was holding 17.6 GiB of blobs for 5 GiB of actual files.
+///
+/// A blob no snapshot links to is unreachable through the cache, so removing
+/// it cannot break a model that is installed.
+pub fn find_orphans(paths: &AppPaths) -> Orphans {
+    let hub = paths.hf_hub();
+    let mut bytes = 0u64;
+    let mut files = 0usize;
+    let mut repos: Vec<(String, u64)> = Vec::new();
+
+    let Ok(entries) = std::fs::read_dir(&hub) else {
+        return Orphans {
+            bytes,
+            files,
+            repos,
+        };
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.join("blobs").is_dir() {
+            continue;
+        }
+        let live = linked_blobs(&dir.join("snapshots"));
+        let mut repo_bytes = 0u64;
+        if let Ok(blobs) = std::fs::read_dir(dir.join("blobs")) {
+            for blob in blobs.flatten() {
+                let path = blob.path();
+                // An in-flight download is not an orphan.
+                if path.extension().is_some_and(|e| e == "incomplete") {
+                    continue;
+                }
+                let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                    continue;
+                };
+                if is_linked(&live, &path) {
+                    continue;
+                }
+                repo_bytes += meta.len();
+                files += 1;
+            }
+        }
+        if repo_bytes > 0 {
+            bytes += repo_bytes;
+            repos.push((
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .replace("models--", "")
+                    .replace("--", "/"),
+                repo_bytes,
+            ));
+        }
+    }
+    repos.sort_by_key(|r| std::cmp::Reverse(r.1));
+    Orphans {
+        bytes,
+        files,
+        repos,
+    }
+}
+
+/// Is this blob one the snapshots point at?
+///
+/// Compared after resolving both sides. The snapshot side is canonical
+/// because it is reached through a symlink; the blob side is not, and on a
+/// models directory that is itself a symlink -- which relocating to an
+/// external drive produces -- the two spellings differ and every live blob
+/// looks unreferenced.
+fn is_linked(live: &std::collections::HashSet<PathBuf>, blob: &std::path::Path) -> bool {
+    live.contains(blob) || std::fs::canonicalize(blob).is_ok_and(|real| live.contains(&real))
+}
+
+/// Every blob path the snapshots currently point at.
+fn linked_blobs(snapshots: &std::path::Path) -> std::collections::HashSet<PathBuf> {
+    let mut live = std::collections::HashSet::new();
+    let mut stack = vec![snapshots.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(real) = std::fs::canonicalize(&path) {
+                live.insert(real);
+            }
+        }
+    }
+    live
+}
+
+/// Delete the blobs `find_orphans` reported, returning the bytes recovered.
+pub fn sweep_orphans(paths: &AppPaths) -> Result<u64> {
+    let hub = paths.hf_hub();
+    let mut freed = 0u64;
+    let Ok(entries) = std::fs::read_dir(&hub) else {
+        return Ok(0);
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.join("blobs").is_dir() {
+            continue;
+        }
+        let live = linked_blobs(&dir.join("snapshots"));
+        let Ok(blobs) = std::fs::read_dir(dir.join("blobs")) else {
+            continue;
+        };
+        for blob in blobs.flatten() {
+            let path = blob.path();
+            if path.extension().is_some_and(|e| e == "incomplete") {
+                continue;
+            }
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if is_linked(&live, &path) {
+                continue;
+            }
+            // A failure here is not worth abandoning the sweep for: the file
+            // stays, and the next run will try it again.
+            if std::fs::remove_file(&path).is_ok() {
+                freed += meta.len();
+            }
+        }
+    }
+    Ok(freed)
+}
+
 /// Read the stored Hugging Face access token, if there is one.
 pub fn hf_token(paths: &AppPaths) -> Option<String> {
     let raw = std::fs::read_to_string(paths.hf_token()).ok()?;
@@ -719,5 +863,58 @@ mod tests {
 
         set_hf_token(&paths, "  ").unwrap();
         assert!(hf_token(&paths).is_none(), "blanking it forgets it");
+    }
+
+    /// A blob nothing points at is waste; one that is linked is a model.
+    #[test]
+    fn only_unlinked_blobs_are_orphans() {
+        let tmp = Scratch::new();
+        let paths = AppPaths::at(tmp.path.clone());
+        let repo = paths.hf_hub().join("models--owner--model");
+        let blobs = repo.join("blobs");
+        let snap = repo.join("snapshots").join("abc");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::create_dir_all(&snap).unwrap();
+
+        let live = blobs.join("aaaa");
+        let dead = blobs.join("bbbb");
+        std::fs::write(&live, vec![0u8; 4096]).unwrap();
+        std::fs::write(&dead, vec![0u8; 8192]).unwrap();
+        // The snapshot links only the first.
+        std::os::unix::fs::symlink(&live, snap.join("weights.safetensors")).unwrap();
+
+        let found = find_orphans(&paths);
+        assert_eq!(found.files, 1, "the linked blob must not be counted");
+        assert_eq!(found.bytes, 8192);
+
+        let freed = sweep_orphans(&paths).unwrap();
+        assert_eq!(freed, 8192);
+        assert!(live.exists(), "the installed model must survive the sweep");
+        assert!(!dead.exists());
+    }
+
+    /// An in-flight download is not rubbish.
+    #[test]
+    fn a_download_in_progress_is_left_alone() {
+        let tmp = Scratch::new();
+        let paths = AppPaths::at(tmp.path.clone());
+        let repo = paths.hf_hub().join("models--owner--model");
+        std::fs::create_dir_all(repo.join("blobs")).unwrap();
+        std::fs::create_dir_all(repo.join("snapshots")).unwrap();
+        let partial = repo.join("blobs").join("cccc.incomplete");
+        std::fs::write(&partial, vec![0u8; 2048]).unwrap();
+
+        assert_eq!(find_orphans(&paths).files, 0);
+        sweep_orphans(&paths).unwrap();
+        assert!(partial.exists(), "a running download must not be swept");
+    }
+
+    #[test]
+    fn a_cache_with_nothing_to_collect_reports_nothing() {
+        let tmp = Scratch::new();
+        let paths = AppPaths::at(tmp.path.clone());
+        let found = find_orphans(&paths);
+        assert_eq!(found.bytes, 0);
+        assert_eq!(sweep_orphans(&paths).unwrap(), 0);
     }
 }
