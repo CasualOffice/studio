@@ -31,6 +31,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # The runner's own python3 is Homebrew's and refuses pip installs under
+      # PEP 668. CI uses this for the same reason.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - uses: actions/cache@v4
         with:
           path: |
@@ -52,8 +58,8 @@ jobs:
 
       - name: Engine tests
         run: |
-          python3 -m pip install --quiet pillow pillow-heif cryptography
-          python3 engine/test_worker.py
+          python -m pip install --quiet pillow pillow-heif cryptography
+          python engine/test_worker.py
 
       - name: Build
         run: npm run tauri build -- --bundles app,dmg
