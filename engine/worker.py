@@ -1003,7 +1003,10 @@ MOTION_DIRECTION_SYSTEM = (
     "rising, swaying. Never 'suddenly', 'quickly' or 'explodes'. No cuts, no "
     "scene changes.\n"
     "4. Never write 'cinematic', 'stunning', 'high quality' or '4k'.\n"
-    "5. If the request names no thing at all, reply with exactly: UNCLEAR\n\n"
+    "5. If you are told what the picture shows, the clip starts from that "
+    "picture: say how what is already there moves, and introduce nothing it "
+    "does not contain.\n"
+    "6. If the request names no thing at all, reply with exactly: UNCLEAR\n\n"
     "Reply with the rewritten request on one line and nothing else.\n\n"
     "Examples\n"
     "Request: steam from a teapot\n"
@@ -1044,6 +1047,28 @@ _MAX_EXPANSION = 5
 _MAX_NEW_THINGS = 4
 
 
+# Endings English adds to a word that is still the same word. Ordered longest
+# first so "running" loses "ing" rather than "g".
+_INFLECTIONS = ("ing", "ies", "ed", "es", "s")
+
+
+def _stem(word: str) -> str:
+    """Reduce a word to something two inflections of it share.
+
+    Comparing by a fixed prefix does not survive English: "rises" and "rising"
+    agree on only three letters, so a four-letter prefix decided the word had
+    been dropped and threw away a correct rewrite. Every prompt with a verb in
+    it was at risk, which for a video prompt is all of them.
+    """
+    w = word.lower()
+    for suffix in _INFLECTIONS:
+        if len(w) > len(suffix) + 2 and w.endswith(suffix):
+            w = w[: -len(suffix)]
+            break
+    # "carries" -> "carri" -> "carry" territory: normalise the trailing i.
+    return w[:-1] + "y" if w.endswith("i") else w
+
+
 def _clarified(original: str, raw: str) -> str | None:
     """Take the model's rewrite, or reject it.
 
@@ -1078,9 +1103,11 @@ def _clarified(original: str, raw: str) -> str | None:
     # asks whether *any* of it survived, which let "an old bicycle against a
     # brick wall" come back as a bicycle with no wall -- the clarification
     # quietly deleting half the request.
+    kept = {_stem(g) for g in _significant(line)}
     missing = [w for w in _significant(original)
-               if not any(g.startswith(w[:4]) or w.startswith(g[:4])
-                          for g in _significant(line))]
+               if not any(_stem(w) == k or k.startswith(_stem(w))
+                          or _stem(w).startswith(k)
+                          for k in kept)]
     if missing:
         return None
 
@@ -2105,7 +2132,11 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     raw_staged = _stage_vault_inputs(req.get("vault_inputs") or [])
     staged = _downscale_for_assist(raw_staged)
     try:
+        # Both of these read the picture first. An edit needs to know which
+        # jacket is meant; a clip starting from a photograph needs to know
+        # what is in it before it can say how it moves.
         editing = mode == "edit" and bool(staged)
+        animating = mode == "video" and bool(staged)
 
         def ask(text: str, images: list[str], max_tokens: int, temperature: float) -> str:
             # Only the picture-reading path needs the vision model, and it is
@@ -2138,8 +2169,19 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                   "progress": None, "message": "Writing the prompt"})
             system = (MOTION_DIRECTION_SYSTEM if mode == "video"
                       else SCENE_DIRECTION_SYSTEM)
+            seen = ""
+            if animating:
+                # What the picture holds, so the motion belongs to it rather
+                # than to the words alone.
+                emit({"id": req_id, "type": "progress", "phase": "denoise",
+                      "progress": None, "message": "Looking at your picture"})
+                facts = _parse_scene(ask(SCENE_SYSTEM, staged, 90, 0.1))
+                seen = "; ".join(f"{k.lower()}: {v}" for k, v in facts.items())
+                description = seen
             # The writer, not the picture-reader: this is a writing task.
-            raw = _write(req_id, system, f"Request: {user_prompt}",
+            raw = _write(req_id, system,
+                         (f"The picture shows: {seen}\n" if seen else "")
+                         + f"Request: {user_prompt}",
                          repo=req.get("writer"))
             improved = _clarified(user_prompt, raw)
             description = ""

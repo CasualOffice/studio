@@ -72,13 +72,18 @@ export default function Video({
     setAssisting(true);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
     try {
-      const r = await api.assistPrompt(id, prompt, "video", []);
+      // Hand it the starting picture when there is one: a clip that animates
+      // a photograph should describe how that photograph moves, not invent a
+      // scene from the words alone.
+      const r = await api.assistPrompt(id, prompt, "video", firstFrame);
       if (r.unclear) {
         notify(r.note ?? "Say what should be in the clip first.", true);
         return;
       }
       setPrompt(r.prompt);
-      notify("Made your prompt specific, and said how it moves.");
+      notify(r.saw_image
+        ? "Described how your picture moves."
+        : "Made your prompt specific, and said how it moves.");
     } catch (e) {
       notify(errText(e), true);
     } finally {

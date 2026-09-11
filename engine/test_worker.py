@@ -572,6 +572,20 @@ class Clarification(unittest.TestCase):
         self.assertIsNone(worker._clarified("make it look better", "UNCLEAR"))
         self.assertIsNone(worker._clarified("something nice", "  unclear  "))
 
+    def test_an_inflected_verb_still_counts_as_kept(self):
+        # "rises" and "rising" share three letters, and a four-letter prefix
+        # decided the word had been dropped -- so a correct rewrite of any
+        # prompt containing a verb was thrown away.
+        for original, rewrite in (
+            ("steam rises from the teapot", "steam rising from a glazed teapot"),
+            ("a man runs", "a man running along a wet road"),
+            ("she moves closer", "she moving closer, one hand out"),
+            ("leaves fall", "leaves falling through cold air"),
+            ("he carries a bag", "he carrying a canvas bag"),
+        ):
+            with self.subTest(original=original):
+                self.assertIsNotNone(worker._clarified(original, rewrite))
+
     def test_a_dropped_subject_is_rejected(self):
         # "an old bicycle against a brick wall" came back without the wall.
         self.assertIsNone(worker._clarified(
