@@ -1621,6 +1621,84 @@ def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             "panels": len(staged)}
 
 
+ENRICH_SYSTEM = (
+    "You are a storyboard artist working up one panel into something that can "
+    "be drawn.\n\n"
+    "You are given the moment, and the style the board is drawn in. Write what "
+    "the camera sees.\n\n"
+    "Rules:\n"
+    "1. Everything the panel already states must survive. You are adding to "
+    "it, not replacing it.\n"
+    "2. Add only what the moment implies -- the surface a thing rests on, what "
+    "is behind it, where the light comes from, what the weather is doing. "
+    "Never a new character, never an event.\n"
+    "3. Say where the light is and what it is doing. A panel with no stated "
+    "light is drawn with no light.\n"
+    "4. Describe only what is visible. No sound, no thought, no dialogue.\n"
+    "5. Never write 'beautiful', 'cinematic', 'dramatic', 'high quality' or "
+    "'masterpiece'. They describe nothing.\n\n"
+    "One paragraph, at most forty words, no preamble.\n\n"
+    "Example\n"
+    "Panel: medium shot. Anna stands at the kitchen window. kitchen.\n"
+    "A narrow kitchen, rain running down the glass in front of her. Grey "
+    "afternoon light from outside, no lamp on. Worn wooden worktop, a cup "
+    "steaming beside the sink, allotments blurred beyond the window.\n"
+)
+
+
+def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
+    """Work each panel up into a scene the generator can draw.
+
+    The division gives the moments, which are deliberately terse -- "stands in
+    the hallway" is the right level for judging whether the story was cut
+    correctly, and far too thin to draw. This is the stage between: it fills
+    in surface, background and light, and nothing else. Kept separate so the
+    result can be read and corrected before any of it is drawn, which is the
+    whole point of a pipeline over a single button.
+    """
+    panels: list[dict[str, Any]] = list(req.get("panels") or [])
+    if not panels:
+        raise ValueError("divide the story into panels first")
+
+    style = (req.get("style") or "").strip()
+    writer = req.get("writer")
+    out: list[dict[str, Any]] = []
+
+    for i, p in enumerate(panels):
+        if is_cancelled(req_id):
+            raise Cancelled()
+        emit({"id": req_id, "type": "progress", "phase": "denoise",
+              "progress": (i / len(panels)) if panels else None,
+              "message": f"Working up panel {i + 1} of {len(panels)}"})
+
+        moment = ". ".join(x for x in (
+            f"{p.get('shot', 'medium')} shot",
+            str(p.get("subject", "")).strip(),
+            str(p.get("action", "")).strip(),
+            str(p.get("setting", "")).strip(),
+        ) if x)
+        user = f"Style: {style}\nPanel: {moment}."
+        try:
+            raw = _write(req_id, ENRICH_SYSTEM, user, max_tokens=140,
+                         temperature=0.4, repo=writer)
+        except Cancelled:
+            raise
+        except Exception as exc:
+            log(req_id, f"panel {i + 1} not enriched: {exc}", "warn")
+            out.append({**p, "scene": ""})
+            continue
+
+        scene = " ".join(raw.strip().splitlines()[0].split())
+        # An enrichment that dropped the moment is worse than none: the panel
+        # would be drawn as something the story does not contain.
+        if scene and not _keeps_intent(moment, scene):
+            log(req_id, f"panel {i + 1} enrichment lost the moment; keeping it plain", "warn")
+            scene = ""
+        out.append({**p, "scene": scene[:400]})
+
+    return {"panels": out}
+
+
 def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     """Turn a story into an ordered list of panels.
 
@@ -3007,6 +3085,7 @@ OPS = {
     "unload": op_unload,
     "assist": op_assist,
     "shotlist": op_shotlist,
+    "enrich_panels": op_enrich_panels,
     "compose_board": op_compose_board,
     "unload_assistant": op_unload_assistant,
     "set_memory": op_set_memory,

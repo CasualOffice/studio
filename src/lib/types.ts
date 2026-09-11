@@ -251,4 +251,8 @@ export interface Panel {
   character_in_frame: boolean;
   /** One line of narration under the panel. Empty when it needs no words. */
   caption: string;
+  /** The worked-up scene: surface, background, light. Empty until the panel
+   *  has been through the enrich stage, and the prompt falls back to the
+   *  terse fields when it is. */
+  scene?: string;
 }

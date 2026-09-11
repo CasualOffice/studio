@@ -40,7 +40,15 @@ export function panelPrompt(
   const who = panel.character_in_frame
     ? [character.trim(), panel.subject.trim()].filter(Boolean).join(", ")
     : panel.subject.trim();
-  return [styleWords(style), `${panel.shot} shot`, who, panel.action, panel.setting]
+  // A worked-up scene already carries the setting, the surface and the light,
+  // so it replaces the terse fields rather than being appended to them --
+  // otherwise the panel is described twice, once thinly and once properly,
+  // and the model has to reconcile them.
+  const scene = (panel.scene ?? "").trim();
+  const body = scene
+    ? [who, scene]
+    : [who, panel.action, panel.setting];
+  return [styleWords(style), `${panel.shot} shot`, ...body]
     .map((b) => b.trim())
     .filter(Boolean)
     .join(". ") + ".";

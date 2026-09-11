@@ -56,6 +56,8 @@ export const api = {
     invoke<{ panels: Panel[]; asked: number }>(
       "shot_list", { jobId, story, panels }
     ),
+  enrichPanels: (jobId: string, panels: Panel[], style: string) =>
+    invoke<{ panels: Panel[] }>("enrich_panels", { jobId, panels, style }),
   composeBoard: (jobId: string, panels: string[], captions: string[]) =>
     invoke<string>("compose_board", { jobId, panels, captions }),
   hfTokenStatus: () =>

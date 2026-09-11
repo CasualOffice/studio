@@ -1429,6 +1429,43 @@ mod tests {
     }
 }
 
+/// Work each panel up into a scene that can be drawn.
+///
+/// Separate from dividing the story on purpose. The division is terse because
+/// terse is what you need to judge whether the story was cut correctly; this
+/// is the stage that fills in surface, background and light, and it is worth
+/// reading before anything is drawn.
+#[tauri::command]
+pub async fn enrich_panels(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+    panels: serde_json::Value,
+    style: String,
+) -> Result<serde_json::Value> {
+    state.require_unlocked()?;
+
+    let host = HostInfo::probe(&state.paths());
+    let writer = models::find(&state.paths(), &host, "qwen3-4b-instruct-4bit")
+        .ok_or_else(|| AppError::msg("the prompt writer is missing from the catalog"))?;
+    if !writer.installed {
+        return Err(AppError::msg(
+            "Working up the panels needs the prompt writer. Add it from the \
+             Models tab \u{2014} it is a 2.1 GiB download and runs entirely on \
+             this Mac.",
+        ));
+    }
+
+    let engine = state.engine(&app).await?;
+    engine
+        .request(
+            &job_id,
+            "enrich_panels",
+            json!({ "panels": panels, "style": style, "writer": writer.repo }),
+        )
+        .await
+}
+
 /// Stack the drawn panels into one page, captions underneath.
 ///
 /// Composed in the engine rather than the browser because the panels are

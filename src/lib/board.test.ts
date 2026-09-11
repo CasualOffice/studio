@@ -64,6 +64,41 @@ describe("panelPrompt", () => {
   });
 });
 
+describe("panelPrompt with a worked-up scene", () => {
+  it("uses the scene instead of the terse fields", () => {
+    // A worked-up scene already carries the setting and the light. Appending
+    // the thin version too describes the panel twice and leaves the model to
+    // reconcile them.
+    const out = panelPrompt(
+      panel({ action: "stands in the hallway", setting: "a flat",
+              scene: "A narrow hallway, faded linoleum, dim light from a corner lamp." }),
+      "anime", CHAR);
+    expect(out).toContain("faded linoleum");
+    expect(out).not.toContain("a flat");
+  });
+
+  it("falls back to the terse fields when the scene is empty", () => {
+    const out = panelPrompt(panel({ scene: "" }), "anime", CHAR);
+    expect(out).toContain("stands in the hallway");
+    expect(out).toContain("a narrow flat");
+  });
+
+  it("falls back when the scene is absent entirely", () => {
+    const p = panel();
+    delete (p as { scene?: string }).scene;
+    expect(panelPrompt(p, "anime", CHAR)).toContain("a narrow flat");
+  });
+
+  it("still leaves the character out of a panel they are not in", () => {
+    const out = panelPrompt(
+      panel({ character_in_frame: false, subject: "a kitchen tap",
+              scene: "Water running into a steel sink, grey daylight." }),
+      "anime", CHAR);
+    expect(out).not.toContain("red scarf");
+    expect(out).toContain("a kitchen tap");
+  });
+});
+
 describe("sheetPrompt", () => {
   it("asks for a neutral reference, not a scene", () => {
     const out = sheetPrompt("anime", CHAR);

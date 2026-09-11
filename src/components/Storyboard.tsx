@@ -3,7 +3,7 @@ import { api, errText, newJobId, onEngineProgress, vaultUrl } from "../lib/api";
 import type { EngineProgress, ModelStatus, Panel } from "../lib/types";
 import { ImageDrop, JobProgress } from "./shared";
 import { loadPref, savePref } from "../lib/prefs";
-import { STYLES, panelPrompt, panelSeed, sheetPrompt } from "../lib/board";
+import { STYLES, panelPrompt, panelSeed, sheetPrompt, styleWords } from "../lib/board";
 
 /**
  * A story, divided into panels, drawn as one consistent character.
@@ -19,7 +19,7 @@ import { STYLES, panelPrompt, panelSeed, sheetPrompt } from "../lib/board";
 const PANEL_W = 512;
 const PANEL_H = 512;
 
-type Stage = "idle" | "dividing" | "casting" | "drawing";
+type Stage = "idle" | "dividing" | "enriching" | "casting" | "drawing";
 
 export default function Storyboard({
   models, notify, onProduced,
@@ -223,6 +223,31 @@ export default function Storyboard({
     }
   };
 
+  /** Work each panel up into a scene: surface, background, light.
+   *
+   *  Its own step, and readable before anything is drawn. The division is
+   *  terse on purpose -- that is the right level for judging whether the
+   *  story was cut correctly -- and far too thin to draw from.
+   */
+  const enrich = async () => {
+    if (!panels) return;
+    const id = newJobId();
+    setStage("enriching"); setJobId(id);
+    const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
+    try {
+      const r = await api.enrichPanels(id, panels, styleWords(style));
+      setPanels(r.panels);
+      const filled = r.panels.filter((p) => (p.scene ?? "").trim()).length;
+      notify(filled === r.panels.length
+        ? "Every panel worked up. Read them before drawing."
+        : `${filled} of ${r.panels.length} worked up; the rest stay as written.`);
+    } catch (e) {
+      notify(errText(e), true);
+    } finally {
+      un(); setStage("idle"); setProg(null); setJobId(null);
+    }
+  };
+
   /** Change one field of one panel. The division is a draft, not a verdict. */
   const edit = (i: number, patch: Partial<Panel>) =>
     setPanels((ps) => {
@@ -388,6 +413,11 @@ export default function Storyboard({
               {stage === "dividing" ? "Dividing…" : "Break into panels"}
             </button>
             {panels && (
+              <button className="btn small" disabled={busy} onClick={() => void enrich()}>
+                {stage === "enriching" ? "Working up…" : "Add detail"}
+              </button>
+            )}
+            {panels && (
               <button className="btn primary small" disabled={busy} onClick={draw}>
                 {stage === "drawing" ? `Drawing ${done}/${panels.length}…`
                   : stage === "casting" ? "Casting…"
@@ -508,6 +538,14 @@ export default function Storyboard({
                              fontStyle: p.caption ? "italic" : "normal" }}
                     onChange={(e) => edit(i, { caption: e.target.value })}
                   />
+                  {(p.scene ?? "").trim() && (
+                    <textarea
+                      value={p.scene} disabled={busy} rows={3}
+                      style={{ fontSize: 11.5, padding: "5px 6px", marginTop: 3,
+                               color: "var(--text-dim)" }}
+                      onChange={(e) => edit(i, { scene: e.target.value })}
+                    />
+                  )}
                 </div>
               </div>
             ))}
