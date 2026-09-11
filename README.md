@@ -1,10 +1,54 @@
-# Model Studio
+<div align="center">
+  <img src="docs/logo.svg" alt="Model Studio" width="96" height="96">
 
-A macOS desktop app for running open image-generation and image-editing models
-locally on Apple Silicon, with everything it produces encrypted at rest.
+  <h1>Model Studio</h1>
+
+  <p>
+    <b>Image models that run on your Mac and nothing else.</b><br>
+    Generate, edit, upscale, and turn a story into an illustrated page —
+    entirely offline, with everything encrypted at rest.
+  </p>
+
+  <p>
+    <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Apple%20Silicon-black">
+    <img alt="licence" src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue">
+    <img alt="tests" src="https://img.shields.io/badge/tests-117-green">
+  </p>
+</div>
+
+---
+
+Nothing leaves the machine. No account, no API key, no telemetry, no cloud
+inference. The models run on Apple's MLX framework, and everything the app
+produces is sealed with ChaCha20-Poly1305 before it touches disk.
+
+That matters for work you are contractually unable to paste into a hosted
+tool — an unreleased script, a client brief under NDA, anything you would
+rather not upload.
 
 Tauri 2 (Rust) shell, React frontend, and a long-lived Python sidecar that
-drives [MLX-Gen](https://github.com/lpalbou/mlx-gen) on Apple's MLX framework.
+drives [MLX-Gen](https://github.com/lpalbou/mlx-gen) and
+[mflux](https://github.com/filipstrand/mflux).
+
+## What it does
+
+- **Generate** — text to image, with live previews as the picture forms.
+- **Edit** — instruction editing, inpainting with a painted mask, outpainting,
+  latent image-to-image, and reference-guided edits.
+- **Board** — write a story in prose and get an illustrated page: the story is
+  divided into panels, one character is cast once, and every panel is drawn
+  against that sheet so the same person appears throughout. Captions optional,
+  composed into a single vertical page.
+- **Upscale** — SeedVR2 restoration, roughly six seconds for a 2x.
+- **Video** — text to video. See [the limits](#video) before expecting much.
+- **Prompt help** — makes a request precise without inventing a scene, and can
+  read the picture you are editing to say *which* jacket you meant.
+- **Vault** — everything produced is encrypted at rest, unlocked by passphrase
+  (or Touch ID, given a signed build), and exported only when you ask.
+
+Measured timings for all of this are in
+[docs/measurements.md](docs/measurements.md) — taken on a 16 GB M4, not
+estimated.
 
 ## Licence
 
@@ -174,12 +218,29 @@ desktop application can promise otherwise, and this one does not.
 The vault locks on window close and after 15 minutes idle; locking zeroizes the
 data key and releases model weights.
 
-## Wan and video
+## Video
+
+<a name="video"></a>Text to video works. **Animating a still does not, on a
+16 GB machine**, and it is worth being plain about why.
 
 Wan 2.5 and 2.6 have no public weights — Alibaba released them as a cloud API
-only. Wan 2.1 and 2.2 are the open ones. Wan 2.2 is in the catalog and marked
-unreachable here: T2V-A14B peaks at 33 GiB for a 384x224, 33-frame clip, and
-TI2V-5B at 103.7 GiB at 1280x704.
+only. Of the open ones:
+
+| Model | Fits 16 GB | Takes a still |
+|---|---|---|
+| Wan 2.1 VACE 1.3B | yes | **no** — transforms existing footage, raises on `image_path` |
+| Wan 2.2 TI2V-5B | no (103.7 GiB peak) | yes |
+| Wan 2.2 T2V-A14B | no (33 GiB peak) | no |
+| MiniMax-H3 | no (464 GiB repo) | yes |
+| Bernini-R 1.3B | yes | yes, untested here |
+
+Video models also want more canvas than fits: VACE is trained at 832x480 and
+Bernini outputs 480p, while 9.5 GiB peak was measured at 320x192 with 17
+frames. Running well below native resolution is its own quality problem.
+
+The app refuses rather than pretending. Choose a model that cannot take a
+still and it says so, instead of silently dropping the picture and returning
+an unrelated clip — which is what it used to do.
 
 ## Distribution
 
@@ -348,14 +409,12 @@ and the memory controls.
   This is safe here because the Rust host enforces the same policy one level up
   -- it refuses to start a job unless the model is installed, and checks the
   disk budget before any download.
-- **SeedVR2 upscaling and the prompt assistant cannot coexist.** SeedVR2 passes
-  computed values as `mx.repeat`'s `repeats` argument, which mlx 0.31.0 accepts
-  as a 0-d array and 0.31.2 rejects with a `TypeError`. But mlx-vlm needs
-  `mx.new_thread_local_stream`, absent before 0.31.2. Since MLX-Gen also caps
-  mlx below 0.32, no single version satisfies both. The install pins
-  **mlx 0.31.2** — generation, editing and the prompt assistant all work, and
-  SeedVR2 is marked unavailable in the catalog. Downgrading to 0.31.0 reverses
-  the trade.
+- **Upscaling is not a generation capability.** `get_model_capabilities()`
+  reports SeedVR2 with zero modes, because restoration lives in a separate
+  `ModelCapabilities.restoration` field. Reading only `capabilities` makes four
+  working upscalers look broken — which is exactly what happened here, and the
+  catalog carried a wrong "unavailable" note for some time as a result. Both
+  fields are read now.
 - **The scheduler needs at least two steps.** `FlowMatchEulerDiscreteScheduler`
   rejects `num_inference_steps=1`, so the UI's step slider starts at 2.
 
