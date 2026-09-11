@@ -492,8 +492,20 @@ export default function Storyboard({
               nothing; fixing it afterwards costs a minute of drawing.
             </div>
             {panels.map((p, i) => (
-              <div key={i} style={{ display: "flex", gap: 11, marginBottom: 15,
-                                    alignItems: "flex-start" }}>
+              <div key={`g${i}`}>
+              {(p.place ?? "").trim()
+                && (i === 0 || panels[i - 1].scene !== p.scene) && (
+                <div style={{ fontSize: 10.5, color: "var(--text-dim)",
+                              background: "var(--bg-sunk)", borderRadius: 5,
+                              padding: "7px 9px", margin: "4px 0 10px",
+                              lineHeight: 1.5 }}>
+                  <b>{p.scene_title || `Scene ${p.scene ?? 1}`}</b> — every
+                  panel here is drawn in this place:
+                  <div style={{ marginTop: 3 }}>{p.place}</div>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 11, marginBottom: 15,
+                            alignItems: "flex-start" }}>
                 <div style={{
                   width: 92, height: 92, flex: "0 0 92px", borderRadius: 6,
                   background: "var(--bg-sunk)", overflow: "hidden",
@@ -592,6 +604,7 @@ export default function Storyboard({
                     />
                   )}
                 </div>
+              </div>
               </div>
             ))}
           </div>

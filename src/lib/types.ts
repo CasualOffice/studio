@@ -256,6 +256,9 @@ export interface Panel {
   scene_title?: string;
   /** What is spoken aloud in this panel. Usually empty. */
   dialogue?: { speaker: string; text: string }[];
+  /** The scene's location, settled once and shared by every panel in it.
+   *  Without this each panel invented its own version of the same room. */
+  place?: string;
   /** The worked-up description: surface, background, light. Empty until the
    *  panel has been through the enrich stage, and the prompt falls back to
    *  the terse fields when it is. Distinct from `scene`, which is a number. */

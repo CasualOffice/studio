@@ -788,5 +788,61 @@ class Pagination(unittest.TestCase):
         pages = worker._paginate([1] * 17)
         self.assertTrue(all(len(p) <= worker.PAGE_MAX for p in pages), pages)
 
+
+class ModuleIntegrity(unittest.TestCase):
+    """Names the module uses must exist.
+
+    A constant was once deleted by a block rewrite whose replacement ran to
+    the next `def`, and the function referencing it only fails when it runs --
+    which needs a model, so no test reached it and the break shipped. This
+    reads the module rather than running it.
+    """
+
+    def _tree(self):
+        import ast
+
+        return ast.parse(open(os.path.join(HERE, "worker.py")).read())
+
+    def test_no_module_constant_is_referenced_without_being_defined(self):
+        import ast
+        import builtins
+
+        tree = self._tree()
+        defined = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                defined |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                defined.add(node.target.id)
+            elif isinstance(node, ast.Tuple) and isinstance(
+                    getattr(node, "ctx", None), ast.Store):
+                defined |= {e.id for e in node.elts if isinstance(e, ast.Name)}
+            elif isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                defined.add(node.name)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                defined |= {(a.asname or a.name).split(".")[0] for a in node.names}
+
+        used = {n.id for n in ast.walk(tree)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+                and n.id.isupper() and len(n.id) > 3}
+        missing = sorted(used - defined - set(dir(builtins)))
+        self.assertEqual(missing, [], f"referenced but never defined: {missing}")
+
+    def test_every_dispatched_op_exists(self):
+        import ast
+
+        tree = self._tree()
+        functions = {n.name for n in ast.walk(tree)
+                     if isinstance(n, ast.FunctionDef)}
+        dispatched = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "OPS" for t in node.targets):
+                for v in node.value.values:
+                    if isinstance(v, ast.Name):
+                        dispatched.add(v.id)
+        self.assertTrue(dispatched, "the op table was not found")
+        self.assertEqual(sorted(dispatched - functions), [])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

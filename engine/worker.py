@@ -1893,6 +1893,95 @@ def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             "panels": n, "layout": layout}
 
 
+PLACE_SYSTEM = (
+    "You are the background artist on a comic. You are told everything that "
+    "happens in one scene, and you describe the place it happens in -- once, "
+    "so every panel of that scene can be drawn as the same room.\n\n"
+    "Rules:\n"
+    "1. Describe the place, not the action. No people, no events.\n"
+    "2. Be specific about what does not change: the walls and what is on "
+    "them, the floor, the furniture, the windows and what is beyond them, and "
+    "where the light comes from.\n"
+    "3. Name materials and colours. 'A room' is drawn differently every time; "
+    "'dark green wallpaper with a repeating leaf pattern, bare oak boards' is "
+    "not.\n"
+    "4. Decide anything the scene leaves open -- that is the job -- but never "
+    "contradict what it does say.\n"
+    "5. Never write 'beautiful', 'cinematic' or 'atmospheric'.\n\n"
+    "One paragraph, at most fifty words, no preamble.\n"
+)
+
+
+def _establish_places(req_id: str, panels: list[dict[str, Any]],
+                      style: str, writer: str | None) -> dict[int, str]:
+    """Describe each scene's location once, for every panel in it to share.
+
+    Panels were described one at a time, so the same room came back as floral
+    wallpaper in one and cracked plaster in the next -- nothing was holding
+    the place still. Settling it per scene is what makes consecutive frames
+    look like the same house.
+    """
+    by_scene: dict[int, list[dict[str, Any]]] = {}
+    for p in panels:
+        by_scene.setdefault(int(p.get("scene", 1) or 1), []).append(p)
+
+    places: dict[int, str] = {}
+    for n, (scene, group) in enumerate(sorted(by_scene.items())):
+        if is_cancelled(req_id):
+            raise Cancelled()
+        emit({"id": req_id, "type": "progress", "phase": "denoise",
+              "progress": n / max(len(by_scene), 1),
+              "message": f"Settling the look of scene {scene}"})
+
+        beats = "; ".join(
+            f"{p.get('action', '')} ({p.get('setting', '')})".strip()
+            for p in group if p.get("action") or p.get("setting")
+        )
+        title = next((p.get("scene_title") for p in group if p.get("scene_title")), "")
+        try:
+            raw = _write(req_id, PLACE_SYSTEM,
+                         f"Style: {style}\nScene: {title}\nWhat happens here: {beats}",
+                         max_tokens=150, temperature=0.4, repo=writer)
+            places[scene] = " ".join(raw.strip().splitlines()[0].split())[:400]
+        except Cancelled:
+            raise
+        except Exception as exc:
+            log(req_id, f"scene {scene} place not settled: {exc}", "warn")
+            places[scene] = ""
+    return places
+
+
+ENRICH_SYSTEM = (
+    "You are a storyboard artist working up one panel into something that can "
+    "be drawn.\n\n"
+    "You are given the moment, the style the board is drawn in, and often the "
+    "place it happens in. Write what the camera sees.\n\n"
+    "Rules:\n"
+    "1. Everything the panel already states must survive. You are adding to "
+    "it, not replacing it.\n"
+    "2. If you are told the place, it is already settled. Use it. Do not "
+    "change the walls, the floor, the furniture or where the light comes "
+    "from -- every panel of this scene is the same room, and a reader notices "
+    "when it is not.\n"
+    "3. Add only what the moment implies -- the surface a thing rests on, "
+    "what is behind it, how the light falls on it. Never a new character, "
+    "never an event.\n"
+    "4. Say where the light is and what it is doing. A panel with no stated "
+    "light is drawn with no light.\n"
+    "5. Describe only what is visible. No sound, no thought, no dialogue.\n"
+    "6. Never write 'beautiful', 'cinematic', 'dramatic', 'high quality' or "
+    "'masterpiece'. They describe nothing.\n\n"
+    "One paragraph, at most forty words, no preamble.\n\n"
+    "Example\n"
+    "Place: a narrow kitchen, dark green walls, bare oak boards, one window "
+    "over the sink.\n"
+    "Panel: medium shot. Anna stands at the kitchen window. kitchen.\n"
+    "Anna at the window over the sink, rain running down the glass. Grey "
+    "afternoon light through it, no lamp lit. Dark green walls behind her, "
+    "bare oak boards underfoot, a cup steaming on the draining board.\n"
+)
+
+
 def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     """Work each panel up into a scene the generator can draw.
 
@@ -1909,6 +1998,9 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
 
     style = (req.get("style") or "").strip()
     writer = req.get("writer")
+    # The place first, then the panels within it. Order matters: a panel
+    # described before its room has nothing to be consistent with.
+    places = _establish_places(req_id, panels, style, writer)
     out: list[dict[str, Any]] = []
 
     for i, p in enumerate(panels):
@@ -1924,7 +2016,10 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             str(p.get("action", "")).strip(),
             str(p.get("setting", "")).strip(),
         ) if x)
-        user = f"Style: {style}\nPanel: {moment}."
+        place = places.get(int(p.get("scene", 1) or 1), "")
+        user = (f"Style: {style}\n"
+                + (f"Place, already settled: {place}\n" if place else "")
+                + f"Panel: {moment}.")
         try:
             raw = _write(req_id, ENRICH_SYSTEM, user, max_tokens=140,
                          temperature=0.4, repo=writer)
@@ -1932,7 +2027,8 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             raise
         except Exception as exc:
             log(req_id, f"panel {i + 1} not enriched: {exc}", "warn")
-            out.append({**p, "description": ""})
+            out.append({**p, "description": "",
+                        "place": places.get(int(p.get("scene", 1) or 1), "")})
             continue
 
         text = " ".join(raw.strip().splitlines()[0].split())
@@ -1941,7 +2037,8 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         if text and not _keeps_intent(moment, text):
             log(req_id, f"panel {i + 1} enrichment lost the moment; keeping it plain", "warn")
             text = ""
-        out.append({**p, "description": text[:400]})
+        out.append({**p, "description": text[:400],
+                    "place": places.get(int(p.get("scene", 1) or 1), "")})
 
     return {"panels": out}
 
