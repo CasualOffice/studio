@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { api, errText, newJobId, onEngineProgress, vaultUrl } from "../lib/api";
 import type { EngineProgress, ModelStatus, Panel } from "../lib/types";
 import { JobProgress } from "./shared";
+import { STYLES, panelPrompt, panelSeed, sheetPrompt } from "../lib/board";
 
 /**
  * A story, divided into panels, drawn as one consistent character.
@@ -12,18 +13,6 @@ import { JobProgress } from "./shared";
  * result read as a story rather than a set of unrelated pictures -- the same
  * sheet references every panel, and the same style words lead every prompt.
  */
-
-/** Style is a whole-board decision, not a per-panel one, so it lives here. */
-const STYLES: [string, string, string][] = [
-  ["anime", "Anime",
-   "flat cel-shaded anime illustration, clean linework, muted palette"],
-  ["photo", "Photographic",
-   "photographic, natural skin texture, available light, 35mm, shallow depth of field"],
-  ["ink", "Ink and wash",
-   "black ink illustration with grey wash, visible brushwork, high contrast"],
-  ["paint", "Painted",
-   "digital painting, visible brush strokes, soft edges, muted colour"],
-];
 
 /** Panels are small on purpose: a board is read at a glance, not printed. */
 const PANEL_W = 512;
@@ -56,7 +45,7 @@ export default function Storyboard({
 
   const [story, setStory] = useState("");
   const [count, setCount] = useState(6);
-  const [style, setStyle] = useState(STYLES[0][0]);
+  const [style, setStyle] = useState(STYLES[0].id);
   const [character, setCharacter] = useState("");
 
   const [panels, setPanels] = useState<Panel[] | null>(null);
@@ -66,8 +55,14 @@ export default function Storyboard({
   const [prog, setProg] = useState<EngineProgress | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [done, setDone] = useState(0);
+  /** Set when the user cancels, checked between panels. Cancelling the job in
+   *  flight only ever stopped one panel; the loop then started the next. */
+  const stop = useRef(false);
+  /** How many times each panel has been redrawn, so a retry gets a new seed. */
+  const [redraws, setRedraws] = useState<number[]>([]);
+  const [elapsed, setElapsed] = useState(0);
+  const timer = useRef<number | null>(null);
 
-  const styleWords = STYLES.find((s) => s[0] === style)?.[2] ?? "";
   const busy = stage !== "idle";
 
   /** Step one: divide the prose. Nothing is drawn yet. */
@@ -89,21 +84,6 @@ export default function Storyboard({
     }
   };
 
-  /** The prompt for one panel: style, then what is in frame, then where.
-   *
-   *  The subject matters as much as the action, and the character's
-   *  description only belongs here when they are actually in the panel. A
-   *  close-up of a running tap, handed the protagonist's description, draws
-   *  her running instead of the tap.
-   */
-  const panelPrompt = (p: Panel) => {
-    const who = p.character_in_frame
-      ? [character.trim(), p.subject].filter(Boolean).join(", ")
-      : p.subject;
-    const bits = [styleWords, `${p.shot} shot`, who, p.action, p.setting];
-    return bits.map((b) => b.trim()).filter(Boolean).join(". ") + ".";
-  };
-
   /** Step two: cast the character once, then draw every panel against it. */
   const draw = async () => {
     if (!model) { notify("No model that can both generate and edit is installed.", true); return; }
@@ -113,7 +93,14 @@ export default function Storyboard({
       return;
     }
 
+    stop.current = false;
     setDone(0);
+    setRedraws(new Array(panels.length).fill(0));
+    setElapsed(0);
+    const started = Date.now();
+    if (timer.current) window.clearInterval(timer.current);
+    timer.current = window.setInterval(
+      () => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
     setDrawn(new Array(panels.length).fill(null));
 
     // The sheet is the anchor. Every panel references it, which is the whole
@@ -125,8 +112,7 @@ export default function Storyboard({
     try {
       const res = await api.generate({
         job_id: castId, model_id: model.id,
-        prompt: `${styleWords}. Character reference sheet, full body, neutral `
-              + `pose, plain background. ${character.trim()}.`,
+        prompt: sheetPrompt(style, character),
         negative_prompt: null,
         width: PANEL_W, height: PANEL_H,
         steps: model.steps_default || 4,
@@ -142,6 +128,7 @@ export default function Storyboard({
       onProduced();
     } catch (e) {
       notify(errText(e), true);
+      if (timer.current) { window.clearInterval(timer.current); timer.current = null; }
       un(); setStage("idle"); setProg(null); setJobId(null);
       return;
     }
@@ -151,42 +138,77 @@ export default function Storyboard({
     // and a board of six is minutes of work either way.
     setStage("drawing");
     for (let i = 0; i < panels.length; i++) {
-      const id = newJobId();
-      setJobId(id);
-      un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
-      try {
-        const res = await api.editImage({
-          job_id: id, model_id: model.id,
-          prompt: panelPrompt(panels[i]),
-          negative_prompt: null,
-          width: PANEL_W, height: PANEL_H,
-          steps: model.steps_default || 4,
-          guidance: Math.min(1.0, model.guidance_max),
-          seed: 7 + i, count: 1,
-          images: [sheetId],
-          // "edit" is the reference-conditioned route -- the model is handed
-          // the sheet and the panel description together. "latent" would
-          // instead redraw the sheet itself, which is not what a panel is.
-          image_strength: null, i2i_mode: "edit",
-          low_ram: true, preview: false, cache_limit_gb: null,
-          allow_over_budget: false, loras: [], mask: null,
-          outpaint_padding: null, outpaint_fill: null,
-        });
-        setDrawn((d) => { const n = [...d]; n[i] = res[0] ?? null; return n; });
-        setDone(i + 1);
-        onProduced();
-      } catch (e) {
-        const msg = errText(e);
-        notify(`Panel ${i + 1}: ${msg}`, true);
-        if (msg.includes("ancelled")) break;
-      } finally {
-        un();
-      }
+      if (stop.current) { notify(`Stopped after ${i} panels.`); break; }
+      const ok = await drawOne(i, sheetId);
+      if (!ok && stop.current) break;
     }
+    if (timer.current) { window.clearInterval(timer.current); timer.current = null; }
+    setStage("idle"); setProg(null); setJobId(null);
+  };
+
+  /** Draw a single panel against the sheet. Shared by the run and by redraw,
+   *  so a board with one bad panel costs one panel to fix rather than six. */
+  const drawOne = async (i: number, sheetId: string): Promise<boolean> => {
+    if (!model || !panels) return false;
+    const id = newJobId();
+    setJobId(id);
+    const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
+    try {
+      const res = await api.editImage({
+        job_id: id, model_id: model.id,
+        prompt: panelPrompt(panels[i], style, character),
+        negative_prompt: null,
+        width: PANEL_W, height: PANEL_H,
+        steps: model.steps_default || 4,
+        guidance: Math.min(1.0, model.guidance_max),
+        // Redrawing the same panel with the same seed reproduces the picture
+        // that was already rejected, so a redraw moves the seed on.
+        seed: panelSeed(i, redraws[i] ?? 0),
+        count: 1,
+        images: [sheetId],
+        // "edit" is the reference-conditioned route -- the model is handed
+        // the sheet and the panel description together. "latent" would
+        // instead redraw the sheet itself, which is not what a panel is.
+        image_strength: null, i2i_mode: "edit",
+        low_ram: true, preview: false, cache_limit_gb: null,
+        allow_over_budget: false, loras: [], mask: null,
+        outpaint_padding: null, outpaint_fill: null,
+      });
+      setDrawn((d) => { const n = [...d]; n[i] = res[0] ?? null; return n; });
+      setDone((v) => Math.max(v, i + 1));
+      onProduced();
+      return true;
+    } catch (e) {
+      const msg = errText(e);
+      notify(`Panel ${i + 1}: ${msg}`, true);
+      if (msg.includes("ancelled")) stop.current = true;
+      return false;
+    } finally {
+      un();
+    }
+  };
+
+  /** Change one field of one panel. The division is a draft, not a verdict. */
+  const edit = (i: number, patch: Partial<Panel>) =>
+    setPanels((ps) => {
+      if (!ps) return ps;
+      const n = [...ps];
+      n[i] = { ...n[i], ...patch };
+      return n;
+    });
+
+  /** Redraw one panel, keeping the rest of the board. */
+  const redraw = async (i: number) => {
+    if (!sheet) { notify("Draw the board first.", true); return; }
+    stop.current = false;
+    setRedraws((r) => { const n = [...r]; n[i] = (n[i] ?? 0) + 1; return n; });
+    setStage("drawing");
+    await drawOne(i, sheet);
     setStage("idle"); setProg(null); setJobId(null);
   };
 
   const cancel = async () => {
+    stop.current = true;
     if (jobId) { try { await api.cancelJob(jobId); } catch { /* already gone */ } }
   };
 
@@ -239,7 +261,7 @@ export default function Storyboard({
           <div className="field">
             <label>Style</label>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {STYLES.map(([id, label]) => (
+              {STYLES.map(({ id, label }) => (
                 <button
                   key={id}
                   className={"btn small" + (id === style ? " primary" : "")}
@@ -299,12 +321,20 @@ export default function Storyboard({
               : stage === "casting" ? "Casting the character"
               : `Panel ${done + 1} of ${panels?.length ?? 0}`} />}
 
-          {panels && stage === "idle" && (
+          {panels && stage === "idle" && drawn.every((d) => !d) && (
             <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 9,
                           lineHeight: 1.55 }}>
-              Roughly {Math.round((panels.length + 1) * 50 / 60)} minutes for
-              {" "}{panels.length} panels and the character sheet, at about
-              50 seconds each.
+              Expect roughly {Math.ceil((panels.length + 1) * 0.6)}–
+              {Math.ceil((panels.length + 1) * 2)} minutes for
+              {" "}{panels.length} panels and the character sheet. The range is
+              wide because this Mac slows as it warms: measured panels ran 34
+              seconds cold and 123 seconds after a few minutes of work.
+            </div>
+          )}
+          {stage === "drawing" && elapsed > 0 && (
+            <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 9 }}>
+              {Math.floor(elapsed / 60)}m {elapsed % 60}s elapsed
+              {done > 0 && ` · ${Math.round(elapsed / done)}s a panel so far`}
             </div>
           )}
         </div>
@@ -314,8 +344,13 @@ export default function Storyboard({
         {panels && (
           <div className="panel">
             <h2>{panels.length} panels</h2>
+            <div style={{ fontSize: 10.5, color: "var(--text-faint)",
+                          marginBottom: 11, lineHeight: 1.55 }}>
+              Edit anything here before drawing. Fixing a panel now costs
+              nothing; fixing it afterwards costs a minute of drawing.
+            </div>
             {panels.map((p, i) => (
-              <div key={i} style={{ display: "flex", gap: 11, marginBottom: 13,
+              <div key={i} style={{ display: "flex", gap: 11, marginBottom: 15,
                                     alignItems: "flex-start" }}>
                 <div style={{
                   width: 92, height: 92, flex: "0 0 92px", borderRadius: 6,
@@ -329,15 +364,57 @@ export default function Storyboard({
                     : stage === "drawing" && done === i ? "drawing…" : i + 1}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 10, textTransform: "uppercase",
-                                letterSpacing: "0.06em", color: "var(--text-faint)" }}>
-                    {p.shot}{p.character_in_frame ? "" : " · no character"}
+                  <div style={{ display: "flex", gap: 5, alignItems: "center",
+                                marginBottom: 4 }}>
+                    <select
+                      value={p.shot}
+                      disabled={busy}
+                      style={{ width: "auto", fontSize: 11, padding: "2px 5px" }}
+                      onChange={(e) => edit(i, { shot: e.target.value as Panel["shot"] })}
+                    >
+                      <option value="wide">wide</option>
+                      <option value="medium">medium</option>
+                      <option value="close-up">close-up</option>
+                    </select>
+                    <label style={{ fontSize: 10.5, color: "var(--text-dim)",
+                                    display: "flex", alignItems: "center", gap: 4,
+                                    cursor: "pointer", width: "auto" }}>
+                      <input
+                        type="checkbox"
+                        checked={p.character_in_frame}
+                        disabled={busy}
+                        style={{ width: "auto", margin: 0 }}
+                        onChange={(e) => edit(i, { character_in_frame: e.target.checked })}
+                      />
+                      in frame
+                    </label>
+                    <div style={{ flex: 1 }} />
+                    {drawn[i] && (
+                      <button className="btn small" disabled={busy}
+                              style={{ fontSize: 10.5, padding: "2px 8px" }}
+                              onClick={() => void redraw(i)}>
+                        Redraw
+                      </button>
+                    )}
                   </div>
-                  <div style={{ fontSize: 11.5, marginTop: 2 }}>{p.subject}</div>
-                  <div style={{ fontSize: 12.5, marginTop: 2 }}>{p.action}</div>
-                  <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 2 }}>
-                    {p.setting}
-                  </div>
+                  <input
+                    type="text" value={p.subject} disabled={busy}
+                    placeholder="who or what is in frame"
+                    style={{ fontSize: 12, padding: "4px 6px", marginBottom: 3 }}
+                    onChange={(e) => edit(i, { subject: e.target.value })}
+                  />
+                  <input
+                    type="text" value={p.action} disabled={busy}
+                    placeholder="what is happening"
+                    style={{ fontSize: 12, padding: "4px 6px", marginBottom: 3 }}
+                    onChange={(e) => edit(i, { action: e.target.value })}
+                  />
+                  <input
+                    type="text" value={p.setting} disabled={busy}
+                    placeholder="where"
+                    style={{ fontSize: 12, padding: "4px 6px" }}
+                    onChange={(e) => edit(i, { setting: e.target.value })}
+                  />
                 </div>
               </div>
             ))}
