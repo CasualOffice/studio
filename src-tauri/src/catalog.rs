@@ -495,7 +495,7 @@ pub const CATALOG: &[ModelEntry] = &[
         family: Some("wan"),
         tasks: &[Task::Video],
         quantize: None,
-        package_gib: 16.4,
+        package_gib: 26.9,
         peak_gib: 9.5,
         peak_estimated: false,
         steps_default: 20,
@@ -503,9 +503,10 @@ pub const CATALOG: &[ModelEntry] = &[
         video_from_image: true,
         guidance_default: 4.5,
         guidance_max: 10.0,
-        notes: "Measured at 9.12-9.45 GiB for 17 frames at 320x192. Animates a \
-                still picture. BF16 only; MLX-Gen reports its visual quality \
-                gate as failing, so treat output as experimental.",
+        notes: "The only model here that animates a still picture. Fetches \
+                the whole repository, not a weight subset: 26.9 GiB on disk, \
+                far more than its 1.3B suggests. Measured at 9.12-9.45 GiB of \
+                memory for 17 frames at 320x192.",
         broken: None,
         backend: None,
     },
