@@ -89,16 +89,19 @@ export default function Storyboard({
     }
   };
 
-  /** The prompt for one panel: style, then character, then the moment. */
+  /** The prompt for one panel: style, then what is in frame, then where.
+   *
+   *  The subject matters as much as the action, and the character's
+   *  description only belongs here when they are actually in the panel. A
+   *  close-up of a running tap, handed the protagonist's description, draws
+   *  her running instead of the tap.
+   */
   const panelPrompt = (p: Panel) => {
-    const bits = [
-      styleWords,
-      `${p.shot} shot`,
-      character.trim(),
-      p.action,
-      p.setting,
-    ].map((b) => b.trim()).filter(Boolean);
-    return bits.join(". ") + ".";
+    const who = p.character_in_frame
+      ? [character.trim(), p.subject].filter(Boolean).join(", ")
+      : p.subject;
+    const bits = [styleWords, `${p.shot} shot`, who, p.action, p.setting];
+    return bits.map((b) => b.trim()).filter(Boolean).join(". ") + ".";
   };
 
   /** Step two: cast the character once, then draw every panel against it. */
@@ -161,7 +164,10 @@ export default function Storyboard({
           guidance: Math.min(1.0, model.guidance_max),
           seed: 7 + i, count: 1,
           images: [sheetId],
-          image_strength: null, i2i_mode: "reference",
+          // "edit" is the reference-conditioned route -- the model is handed
+          // the sheet and the panel description together. "latent" would
+          // instead redraw the sheet itself, which is not what a panel is.
+          image_strength: null, i2i_mode: "edit",
           low_ram: true, preview: false, cache_limit_gb: null,
           allow_over_budget: false, loras: [], mask: null,
           outpaint_padding: null, outpaint_fill: null,
@@ -325,8 +331,9 @@ export default function Storyboard({
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 10, textTransform: "uppercase",
                                 letterSpacing: "0.06em", color: "var(--text-faint)" }}>
-                    {p.shot}
+                    {p.shot}{p.character_in_frame ? "" : " · no character"}
                   </div>
+                  <div style={{ fontSize: 11.5, marginTop: 2 }}>{p.subject}</div>
                   <div style={{ fontSize: 12.5, marginTop: 2 }}>{p.action}</div>
                   <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 2 }}>
                     {p.setting}

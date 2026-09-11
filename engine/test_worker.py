@@ -630,6 +630,20 @@ class ShotListParsing(unittest.TestCase):
         panels = worker._parse_shotlist(self.GOOD, 1)
         self.assertEqual(len(panels), 1)
 
+    def test_who_is_in_frame_is_carried_through(self):
+        panels = worker._parse_shotlist(
+            '[{"shot":"close-up","subject":"a tap","action":"water running",'
+            '"setting":"the kitchen","character_in_frame":false}]', 1)
+        self.assertFalse(panels[0]["character_in_frame"])
+
+    def test_a_missing_in_frame_flag_keeps_the_character(self):
+        # A board is mostly about its character; a missing flag must not
+        # quietly write them out of the panel.
+        panels = worker._parse_shotlist(
+            '[{"shot":"wide","subject":"Mira","action":"stands",'
+            '"setting":"a hallway"}]', 1)
+        self.assertTrue(panels[0]["character_in_frame"])
+
     def test_an_unknown_shot_size_falls_back(self):
         panels = worker._parse_shotlist(
             '[{"shot":"dutch angle","subject":"x","action":"y","setting":"z"}]', 1)

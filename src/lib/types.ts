@@ -241,4 +241,6 @@ export interface Panel {
   subject: string;
   action: string;
   setting: string;
+  /** Whether the person we follow is visible in this panel. */
+  character_in_frame: boolean;
 }

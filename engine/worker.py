@@ -1414,7 +1414,15 @@ SHOTLIST_SYSTEM = (
     "3. Each panel is one moment. No cuts inside a panel, no passage of time.\n"
     "4. Vary the shot sizes. A page of close-ups reads as flat as a page of "
     "wides.\n"
-    "5. Describe only what is visible. No thoughts, no sound, no dialogue.\n"
+    "5. Every action must be something a camera records. A story beat that is "
+    "heard, thought or felt has to become the visible thing that goes with "
+    "it, or the panel is drawn as nonsense: \"hears the tap\" was rendered "
+    "once as a flooded kitchen.\n\n"
+    "Converting the invisible:\n"
+    "  hears the tap running   -> turns toward the kitchen doorway\n"
+    "  realises she is not alone -> stops still, head lifted\n"
+    "  remembers the argument  -> stares past the camera, jaw set\n"
+    "  the room feels wrong    -> stands in the doorway, not entering\n"
 )
 
 
@@ -1426,7 +1434,9 @@ def _shotlist_instruction(story: str, count: int) -> str:
         '  "shot": one of "wide", "medium", "close-up"\n'
         '  "subject": who or what is in frame\n'
         '  "action": what is happening, as a short phrase\n'
-        '  "setting": where it takes place\n\n'
+        '  "setting": where it takes place\n'
+        '  "character_in_frame": true if the person we follow is visible in '
+        'this panel, false if it shows something else\n\n'
         "No prose before or after the JSON.\n\n"
         f"Story:\n{story}"
     )
@@ -1460,11 +1470,19 @@ def _parse_shotlist(raw: str, count: int) -> list[dict[str, str]]:
         shot = str(p.get("shot", "medium")).strip().lower()
         if shot not in ("wide", "medium", "close-up"):
             shot = "medium"
+        # Whether the person we follow is in frame decides whether their
+        # description belongs in the prompt at all. A panel whose subject is
+        # a running tap, given the protagonist's description, draws her
+        # running instead.
+        in_frame = p.get("character_in_frame")
         cleaned.append({
             "shot": shot,
             "subject": str(p.get("subject", "")).strip(),
             "action": str(p.get("action", "")).strip(),
             "setting": str(p.get("setting", "")).strip(),
+            # Default to showing them: a board is mostly about its character,
+            # and a missing flag should not quietly write them out.
+            "character_in_frame": True if in_frame is None else bool(in_frame),
         })
     if not cleaned:
         raise ValueError("the writer returned no usable panels")
