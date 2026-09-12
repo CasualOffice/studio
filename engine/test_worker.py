@@ -1012,6 +1012,110 @@ class MemoryHeadroom(unittest.TestCase):
             self.assertLess(worker._free_ram_gib(), worker._MIN_FREE_GIB, str(e))
 
 
+class EnhancerFixesSpelling(unittest.TestCase):
+    """The thing anyone means by "enhancer", which it could not do.
+
+    The retention check counted a *corrected* word as a *lost* word, so every
+    spelling fix was rejected and the typo came back untouched. Measured: all
+    three of three misspelled requests had their correct rewrite thrown away.
+    """
+
+    TYPOS = [
+        ("a pictuer of a hous at nite",
+         "a house at night, warm light in the windows, the road wet and black"),
+        ("a wonan in a red dres",
+         "a woman in a red satin dress, standing in a doorway"),
+        ("a teapot on a tabel",
+         "a beige ceramic teapot on a scrubbed pine table"),
+        ("me and him was walking in forrest",
+         "two people walking through a pine forest, mist between the trunks"),
+    ]
+
+    # Both words real, so a string comparison cannot tell a correction from a
+    # substitution -- and guessing draws the wrong picture.
+    SWAPS = [
+        ("a cat on a chair", "a hat on a chair"),
+        ("a bird on a wire", "a bard on a wire"),
+        ("a dog in the snow", "a log in the snow"),
+        ("a horse in a field", "a house in a field"),
+    ]
+
+    def test_a_corrected_spelling_is_not_a_lost_word(self):
+        for typed, rewrite in self.TYPOS:
+            out, why = worker._clarified_with_reason(typed, rewrite)
+            self.assertIsNotNone(out, f"{typed!r} rejected as {why}")
+
+    def test_a_different_word_is_still_a_lost_word(self):
+        # Two earlier attempts at this were worse than the bug. Plain edit
+        # distance let "a cat on a chair" come back as "a hat on a chair" and
+        # called it a spelling fix.
+        for typed, rewrite in self.SWAPS:
+            out, _ = worker._clarified_with_reason(typed, rewrite)
+            self.assertIsNone(out, f"{typed!r} -> {rewrite!r} was accepted")
+
+    def test_a_real_word_is_never_a_misspelling_of_another(self):
+        self.assertFalse(worker._misspelling_of("horse", "house"))
+        self.assertFalse(worker._misspelling_of("setting", "sitting"))
+        self.assertTrue(worker._misspelling_of("hous", "house"))
+        self.assertTrue(worker._misspelling_of("tabel", "table"))
+        self.assertTrue(worker._misspelling_of("nite", "night"))
+
+    def test_without_a_dictionary_it_stays_strict(self):
+        # No word list means no guessing: exact and prefix matching only, which
+        # is where this started and is never wrong, only sometimes strict.
+        saved = worker._DICTIONARY
+        try:
+            worker._DICTIONARY = set()
+            self.assertFalse(worker._misspelling_of("tabel", "table"))
+            self.assertFalse(worker._misspelling_of("horse", "house"))
+        finally:
+            worker._DICTIONARY = saved
+
+    def test_the_corrections_are_reported(self):
+        pairs = worker._corrections("a hous at nite", "a house at night")
+        self.assertIn(["hous", "house"], pairs)
+        self.assertIn(["nite", "night"], pairs)
+
+    def test_a_disagreed_word_is_not_appended_as_nonsense(self):
+        # Appending the dropped word produced "...sitting on a worn oak chair,
+        # setting." -- dangling off the end, meaning nothing, on every rewrite
+        # that corrected a homophone.
+        self.assertIsNone(worker._repair_dropped(
+            "a cat setting on a chair",
+            "a tabby cat with dense fur, sitting on a worn oak chair"))
+
+    def test_a_paraphrase_is_still_repaired(self):
+        fixed = worker._repair_dropped(
+            "a rainy street", "a wet street, slick asphalt under grey light")
+        self.assertIsNotNone(fixed)
+        self.assertIn("rainy", fixed)
+
+
+class AdapterMustHoldAnAdapter(unittest.TestCase):
+    """A "LoRA" with no adapter weights in it is refused, loudly.
+
+    Nothing checked. `lora_info` listed every safetensors file in a repository
+    with its size and offered them all, so a VAE repository was
+    indistinguishable from an adapter repository: it downloaded, it appeared
+    installed, it could be selected and given a strength, and then it changed
+    nothing -- while the log said "adapters: ... @ 1.0".
+    """
+
+    def test_a_vae_is_named_for_what_it_is(self):
+        keys = ["decoder.conv_in.weight", "decoder.conv_out.bias",
+                "encoder.conv_in.weight"]
+        self.assertIn("VAE", worker._describe_weights(keys))
+
+    def test_a_full_model_is_named_for_what_it_is(self):
+        keys = [f"transformer.blocks.{i}.attn.weight" for i in range(500)]
+        self.assertIn("full model", worker._describe_weights(keys))
+
+    def test_an_unresolvable_handle_is_not_refused(self):
+        # A repo that is not on this machine is the loader's business, not
+        # this check's: refusing it would block adapters that work.
+        worker._check_is_adapter("t", "nobody/nothing:absent.safetensors")
+
+
 class PanelRangeStaysARange(unittest.TestCase):
     def test_the_bottom_never_passes_the_top(self):
         # Only the top was capped at sixty, so past about 8,400 words the

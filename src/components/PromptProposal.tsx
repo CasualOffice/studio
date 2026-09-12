@@ -92,6 +92,14 @@ export default function PromptProposal({
           ))}
         </div>
       )}
+      {!!result.corrected?.length && (
+        <div className="chips">
+          <span className="label">spelling</span>
+          {result.corrected.map(([typed, written]) => (
+            <span className="chip add" key={typed}>{typed} → {written}</span>
+          ))}
+        </div>
+      )}
       {!!result.removed?.length && (
         <div className="chips">
           <span className="label">removed</span>

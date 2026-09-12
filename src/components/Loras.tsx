@@ -138,12 +138,26 @@ export default function Loras({
                   </select>
                 </div>
               )}
-              <div className="notice warn" style={{ marginBottom: 10 }}>
-                <strong>{fmtBytes(found.bytes)}{found.base_model ? ` · for ${found.base_model}` : ""}</strong>
-                An adapter only works on the base model it was trained for. If it
-                was made for a different size or family, generation will fail or
-                the result will be unaffected.
-              </div>
+              {found.not_an_adapter ? (
+                // Checked before the download, not after. Nothing used to
+                // check at all: a VAE repository looked exactly like an
+                // adapter repository, downloaded, appeared installed, could be
+                // selected and given a strength, and then changed nothing --
+                // because there is no adapter in it to apply.
+                <div className="notice bad" style={{ marginBottom: 10 }}>
+                  <strong>This is not an adapter</strong>
+                  {found.files[0]?.name} holds {found.not_an_adapter}. Installing
+                  it would spend {fmtBytes(found.bytes)} on something that cannot
+                  change a picture.
+                </div>
+              ) : (
+                <div className="notice warn" style={{ marginBottom: 10 }}>
+                  <strong>{fmtBytes(found.bytes)}{found.base_model ? ` · for ${found.base_model}` : ""}</strong>
+                  An adapter only works on the base model it was trained for. If it
+                  was made for a different size or family, generation will fail or
+                  the result will be unaffected.
+                </div>
+              )}
             </>
           )}
 
@@ -153,7 +167,9 @@ export default function Loras({
                 {busy ? "Checking…" : "Check"}
               </button>
             ) : (
-              <button className="btn small primary" disabled={busy || !found.files.length} onClick={install}>
+              <button className="btn small primary"
+                      disabled={busy || !found.files.length || !!found.not_an_adapter}
+                      onClick={install}>
                 {busy ? "Downloading…" : `Install ${fmtBytes(found.bytes)}`}
               </button>
             )}
