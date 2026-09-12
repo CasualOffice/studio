@@ -330,6 +330,25 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   border: 1px solid rgba(255, 255, 255, .28); backdrop-filter: blur(2px);
 }
 .gallery-card img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: #0b0d12; }
+
+/* A composed page, read rather than browsed.
+   Pages were shown in the same square-cropped grid as everything else, so a
+   1240-wide tiered page -- the thing the board exists to produce -- was
+   centre-cropped to a thumbnail with its top and bottom tiers cut off. A page
+   has a shape, and it is the shape it was composed at. */
+.page-sheet {
+  border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+  background: var(--bg-sunk); cursor: pointer; position: relative;
+}
+.page-sheet:hover { border-color: var(--accent); }
+.page-sheet img {
+  display: block; width: 100%; height: auto; max-height: 82vh;
+  object-fit: contain; background: #0b0d12;
+}
+.page-sheet .page-no {
+  padding: 6px 10px; font-size: 10.5px; color: var(--text-faint);
+  font-variant-numeric: tabular-nums; border-top: 1px solid var(--line);
+}
 .gallery-card .meta { padding: 8px 10px; }
 .gallery-card .meta .p {
   font-size: 11px; color: var(--text-dim);

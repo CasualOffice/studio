@@ -1353,6 +1353,105 @@ class VideoLoadArguments(unittest.TestCase):
         self.assertGreater(checked, 0, "expected op_video's call to be covered")
 
 
+class ShotlistTruncation(unittest.TestCase):
+    """An overshooting division must be reported, not quietly shortened.
+
+    `_parse_shotlist` sliced to the requested count before anything counted, so
+    a story the writer divided into 26 beats became the first 20 with nothing
+    said -- and `out_of_range`, written for exactly this, compared the
+    already-truncated length against the range it had been truncated into and
+    could never fire.
+    """
+
+    def _raw(self, n):
+        beats = [{"shot": "wide", "subject": f"beat {i}", "action": "a",
+                  "setting": "b", "source": "", "scene": 1} for i in range(n)]
+        return "```json\n" + json.dumps(beats) + "\n```"
+
+    def test_beats_are_counted_before_they_are_bounded(self):
+        beats = worker._shotlist_beats(self._raw(26))
+        self.assertEqual(len(beats), 26)
+
+    def test_the_range_check_sees_the_real_count(self):
+        low, high = 12, 20
+        returned = len(worker._shotlist_beats(self._raw(26)))
+        kept = worker._clean_shotlist(worker._shotlist_beats(self._raw(26))[:high], "")
+        self.assertEqual(len(kept), high)
+        # The bug: the old check asked this of `kept`, which is inside the
+        # range by construction.
+        self.assertFalse(not (low <= len(kept) <= high))
+        self.assertTrue(not (low <= returned <= high))
+
+    def test_the_one_shot_form_still_bounds(self):
+        self.assertEqual(len(worker._parse_shotlist(self._raw(26), 20)), 20)
+        self.assertEqual(len(worker._parse_shotlist(self._raw(5), 20)), 5)
+
+    def test_a_division_inside_the_bound_is_not_reported_as_truncated(self):
+        beats = worker._shotlist_beats(self._raw(14))
+        kept = worker._clean_shotlist(beats[:20], "")
+        self.assertEqual(len(beats), len(kept))
+
+    def test_an_unusable_reply_still_raises(self):
+        with self.assertRaises(ValueError):
+            worker._shotlist_beats("no array here")
+        with self.assertRaises(ValueError):
+            worker._shotlist_beats("[]")
+        with self.assertRaises(ValueError):
+            worker._clean_shotlist(["not a dict", 7], "")
+
+
+class CaptionWrapping(unittest.TestCase):
+    """Text that cannot be broken at a space still has to stay in its panel.
+
+    `_wrap` accepted any word that did not fit as long as the line was empty,
+    which is right for a long word and wrong for one with no spaces in it at
+    all: CJK prose, a URL, a hashtag, a pasted identifier. One unbroken run was
+    painted through the neighbouring panel and off the page.
+    """
+
+    def setUp(self):
+        from PIL import Image, ImageDraw
+        self.draw = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+        self.font = worker._caption_font(19)
+        self.width = 330
+
+    def _lines(self, text):
+        return worker._wrap(self.draw, text, self.font, self.width)
+
+    def test_nothing_is_drawn_wider_than_the_box(self):
+        cases = {
+            "url": "See https://example.com/a/very/long/path/that/never/breaks/anywhere",
+            "cjk": "雨は火曜日から止んで"
+                   "いないと台所は濡れた"
+                   "ウールの匂いがした",
+            "long word": "Pneumonoultramicroscopicsilicovolcanoconiosis",
+            "hashtag": "#" + "a" * 120,
+            "normal": "She opened the door.",
+        }
+        for label, text in cases.items():
+            for line in self._lines(text):
+                self.assertLessEqual(
+                    self.draw.textlength(line, font=self.font), self.width,
+                    f"{label}: {line!r} overflows the caption box")
+
+    def test_no_text_is_lost_to_the_break(self):
+        for text in ("a" * 200, "word " * 30, "https://example.com/" + "x" * 90):
+            self.assertEqual("".join(self._lines(text)).replace(" ", ""),
+                             text.replace(" ", ""))
+
+    def test_ordinary_wrapping_is_unchanged(self):
+        self.assertEqual(self._lines("She opened the door."),
+                         ["She opened the door."])
+        self.assertEqual(self._lines(""), [])
+
+    def test_a_balloon_is_never_wider_than_its_cell(self):
+        from PIL import Image, ImageDraw
+        draw = ImageDraw.Draw(Image.new("RGB", (900, 600), (255, 255, 255)))
+        used = worker._bubble(draw, "x" * 200, "Marta", self.font,
+                              worker._caption_font(13), 200, 10, 380, 26, True)
+        self.assertGreater(used, 0)
+
+
 class CastMentions(unittest.TestCase):
     """Who the story is about decides who is drawn in every frame.
 

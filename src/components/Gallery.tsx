@@ -245,19 +245,37 @@ export default function Gallery({
         </button>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
           <h2 style={{ margin: 0 }}>{open.project_name || "Picture board"}</h2>
+          {/* Pages first, because the pages are what was made. The panels and
+              the sheets are how it was made, and leading with "12 panels"
+              described the machinery to someone looking for their comic. */}
           <span style={{ fontSize: 12, color: "var(--text-faint)" }}>
-            {panelsOf.length} panels
-            {pagesOf.length ? ` · ${pagesOf.length} composed page${pagesOf.length === 1 ? "" : "s"}` : ""}
-            {sheets.length ? ` · ${sheets.length} reference sheets` : ""}
+            {pagesOf.length
+              ? `${pagesOf.length} page${pagesOf.length === 1 ? "" : "s"}`
+              : "no pages composed yet"}
+            {` · ${panelsOf.length} panel${panelsOf.length === 1 ? "" : "s"}`}
             {" · "}{fmtBytes(total)}
             {" · "}{new Date(open.created_at).toLocaleDateString()}
           </span>
         </div>
 
         <div style={{ display: "flex", gap: 8, margin: "14px 0", flexWrap: "wrap" }}>
+          {/* The comic, in one action, named and in order.
+              Exporting used to mean picking the two finished pages out of
+              seventeen lookalike items and hoping they were the right ones. */}
+          {pagesOf.length > 0 && (
+            <button className="btn small primary" disabled={busy}
+                    onClick={() => void exportMany(
+                      pagesOf.map((it, i) => ({
+                        id: it.id,
+                        name: `${(open.project_name || "Picture board")
+                          .replace(/[\\/:*?"<>|]/g, "-")} — page ${i + 1}.png`,
+                      })), notify)}>
+              Export the comic ({pagesOf.length} page{pagesOf.length === 1 ? "" : "s"})
+            </button>
+          )}
           <button className="btn small" disabled={busy}
                   onClick={() => void exportMany(openProject, notify)}>
-            Export all {openProject.length}
+            Export everything ({openProject.length})
           </button>
           {send && (
             <SendTo ids={openProject.filter((i) => i.mime.startsWith("image/")).map((i) => i.id)}
@@ -286,10 +304,64 @@ export default function Gallery({
           </button>
         </div>
 
-        {sheets.length > 0 && (
+        {/* Three peer grids of square thumbnails used to sit here, and the
+            heading "The comic, in order" sat above the *panels* -- so the two
+            pictures the whole board exists to produce were labelled with the
+            software's word for how it made them, centre-cropped to squares,
+            and placed below twelve of their own ingredients. A person opening
+            this is looking for their comic. It reads in order, full width, at
+            the shape it was drawn in; the materials are still here, folded
+            away, because chapter twelve needs the same cast as chapter
+            eleven. */}
+        {pagesOf.length > 0 ? (
           <>
-            <div className="sub-head">Reference sheets</div>
-            <div className="gallery-grid" style={{ marginBottom: 18 }}>
+            <div className="sub-head">
+              {pagesOf.length === 1 ? "The page" : "The comic, in order"}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 16,
+                          marginBottom: 22 }}>
+              {pagesOf.map((it, i) => (
+                <div className="page-sheet" key={it.id}
+                     onClick={() => setOpen({ ...it, project: null })}>
+                  <img src={vaultUrl(it.id)} alt={`Page ${i + 1}`} loading="lazy" />
+                  <div className="page-no">Page {i + 1} of {pagesOf.length}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="notice" style={{ marginBottom: 18 }}>
+            <strong>No pages yet.</strong> The panels are drawn; composing them
+            in the Board tab turns them into the pages you read.
+          </div>
+        )}
+
+        <details style={{ marginBottom: 12 }} open={pagesOf.length === 0}>
+          <summary style={{ cursor: "pointer", fontSize: 12,
+                            color: "var(--text-dim)", padding: "4px 0" }}>
+            Panels ({panelsOf.length})
+          </summary>
+          <div className="gallery-grid" style={{ marginTop: 10 }}>
+            {panelsOf.map((it) => (
+              <div className="gallery-card" key={it.id}
+                   onClick={() => setOpen({ ...it, project: null })}>
+                <span className="count">{(it.project_index ?? 0) + 1}</span>
+                <img src={vaultUrl(it.id)} alt="" loading="lazy" />
+                <div className="meta">
+                  <div className="sub">{it.prompt.slice(0, 60)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
+
+        {sheets.length > 0 && (
+          <details>
+            <summary style={{ cursor: "pointer", fontSize: 12,
+                              color: "var(--text-dim)", padding: "4px 0" }}>
+              Cast and places ({sheets.length})
+            </summary>
+            <div className="gallery-grid" style={{ marginTop: 10 }}>
               {sheets.map((it) => (
                 <div className="gallery-card" key={it.id}
                      onClick={() => setOpen({ ...it, project: null })}>
@@ -298,38 +370,8 @@ export default function Gallery({
                 </div>
               ))}
             </div>
-          </>
+          </details>
         )}
-
-        {pagesOf.length > 0 && (
-          <>
-            <div className="sub-head">Composed pages</div>
-            <div className="gallery-grid" style={{ marginBottom: 18 }}>
-              {pagesOf.map((it, i) => (
-                <div className="gallery-card" key={it.id}
-                     onClick={() => setOpen({ ...it, project: null })}>
-                  <span className="count">{i + 1}</span>
-                  <img src={vaultUrl(it.id)} alt="" loading="lazy" />
-                  <div className="meta"><div className="sub">{it.prompt}</div></div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
-        <div className="sub-head">The comic, in order</div>
-        <div className="gallery-grid">
-          {panelsOf.map((it) => (
-            <div className="gallery-card" key={it.id}
-                 onClick={() => setOpen({ ...it, project: null })}>
-              <span className="count">{(it.project_index ?? 0) + 1}</span>
-              <img src={vaultUrl(it.id)} alt="" loading="lazy" />
-              <div className="meta">
-                <div className="sub">{it.prompt.slice(0, 60)}</div>
-              </div>
-            </div>
-          ))}
-        </div>
       </div>
     );
   }
@@ -555,8 +597,20 @@ export default function Gallery({
                 : (it.prompt || it.name)}
             </div>
             <div className="sub">
+              {/* What was made, not how many files it took. "board \u00b7 17
+                  pictures" is the tool's internals reaching the surface: the
+                  person made one comic of two pages, and the seventeen are the
+                  panels and sheets it was built from. */}
               {members.length > 1
-                ? `board \u00b7 ${members.length} pictures`
+                ? (() => {
+                    const pages = members.filter((m) => m.model === "composed").length;
+                    const panels = members.filter(
+                      (m) => m.project_index != null && m.model !== "composed").length;
+                    return [
+                      pages ? `${pages} page${pages === 1 ? "" : "s"}` : null,
+                      panels ? `${panels} panel${panels === 1 ? "" : "s"}` : null,
+                    ].filter(Boolean).join(" \u00b7 ") || `${members.length} pictures`;
+                  })()
                 : (KIND_LABEL[it.kind] ?? it.kind)}
               {members.length === 1 && it.inputs.length > 0 ? " · from another" : ""}
               {members.length === 1 && it.duration_ms

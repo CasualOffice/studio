@@ -1819,8 +1819,17 @@ def _as_scene(value: Any) -> int:
     return 1
 
 
-def _parse_shotlist(raw: str, count: int, story: str = "") -> list[dict[str, Any]]:
-    """Pull the panel array out of the model's reply.
+def _shotlist_beats(raw: str) -> list[Any]:
+    """Locate and parse the panel array, without bounding or cleaning it.
+
+    Split out so the caller can see how many beats the writer actually
+    returned. The parse used to slice to the requested count before anything
+    counted, and two things followed from that. The tail of a division that
+    overshot was dropped with nothing said -- a story the writer divided into
+    twenty-six beats became the first twenty, and the ending was simply not in
+    the board. And `out_of_range`, the check written for exactly this, compared
+    the already-truncated length against the range it had just been truncated
+    into, so it could never fire.
 
     Models fence JSON in backticks and preface it with a sentence however
     firmly they are told not to, so the array is located rather than assumed.
@@ -1839,9 +1848,13 @@ def _parse_shotlist(raw: str, count: int, story: str = "") -> list[dict[str, Any
     panels = json.loads(body[start:end + 1])
     if not isinstance(panels, list) or not panels:
         raise ValueError("the writer returned no panels")
+    return panels
 
-    cleaned: list[dict[str, str]] = []
-    for p in panels[:count]:
+
+def _clean_shotlist(beats: list[Any], story: str) -> list[dict[str, Any]]:
+    """Every beat pulled into the shape the board expects."""
+    cleaned: list[dict[str, Any]] = []
+    for p in beats:
         if not isinstance(p, dict):
             continue
         try:
@@ -1854,6 +1867,11 @@ def _parse_shotlist(raw: str, count: int, story: str = "") -> list[dict[str, Any
     if not cleaned:
         raise ValueError("the writer returned no usable panels")
     return cleaned
+
+
+def _parse_shotlist(raw: str, count: int, story: str = "") -> list[dict[str, Any]]:
+    """Locate, bound and clean in one step, for the fixed-count path."""
+    return _clean_shotlist(_shotlist_beats(raw)[:count], story)
 
 
 def _clean_panel(p: dict[str, Any], story: str) -> dict[str, Any]:
@@ -1993,14 +2011,33 @@ def _wrap(draw: Any, text: str, font: Any, width: int) -> list[str]:
     Character counts guess wrong on a proportional face, and a caption that
     overruns the panel is worse than one that wraps early.
     """
-    words, lines, line = text.split(), [], ""
-    for word in words:
+    lines: list[str] = []
+    line = ""
+    for word in text.split():
         trial = f"{line} {word}".strip()
-        if draw.textlength(trial, font=font) <= width or not line:
+        if draw.textlength(trial, font=font) <= width:
             line = trial
-        else:
+            continue
+        if line:
             lines.append(line)
-            line = word
+            line = ""
+        # A word with nowhere to break.
+        #
+        # `or not line` used to accept any word that did not fit as long as the
+        # line was empty, on the reasoning that something has to go somewhere.
+        # For an ordinary long word that is right; for a word with no spaces in
+        # it at all -- CJK text, a URL, a hashtag, a pasted identifier -- it
+        # painted one unbroken run straight through the neighbouring panel and
+        # off the page, cut mid-character at the margin. Nothing in the caption
+        # path bounds what a person can paste, so the break is made here by
+        # measurement, the same way every other break is.
+        while draw.textlength(word, font=font) > width and len(word) > 1:
+            cut = len(word)
+            while cut > 1 and draw.textlength(word[:cut], font=font) > width:
+                cut -= 1
+            lines.append(word[:cut])
+            word = word[cut:]
+        line = word
     if line:
         lines.append(line)
     return lines
@@ -2169,7 +2206,11 @@ def _bubble(draw: Any, text: str, speaker: str, font: Any, small: Any,
     """A speech balloon with a tail, returning the height it used."""
     lines = _wrap(draw, text, font, max_w - 26)
     tw = max((draw.textlength(l, font=font) for l in lines), default=0)
-    w = int(tw) + 26
+    # Never wider than the space it was given. The balloon sized itself from
+    # its longest line, which before the hard break above could exceed the
+    # panel -- and a balloon wider than its cell is drawn over the panel beside
+    # it. Clamped here as well, because the balloon is what covers the picture.
+    w = min(int(tw) + 26, max_w)
     h = len(lines) * line_h + 16
     x0, y0 = cx - w // 2, top
     draw.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=min(16, h // 2),
@@ -2892,17 +2933,26 @@ def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                      _shotlist_instruction_derived(story, low, high),
                      max_tokens=min(6000, 180 * high), temperature=0.3,
                      repo=req.get("writer"), label="Dividing the story")
-        panels = _parse_shotlist(raw, high, story)
-        log(req_id, f"{words} words divided into {len(panels)} panels "
-                    f"(expected {low}-{high})")
+        # Counted before it is bounded, so an overshoot can be reported rather
+        # than quietly becoming a shorter board.
+        beats = _shotlist_beats(raw)
+        returned = len(beats)
+        panels = _clean_shotlist(beats[:high], story)
+        dropped = max(0, returned - len(panels))
+        log(req_id, f"{words} words divided into {returned} beats, "
+                    f"{len(panels)} kept (expected {low}-{high})")
         # More story than one board holds. Saying "usually makes 60 to 60"
         # explains nothing; saying the board is a part of the story does.
         too_long = words > _MAX_PANELS * _WORDS_PER_PANEL
         return {"panels": panels, "asked": None, "derived": True,
                 "words": words, "expected_low": low, "expected_high": high,
                 "too_long": too_long,
+                # What the writer returned, not what survived the bound. The
+                # range check is about the division the writer made.
+                "returned": returned,
+                "truncated_from": returned if dropped else None,
                 "out_of_range": (not too_long
-                                 and not (low <= len(panels) <= high)),
+                                 and not (low <= returned <= high)),
                 "coverage": _story_coverage(story, panels)}
 
     count = max(2, min(int(asked), 60))

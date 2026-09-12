@@ -78,7 +78,16 @@ export const api = {
       expected_high?: number;
       out_of_range?: boolean;
       too_long?: boolean;
-      coverage?: { covered: number; total: number; percent: number; missing: string[] };
+      /** How many beats the writer returned, before the board's bound. */
+      returned?: number;
+      /** Set to that count when beats were dropped to fit the bound. */
+      truncated_from?: number | null;
+      // Not `Coverage` from boardDraft: that module imports this one, and the
+      // shape is small enough not to be worth the cycle.
+      coverage?: {
+        covered: number; total: number; percent: number;
+        missing: string[]; missing_total?: number;
+      };
     }>("shot_list", { jobId, story, panels }),
   enrichPanels: (jobId: string, panels: Panel[], style: string) =>
     invoke<{ panels: Panel[] }>("enrich_panels", { jobId, panels, style }),

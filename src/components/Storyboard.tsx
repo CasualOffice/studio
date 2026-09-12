@@ -460,6 +460,20 @@ export default function Storyboard({
           `first ${r.panels.length} panels of it. Split the story and ` +
           `divide each part for the rest.`
         );
+      } else if (r.truncated_from) {
+        // The writer divided the story further than this board can hold, and
+        // the extra beats used to be sliced off with nothing said -- so the
+        // end of the story was simply not in the board, and the range check
+        // compared the shortened length against the range it had been
+        // shortened into and stayed quiet. The coverage panel below lists
+        // exactly which passages went.
+        notify(
+          `The writer divided this into ${r.truncated_from} beats and the board `
+          + `holds ${r.panels.length}, so the last `
+          + `${r.truncated_from - r.panels.length} are not here. Check the `
+          + "unanchored passages below, and split the story if its ending matters.",
+          true,
+        );
       } else if (r.out_of_range) {
         // Say it rather than hide it: a division far outside what this much
         // prose should produce usually means the story was cut short or the
@@ -734,6 +748,12 @@ export default function Storyboard({
         ? await api.editImage(params)
         : await api.generate(params);
       setDrawn((d) => { const n = [...d]; n[i] = res[0] ?? null; return n; });
+      // A composed page is only as current as the panels in it, so any panel
+      // arriving retires the pages. `edit` already did this and `redraw` did
+      // not, which left the one hole: correcting a frame and drawing it again
+      // kept the old pages on screen, still showing the frame that had just
+      // been replaced -- and those are the two pictures the whole board is for.
+      setPages([]);
       setDone((v) => Math.max(v, i + 1));
       onProduced();
       return true;
