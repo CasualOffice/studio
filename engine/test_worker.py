@@ -904,6 +904,39 @@ class TiledUpscaleCancels(unittest.TestCase):
                 f"{fn.name} loops over model calls with no way to stop it")
 
 
+class VideoCanvasFloor(unittest.TestCase):
+    """A canvas too small for the model must be refused, not drawn on.
+
+    Wan returns coloured noise below roughly 640x368 rather than a worse
+    picture, and the output is a perfectly valid MP4 every time -- right
+    dimensions, right frame count, sealed without complaint. Nothing
+    downstream can tell the difference, so the size has to be caught here.
+    """
+
+    def test_the_sizes_that_produced_noise_are_refused(self):
+        for w, h in ((320, 192), (384, 224), (224, 384), (320, 320), (480, 272)):
+            with self.assertRaises(ValueError, msg=f"{w}x{h} was allowed"):
+                worker._check_video_size("t", w, h)
+
+    def test_the_sizes_that_produced_pictures_are_allowed(self):
+        for w, h in ((640, 368), (704, 384), (832, 480), (1280, 704)):
+            worker._check_video_size("t", w, h)
+
+    def test_the_floor_is_where_it_was_measured(self):
+        # Between 480x272, which was noise, and 640x368, which was not.
+        self.assertGreater(worker._VIDEO_MIN_PIXELS, 480 * 272)
+        self.assertLessEqual(worker._VIDEO_MIN_PIXELS, 640 * 368)
+
+    def test_the_message_says_what_to_do(self):
+        try:
+            worker._check_video_size("t", 320, 192)
+        except ValueError as e:
+            text = str(e)
+            self.assertIn("640", text, "should name a size that works")
+            self.assertIn("noise", text, "should say what goes wrong")
+            self.assertIn("time", text, "should say the cost is time, not memory")
+
+
 class MemoryHeadroom(unittest.TestCase):
     """The guard must not refuse work that would have succeeded.
 

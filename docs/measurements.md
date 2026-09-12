@@ -27,6 +27,35 @@ Wan 2.2 TI2V-5B q8, `AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit`, on this
 one reached step 10 of 12 while paging heavily and was stopped; it is not known
 whether it completes.
 
+## Video: it was the resolution all along
+
+Wan 2.2 TI2V-5B q8, text to video, 20 steps, 9 frames, same seed and prompt:
+
+| Size | flow_shift | low-RAM flags | Peak | Time | Result |
+|---|---|---|---|---|---|
+| 320x192 | none | on | 9.72 GiB | 126 s | coloured noise |
+| 320x192 | none | **off** | 13.40 GiB | 273 s | coloured noise |
+| 320x192 | 3.0 | on | 9.72 GiB | 126 s | coloured noise |
+| **704x384** | **5.0** | on | **10.20 GiB** | 1571 s | **a correct picture** |
+
+The model is trained at 1280x704 and cannot be driven at a quarter of that
+width. It does not degrade gracefully below some floor; it stops converging
+and returns colour. Every clip this app has produced was made at 320x192.
+
+The three explanations that were carried for days are all wrong, and each was
+eliminated by a controlled run. It is not the first-frame conditioning: text
+to video, with no image at all, failed identically. It is not the step count:
+fifty steps -- the model's own figure -- was still noise at 320x192. It is not
+the low-RAM flags: turning all three off changed nothing except raising peak
+memory from 9.72 to 13.40 GiB, which means they work and should stay.
+
+The part worth remembering: **resolution was never the memory constraint it
+was assumed to be.** 704x384 is 4.4 times the pixels of 320x192 and costs
+0.5 GiB more -- 10.20 against 9.72. What it costs is time, 1571 seconds
+against 126. The catalog's invented 103.7 GiB peak is what sent everything to
+a tiny canvas in the first place, and that canvas was the bug. The
+optimisation caused the failure it was meant to avoid.
+
 **Text to video is broken too, not just image to video.** At the model's own
 recommended 50 steps, with no image involved at all, 838 seconds of denoising
 produced the same coloured noise. Two different models -- Wan TI2V-5B and

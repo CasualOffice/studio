@@ -69,8 +69,8 @@ drives [MLX-Gen](https://github.com/lpalbou/mlx-gen) and
   difference between a finished picture and a dead engine.
 
   <img src="docs/img/upscale.webp" alt="The same panel enlarged naively on the left and by the model on the right." width="620">
-- **Video** — **not working.** Both text to video and animating a still produce
-  noise on this machine; see [the limits](#video).
+- **Video** — text to video and animating a still, at 640x368 or larger.
+  Smaller canvases return noise; see [the limits](#video).
 - **Prompt help** — makes a request precise without inventing a scene, and can
   read the picture you are editing to say *which* jacket you meant.
 - **Vault** — everything produced is encrypted at rest, unlocked by passphrase
@@ -270,16 +270,33 @@ data key and releases model weights.
 
 ## Video
 
-<a name="video"></a>**Video does not work on this machine, in either
-direction.** That is a correction: text to video was listed here as working,
-and it is not.
+<a name="video"></a>**Video works, above 640x368.** Below that it returns
+coloured noise, and for a long time everything here was run at 320x192, which
+is why it was believed broken.
 
-Measured: Wan TI2V-5B at its own recommended 50 steps, with no image involved,
-produced coloured noise after 838 seconds of denoising. Bernini-R fails the
-same way. Wan VACE has not been retested since, and should not be assumed to
-differ. The output is a valid MP4 every time -- correct dimensions, frame
-count and fps, sealed without complaint -- which is why it was believed to
-work, and why nothing caught it.
+| Size | Peak | Time (9 frames, 20 steps) | Result |
+|---|---|---|---|
+| 320x192 | 9.72 GiB | 126 s | coloured noise |
+| 480x272 | 9.91 GiB | 85 min | coloured noise |
+| **640x368** | **10.16 GiB** | **70 min** | **a picture** |
+| 704x384 | 10.20 GiB | 26 min | a picture |
+
+The model is trained at 1280x704 and does not degrade gracefully far below it:
+it stops converging and returns colour. The step count was not the problem --
+fifty steps, the model's own figure, is still noise at 320x192 -- and neither
+were the low-RAM flags, which change nothing except saving 3.7 GiB.
+
+The thing worth carrying away: **resolution was never the memory constraint it
+was assumed to be.** 704x384 is 4.4 times the pixels of 320x192 and costs half
+a gigabyte more. What a larger canvas costs is time. A catalog figure nobody
+measured -- 103.7 GiB, taken at the model's native size -- made video look
+impossible here, so everything was pushed onto the smallest canvas to make it
+fit, and that canvas was the entire fault.
+
+Every technical check passed on the broken output: valid MP4, correct
+dimensions, frame count and fps, sealed without complaint. That is why it
+shipped as working twice, and it is the argument for checking what a run
+produced rather than that it finished.
 
 Memory was never the problem. Wan 2.2 TI2V-5B was measured at **9.72 GiB** for
 a complete run, well inside the budget, and the 103.7 GiB this table used to

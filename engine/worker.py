@@ -4090,6 +4090,33 @@ _VIDEO_IMAGE_KWARG = {
 }
 
 
+# Below this many output pixels, Wan stops converging and returns colour.
+#
+# Measured on Wan 2.2 TI2V-5B q8, same seed and prompt, 20 steps: 320x192 and
+# 480x272 are noise; 640x368 and 704x384 are correct pictures. The threshold
+# sits between 130k and 235k pixels, so the floor is set at the first size
+# known to work rather than at the edge of what has been tried.
+#
+# This is not a memory limit and must not be confused with one. 704x384 is 4.4
+# times the pixels of 320x192 and peaks 0.5 GiB higher -- 10.20 against 9.72.
+# What it costs is time. A catalog figure nobody measured made video look too
+# large for this machine, everything was pushed to the smallest canvas to fit,
+# and that canvas was the whole fault.
+_VIDEO_MIN_PIXELS = 640 * 368
+
+
+def _check_video_size(req_id: str, width: int, height: int) -> None:
+    """Refuse a canvas the model cannot resolve on."""
+    if width * height >= _VIDEO_MIN_PIXELS:
+        return
+    raise ValueError(
+        f"{width}x{height} is too small for this model to draw on: below about "
+        f"640x368 it returns coloured noise rather than a picture. Nothing was "
+        f"run. Choose a larger size -- it costs time rather than memory, and "
+        f"the same clip at 640x368 uses barely more than at {width}x{height}."
+    )
+
+
 def _video_image_kwarg(req_id: str, model: str,
                        family: str | None) -> tuple[str | None, list[str]]:
     """Which parameter carries a still picture into this video model.
@@ -4168,6 +4195,9 @@ def op_video(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         # TypeError before any work starts -- so animating a still has never
         # reached the model on a first-frame route, whatever model was chosen.
         _check_headroom(req_id, float(req.get("peak_gib") or 0))
+        _check_video_size(req_id, int(req.get("width", 480)),
+                          int(req.get("height", 320)))
+
         loaded, load_ms = _load_model(
             req_id,
             req["model"],

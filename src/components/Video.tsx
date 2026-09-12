@@ -17,13 +17,19 @@ import { loadPref, savePref } from "../lib/prefs";
  * Attention is quadratic in sequence length, and sequence length is pixels
  * times frames, so cost climbs fast in both.
  */
+// Only sizes the model can actually resolve on.
+//
+// Measured on Wan 2.2 TI2V-5B, same seed and prompt: 320x192 and 480x272 come
+// back as coloured noise, 640x368 and 704x384 come back as pictures. Five of
+// the seven sizes offered here were below that floor, and every clip anyone
+// made with them was noise.
+//
+// The small ones are not kept as a "fast" option because they are not a worse
+// picture, they are no picture. And they are barely cheaper in memory: 704x384
+// peaks 0.5 GiB above 320x192. What a larger canvas costs is time.
 const SIZES: [string, number, number][] = [
-  ["Tiny", 320, 192],
-  ["Small landscape", 384, 224],
-  ["Small portrait", 224, 384],
-  ["Square", 320, 320],
-  ["Wider", 480, 272],
-  ["Large", 640, 368],
+  ["Large (640x368)", 640, 368],
+  ["Wide (704x384)", 704, 384],
   ["Native (832x480)", 832, 480],
 ];
 
@@ -52,7 +58,10 @@ export default function Video({
 
   const [modelId, setModelId] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [sizeIdx, setSizeIdx] = useState(() => loadPref("videoSize", 0));
+  // Clamped: a saved index from the old list can point past the end of this
+  // one, and an out-of-range index reads as undefined rather than as an error.
+  const [sizeIdx, setSizeIdx] = useState(
+    () => Math.min(Math.max(0, loadPref("videoSize", 0)), SIZES.length - 1));
   const [frames, setFrames] = useState(() => loadPref("videoFrames", 33));
   const [fps, setFps] = useState(() => loadPref("videoFps", 16));
   const [steps, setSteps] = useState(20);
@@ -76,13 +85,20 @@ export default function Video({
 
   const model = usable.find((m) => m.id === modelId) ?? usable[0];
 
-  // Cost grows with pixels and frames together and grows fast, but nobody has
-  // measured this machine at these sizes, so the warning says that plainly
-  // instead of inventing a number. The one figure here that is real is the
-  // catalog's, taken at 320x192 with 17 frames.
+  // What a larger canvas costs is time, not memory.
+  //
+  // Measured on this machine, same seed and prompt, 9 frames at 20 steps:
+  // 704x384 peaks at 10.20 GiB against 9.72 at 320x192 -- 4.4 times the pixels
+  // for half a gigabyte. The time went from 126 seconds to 1571. The old
+  // warning here said the opposite, that large sizes would run out of memory,
+  // which is what pushed everyone onto a canvas too small to draw on.
   const [, sw, sh] = SIZES[sizeIdx];
-  const vsAnchor = (sw * sh * frames) / (320 * 192 * 17);
-  const risky = vsAnchor > 4;
+  const MEASURED_PIXELS = 640 * 368;
+  const MEASURED_FRAMES = 9;
+  const MEASURED_SECONDS = 4193;
+  const estSeconds = Math.round(
+    MEASURED_SECONDS * ((sw * sh * frames) / (MEASURED_PIXELS * MEASURED_FRAMES)));
+  const slow = estSeconds > 20 * 60;
 
   const assistantReady = useMemo(
     // The writer, specifically. There are two assist models now, and `.some`
@@ -268,15 +284,13 @@ export default function Video({
             </select>
             {model && (
               <div style={{ fontSize: 10.5, marginTop: 5, lineHeight: 1.55,
-                            color: risky ? "var(--warn)" : "var(--text-faint)" }}>
-                {risky
-                  ? `About ${vsAnchor.toFixed(0)}× the work of the size this `
-                    + `model was measured at (${model.peak_gib.toFixed(1)} GiB `
-                    + `for 17 frames at 320×192). Expect it to be slow, and to `
-                    + `run out of memory before the largest sizes.`
-                  : `The measured figure for this model is `
-                    + `${model.peak_gib.toFixed(1)} GiB, at 320×192 with 17 `
-                    + `frames. Cost rises with pixels and frames together.`}
+                            color: slow ? "var(--warn)" : "var(--text-faint)" }}>
+                {`Roughly ${estSeconds < 90 ? `${estSeconds} seconds`
+                    : `${Math.round(estSeconds / 60)} minutes`}, `
+                  + `from a measured 640×368 run at 9 frames. Memory barely `
+                  + `moves with size — about ${model.peak_gib.toFixed(1)} GiB `
+                  + `either way. Time is what a larger canvas costs.`}
+                {slow ? " This one is a long wait." : ""}
                 {" "}Running a video model well below the size it was trained
                 at is its own quality problem, so prefer the largest that runs.
               </div>
