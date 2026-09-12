@@ -11,6 +11,7 @@ than raising. Loading actual weights is out of scope here.
 """
 
 import importlib.util
+import json
 import io
 import os
 import secrets
@@ -968,6 +969,69 @@ class MemoryHeadroom(unittest.TestCase):
         except ValueError as e:
             # Only acceptable if the machine really is out of memory now.
             self.assertLess(worker._free_ram_gib(), worker._MIN_FREE_GIB, str(e))
+
+
+class PanelRangeStaysARange(unittest.TestCase):
+    def test_the_bottom_never_passes_the_top(self):
+        # Only the top was capped at sixty, so past about 8,400 words the
+        # bottom overtook it. The writer was told a chapter "usually lands
+        # between 714 and 60 panels", and no count can sit inside that, so
+        # every division of a long story was reported as suspect.
+        for words in (0, 1, 300, 3000, 8400, 9000, 100_000):
+            low, high = worker._panel_bounds(words)
+            self.assertLessEqual(low, high, f"inverted at {words} words")
+            self.assertGreaterEqual(low, 2)
+            self.assertLessEqual(high, worker._MAX_PANELS)
+
+
+class DivisionSurvivesAnImperfectWriter(unittest.TestCase):
+    """A quote retyped is still a quote, and one odd field is not fatal."""
+
+    STORY = ("Mira didn\u2019t look back. She pulled the door shut, and the "
+             "hallway swallowed the sound. Outside, the rain had already "
+             "started.")
+
+    def test_a_retyped_quote_is_recognised(self):
+        # Straight apostrophe for a curly one, and a dropped comma. Both
+        # erased the quote, and the board then told the user those sentences
+        # of their story had been left out -- while drawing them.
+        panels = worker._parse_shotlist(json.dumps([
+            {"shot": "medium", "subject": "Mira",
+             "source": "Mira didn't look back.", "scene": 1},
+            {"shot": "wide", "subject": "hallway",
+             "source": "She pulled the door shut and the hallway swallowed "
+                       "the sound.", "scene": 1},
+        ]), 2, self.STORY)
+        self.assertTrue(all(p["source"] for p in panels),
+                        "a real quote was thrown away")
+        cover = worker._story_coverage(self.STORY, panels)
+        # Only the third sentence has no panel; the two that do are covered.
+        self.assertEqual(cover["missing"],
+                         ["Outside, the rain had already started."])
+
+    def test_an_invented_quote_is_still_refused(self):
+        panels = worker._parse_shotlist(json.dumps([
+            {"shot": "wide", "subject": "x", "scene": 1,
+             "source": "A dragon circled the tower and screamed."},
+        ]), 1, self.STORY)
+        self.assertEqual(panels[0]["source"], "")
+
+    def test_a_scene_named_in_words_is_read(self):
+        self.assertEqual(worker._as_scene("two"), 2)
+        self.assertEqual(worker._as_scene("Scene 3"), 3)
+        self.assertEqual(worker._as_scene(""), 1)
+        self.assertEqual(worker._as_scene(None), 1)
+        self.assertEqual(worker._as_scene(-4), 1)
+
+    def test_one_unreadable_panel_does_not_lose_the_others(self):
+        # This raised ValueError out of the whole parse, so a single odd
+        # field cost the user every panel and the minutes spent making them.
+        panels = worker._parse_shotlist(json.dumps([
+            {"shot": "wide", "subject": "a", "scene": 1},
+            {"shot": "wide", "subject": "b", "scene": "somewhere"},
+            {"shot": "wide", "subject": "c", "scene": 2},
+        ]), 3, "")
+        self.assertEqual(len(panels), 3)
 
 
 class EnhancerAcceptsGoodRewrites(unittest.TestCase):

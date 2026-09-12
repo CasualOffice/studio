@@ -648,7 +648,7 @@ pub const CATALOG: &[ModelEntry] = &[
         video_from_image: false,
         guidance_default: 4.0,
         guidance_max: 12.0,
-        notes: "33 GiB peak for a 384x224, 33-frame clip. 64 GB is the first sane tier. Untested here, and video generation is currently broken on 16 GB machines whatever the model.",
+        notes: "33 GiB peak for a 384x224, 33-frame clip. 64 GB is the first sane tier. Untested here. On a 16 GB machine use Wan TI2V-5B instead, which does work.",
         broken: None,
         backend: None,
     },

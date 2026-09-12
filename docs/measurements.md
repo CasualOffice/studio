@@ -56,6 +56,12 @@ against 126. The catalog's invented 103.7 GiB peak is what sent everything to
 a tiny canvas in the first place, and that canvas was the bug. The
 optimisation caused the failure it was meant to avoid.
 
+### Superseded: what was believed before the resolution run
+
+Everything below this heading was written before 640x368 was tried, and its
+conclusion is wrong. It is kept because the wrong hypotheses are the reason
+the right test took so long to run.
+
 **Text to video is broken too, not just image to video.** At the model's own
 recommended 50 steps, with no image involved at all, 838 seconds of denoising
 produced the same coloured noise. Two different models -- Wan TI2V-5B and
@@ -66,8 +72,12 @@ conditioning, because one run used no image. It is not the step count, because
 50 is what the model asks for. What remains is the engine's own call -- three
 low-RAM flags passed on every video run -- or the q8 checkpoint, which logs
 `Normalizing Wan q8 runtime-sensitive paths to BF16 at load` and silently
-rewrites attention weights. The controlled test between those two has not been
-run: it needs about 10 GiB, and the machine has not been free.
+rewrites attention weights.
+
+Neither. Both runs were at 320x192, and that was the whole of it. The flags
+and the checkpoint were never the problem, and Bernini-R's verdict was formed
+at a size no Wan-family model converges at, so it is not known to be broken
+either -- it is untested.
 
 Every technical check passes on the broken output: valid MP4, correct
 dimensions, correct frame count, correct fps, sealed to the vault without

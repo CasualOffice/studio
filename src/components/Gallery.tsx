@@ -27,19 +27,30 @@ export default function Gallery({
   // Bulk delete is irreversible and the vault is the only copy, so the button
   // asks once before it does it. The single-item delete is one item in front
   // of you; twelve selected across a filtered grid is not.
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  //
+  // Two buttons, two flags. One flag was shared by the grid's bulk delete and
+  // the board view's delete-everything, and nothing disarmed it when you moved
+  // between the two screens: arming one and backing out left the other already
+  // reading "Really delete?", so the next click deleted without asking.
+  const [confirmBulk, setConfirmBulk] = useState(false);
+  const [confirmBoard, setConfirmBoard] = useState(false);
 
   // Escape clears a selection the way it does everywhere else. This is
   // registered above the early returns because hooks cannot be conditional.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        setPicked(new Set()); setAnchor(null); setConfirmDelete(false);
+        setPicked(new Set()); setAnchor(null); setConfirmBulk(false);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // Leaving a screen disarms whatever was armed on it. Backing out of a board
+  // is how someone changes their mind, and a mind changed on one screen must
+  // not leave a loaded delete waiting on the next one.
+  useEffect(() => { setConfirmBoard(false); setConfirmBulk(false); }, [open]);
 
   // Painted masks live in the vault so they are never written in the clear,
   // but they are working data and would only clutter the library.
@@ -129,11 +140,11 @@ export default function Gallery({
       return next;
     });
     setAnchor(id);
-    setConfirmDelete(false);
+    setConfirmBulk(false);
   };
 
   const clearPicks = () => {
-    setPicked(new Set()); setAnchor(null); setConfirmDelete(false);
+    setPicked(new Set()); setAnchor(null); setConfirmBulk(false);
   };
 
   /**
@@ -249,20 +260,20 @@ export default function Gallery({
             className="btn small danger"
             disabled={busy}
             onClick={async () => {
-              if (!confirmDelete) { setConfirmDelete(true); return; }
+              if (!confirmBoard) { setConfirmBoard(true); return; }
               setBusy(true);
               let failed = 0;
               for (const it of openProject) {
                 try { await api.vaultDelete(it.id); } catch { failed++; }
               }
-              setBusy(false); setConfirmDelete(false); setOpen(null); onChanged();
+              setBusy(false); setConfirmBoard(false); setOpen(null); onChanged();
               notify(failed
                 ? `Deleted ${openProject.length - failed} of ${openProject.length}.`
                 : `Deleted the board and all ${openProject.length} pictures.`,
                 failed > 0);
             }}
           >
-            {confirmDelete
+            {confirmBoard
               ? "Really delete this whole board? This cannot be undone"
               : "Delete board"}
           </button>
@@ -469,11 +480,11 @@ export default function Gallery({
             className="btn small danger"
             disabled={busy}
             onClick={() => {
-              if (confirmDelete) { void deletePicked(); return; }
-              setConfirmDelete(true);
+              if (confirmBulk) { void deletePicked(); return; }
+              setConfirmBulk(true);
             }}
           >
-            {confirmDelete
+            {confirmBulk
               ? `Really delete ${pickedItems().length}? This cannot be undone`
               : `Delete ${pickedItems().length}`}
           </button>

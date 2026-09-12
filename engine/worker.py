@@ -1685,6 +1685,74 @@ def _shotlist_instruction(story: str, count: int) -> str:
     )
 
 
+def _plain(text: str) -> str:
+    """Text with its typography flattened, for comparing one copy to another.
+
+    A writer asked to quote the story back retypes it, and retyping changes
+    the characters without changing the words: a curly apostrophe becomes a
+    straight one, an em dash becomes a hyphen, a comma is dropped. Comparing
+    the two literally then says the quote is invented.
+    """
+    out = []
+    for c in text.lower():
+        if c in "\u2018\u2019\u02bc`":
+            out.append("'")
+        elif c in "\u201c\u201d":
+            out.append('"')
+        elif c in "\u2013\u2014\u2212":
+            out.append("-")
+        elif c.isalnum() or c.isspace() or c in "'\"-":
+            out.append(c)
+        else:
+            out.append(" ")
+    return " ".join("".join(out).split())
+
+
+def _quotes_story(source: str, story: str) -> bool:
+    """Whether this quote came out of the story rather than out of the model.
+
+    Exact containment first, on flattened text. Failing that, a quote whose
+    content words are nearly all in the story is a real quote that was retyped
+    loosely; a quote that invents its subject is not, and is the thing this
+    exists to catch.
+    """
+    if not source:
+        return False
+    flat_story = _plain(story)
+    if _plain(source) in flat_story:
+        return True
+    words = _significant(source)
+    if not words:
+        return False
+    story_words = set(_significant(story))
+    hits = sum(1 for w in words if w in story_words)
+    return hits / len(words) >= 0.8
+
+
+def _as_scene(value: Any) -> int:
+    """Scene number from whatever the writer put in the field.
+
+    It is asked for a number and mostly gives one, but "two", "Scene 3" and
+    "" all turn up. int() on those raised, and the raise was not caught per
+    panel, so one odd value threw away a whole division the user had waited
+    minutes for.
+    """
+    if isinstance(value, bool):
+        return 1
+    if isinstance(value, (int, float)):
+        return max(1, min(999, int(value)))
+    digits = re.search(r"\d+", str(value or ""))
+    if digits:
+        return max(1, min(999, int(digits.group())))
+    words = ("one", "two", "three", "four", "five", "six", "seven",
+             "eight", "nine", "ten")
+    lowered = str(value or "").lower()
+    for n, word in enumerate(words, start=1):
+        if re.search(rf"\b{word}\b", lowered):
+            return n
+    return 1
+
+
 def _parse_shotlist(raw: str, count: int, story: str = "") -> list[dict[str, Any]]:
     """Pull the panel array out of the model's reply.
 
@@ -1710,50 +1778,65 @@ def _parse_shotlist(raw: str, count: int, story: str = "") -> list[dict[str, Any
     for p in panels[:count]:
         if not isinstance(p, dict):
             continue
-        shot = str(p.get("shot", "medium")).strip().lower()
-        if shot not in ("wide", "medium", "close-up"):
-            shot = "medium"
-        # Whether the person we follow is in frame decides whether their
-        # description belongs in the prompt at all. A panel whose subject is
-        # a running tap, given the protagonist's description, draws her
-        # running instead.
-        in_frame = p.get("character_in_frame")
-        raw_characters = p.get("characters")
-        characters: list[str] = []
-        if isinstance(raw_characters, list):
-            for value in raw_characters:
-                name = " ".join(str(value).split())[:80]
-                if name and (not story or _mentions(story, name) > 0):
-                    characters.append(name)
-        source = " ".join(str(p.get("source", "")).split())[:240]
-        if story and source and source.lower() not in " ".join(story.split()).lower():
-            source = ""
-        cleaned.append({
-            "shot": shot,
-            "subject": str(p.get("subject", "")).strip(),
-            "action": str(p.get("action", "")).strip(),
-            "setting": str(p.get("setting", "")).strip(),
-            # Default to showing them: a board is mostly about its character,
-            # and a missing flag should not quietly write them out.
-            "character_in_frame": bool(characters) or (
-                True if in_frame is None else bool(in_frame)),
-            "characters": characters,
-            "source": source,
-            # Narration, kept short. A caption that restates the picture is
-            # worse than none, and a long one stops being a caption.
-            "caption": " ".join(str(p.get("caption", "")).split())[:120],
-            # What is actually said aloud. Bubbles are drawn over the panel, so
-            # a long line covers the picture it belongs to -- hence the cap.
-            "dialogue": _clean_dialogue(p.get("dialogue")),
-            # Which continuous stretch of story this belongs to. Pages are
-            # broken on scene boundaries, so this decides the shape of the
-            # finished thing more than any other field.
-            "scene": max(1, int(p.get("scene", 1) or 1)),
-            "scene_title": " ".join(str(p.get("scene_title", "")).split())[:60],
-        })
+        try:
+            cleaned.append(_clean_panel(p, story))
+        except Exception:
+            # One malformed panel is not a reason to throw away the division.
+            # The writer occasionally returns a field as something unexpected,
+            # and losing every other panel to it wastes the whole wait.
+            continue
     if not cleaned:
         raise ValueError("the writer returned no usable panels")
     return cleaned
+
+
+def _clean_panel(p: dict[str, Any], story: str) -> dict[str, Any]:
+    """One panel, with every field pulled into the shape the board expects.
+
+    Separate from the loop so that a panel this cannot make sense of can be
+    dropped on its own.
+    """
+    shot = str(p.get("shot", "medium")).strip().lower()
+    if shot not in ("wide", "medium", "close-up"):
+        shot = "medium"
+    # Whether the person we follow is in frame decides whether their
+    # description belongs in the prompt at all. A panel whose subject is
+    # a running tap, given the protagonist's description, draws her
+    # running instead.
+    in_frame = p.get("character_in_frame")
+    raw_characters = p.get("characters")
+    characters: list[str] = []
+    if isinstance(raw_characters, list):
+        for value in raw_characters:
+            name = " ".join(str(value).split())[:80]
+            if name and (not story or _mentions(story, name) > 0):
+                characters.append(name)
+    source = " ".join(str(p.get("source", "")).split())[:240]
+    if story and source and not _quotes_story(source, story):
+        source = ""
+    return {
+        "shot": shot,
+        "subject": str(p.get("subject", "")).strip(),
+        "action": str(p.get("action", "")).strip(),
+        "setting": str(p.get("setting", "")).strip(),
+        # Default to showing them: a board is mostly about its character,
+        # and a missing flag should not quietly write them out.
+        "character_in_frame": bool(characters) or (
+            True if in_frame is None else bool(in_frame)),
+        "characters": characters,
+        "source": source,
+        # Narration, kept short. A caption that restates the picture is
+        # worse than none, and a long one stops being a caption.
+        "caption": " ".join(str(p.get("caption", "")).split())[:120],
+        # What is actually said aloud. Bubbles are drawn over the panel, so
+        # a long line covers the picture it belongs to -- hence the cap.
+        "dialogue": _clean_dialogue(p.get("dialogue")),
+        # Which continuous stretch of story this belongs to. Pages are
+        # broken on scene boundaries, so this decides the shape of the
+        # finished thing more than any other field.
+        "scene": _as_scene(p.get("scene", 1)),
+        "scene_title": " ".join(str(p.get("scene_title", "")).split())[:60],
+    }
 
 
 def _story_coverage(story: str, panels: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2423,6 +2506,11 @@ def _tier(count: int, top: int) -> int:
 _WORDS_PER_PANEL = 70
 
 
+# As many panels as one board is worth reading in a sitting, and as many as
+# the page composer lays out sensibly.
+_MAX_PANELS = 60
+
+
 def _panel_bounds(words: int) -> tuple[int, int]:
     """The range a division of this much prose should fall in.
 
@@ -2431,7 +2519,13 @@ def _panel_bounds(words: int) -> tuple[int, int]:
     failed rather than believed.
     """
     mid = max(2, round(words / _WORDS_PER_PANEL))
-    return max(2, int(mid * 0.5)), max(4, min(60, int(mid * 2.0)))
+    # Sixty panels is as much as one board holds. Only the top of the range was
+    # capped, so past about 8,400 words the bottom overtook it: a long chapter
+    # was told it "usually lands between 714 and 60 panels", and every division
+    # of it was reported out of range because no count can sit inside an
+    # inverted range.
+    high = max(4, min(_MAX_PANELS, int(mid * 2.0)))
+    return min(max(2, int(mid * 0.5)), high), high
 
 
 def _shotlist_instruction_derived(story: str, low: int, high: int) -> str:
@@ -2568,9 +2662,14 @@ def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         panels = _parse_shotlist(raw, high, story)
         log(req_id, f"{words} words divided into {len(panels)} panels "
                     f"(expected {low}-{high})")
+        # More story than one board holds. Saying "usually makes 60 to 60"
+        # explains nothing; saying the board is a part of the story does.
+        too_long = words > _MAX_PANELS * _WORDS_PER_PANEL
         return {"panels": panels, "asked": None, "derived": True,
                 "words": words, "expected_low": low, "expected_high": high,
-                "out_of_range": not (low <= len(panels) <= high),
+                "too_long": too_long,
+                "out_of_range": (not too_long
+                                 and not (low <= len(panels) <= high)),
                 "coverage": _story_coverage(story, panels)}
 
     count = max(2, min(int(asked), 60))

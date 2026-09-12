@@ -275,7 +275,15 @@ export default function Storyboard({
       // rather than adding panels to whatever was in the library before.
       setProjectId(newJobId());
       setDrawn(new Array(r.panels.length).fill(null));
-      if (r.out_of_range) {
+      if (r.too_long) {
+        // Sixty panels is as much as one board holds, so a chapter this long
+        // becomes a part of itself. Say that, rather than quoting a range.
+        notify(
+          `${r.words} words is more than one board holds, so this is the ` +
+          `first ${r.panels.length} panels of it. Split the story and ` +
+          `divide each part for the rest.`
+        );
+      } else if (r.out_of_range) {
         // Say it rather than hide it: a division far outside what this much
         // prose should produce usually means the story was cut short or the
         // writer lost the thread, and the panels are worth a look before any

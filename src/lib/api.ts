@@ -66,6 +66,7 @@ export const api = {
       expected_low?: number;
       expected_high?: number;
       out_of_range?: boolean;
+      too_long?: boolean;
       coverage?: { covered: number; total: number; percent: number; missing: string[] };
     }>("shot_list", { jobId, story, panels }),
   enrichPanels: (jobId: string, panels: Panel[], style: string) =>
