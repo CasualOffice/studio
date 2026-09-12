@@ -130,9 +130,18 @@ fn vault_protocol(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let paths = AppPaths::resolve().expect("could not resolve application directories");
-    paths
-        .ensure_dirs()
-        .expect("could not create application directories");
+    // Boot must not depend on every directory being creatable. It used to
+    // `.expect()` here, so a models_root on a detached external drive -- a path
+    // under /Volumes, which belongs to root and answers EACCES -- killed the
+    // app before `tauri::Builder` ran: no window, no dialog, and no way to
+    // reach the Storage panel that had set the path in the first place. Create
+    // what this machine allows, report the rest, and let the window open. The
+    // model location has already fallen back to the internal one for this
+    // session, so the Storage panel shows where the models are actually going
+    // and can point them back at the drive once it is attached again.
+    if let Err(error) = paths.ensure_dirs() {
+        eprintln!("could not create every application directory: {error}");
+    }
     let vault = Arc::new(Vault::new(paths.vault()));
 
     tauri::Builder::default()

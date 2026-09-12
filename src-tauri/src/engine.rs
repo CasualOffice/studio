@@ -274,6 +274,21 @@ impl Engine {
         Ok(())
     }
 
+    /// Ask the worker to stop, and give it long enough to actually do it.
+    ///
+    /// The worker decrypts vault images into a private staging directory and
+    /// removes that directory from an `atexit` handler, which only runs if the
+    /// interpreter shuts down of its own accord. Its own drain, in turn, waits
+    /// up to five seconds for in-flight work before returning from `main`. This
+    /// used to allow one hundred milliseconds twenty times over, so quitting
+    /// the app during a run killed the worker before the handler could go, and
+    /// left DECRYPTED pictures in plaintext on disk, where nothing collects
+    /// them until a later worker's scavenger decides they are a day old.
+    ///
+    /// The wait is a ceiling, not a cost: an idle worker exits in milliseconds
+    /// and this returns as soon as it does. Quit is still bounded, because a
+    /// worker that has not gone by then is killed anyway -- a wedged process
+    /// holding the GPU is worse than a staging directory left behind.
     pub async fn shutdown(&self) {
         {
             let mut stdin = self.stdin.lock().await;
@@ -283,8 +298,8 @@ impl Engine {
             let _ = stdin.flush().await;
         }
         let mut child = self.child.lock().await;
-        // Give it a moment to exit cleanly, then insist.
-        for _ in 0..20 {
+        let deadline = tokio::time::Instant::now() + GRACEFUL_EXIT;
+        while tokio::time::Instant::now() < deadline {
             if matches!(child.try_wait(), Ok(Some(_))) {
                 return;
             }
@@ -293,6 +308,14 @@ impl Engine {
         let _ = child.kill().await;
     }
 }
+
+/// How long the worker gets to exit on its own before it is killed.
+///
+/// It has to exceed the worker's own five-second drain plus the time to remove
+/// its staging directory, or the clean-up that the drain exists to reach never
+/// happens. Seven seconds is the worst a quit can cost; the common case is
+/// milliseconds.
+const GRACEFUL_EXIT: std::time::Duration = std::time::Duration::from_secs(7);
 
 async fn dispatch(app: &AppHandle, pending: &Pending, v: Value) {
     let id = v
@@ -358,6 +381,7 @@ async fn dispatch(app: &AppHandle, pending: &Pending, v: Value) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
@@ -377,5 +401,45 @@ mod tests {
             seen_by_host.load(Ordering::Relaxed),
             "the host must observe the worker's death through its own clone"
         );
+    }
+
+    /// The worker removes its plaintext staging directory on its way out, and
+    /// only gets there if it is allowed to exit by itself. Killing it after two
+    /// seconds -- less than its own drain window -- left decrypted vault images
+    /// on disk every time the app was quit during a run.
+    #[tokio::test]
+    async fn shutdown_lets_the_worker_finish_its_own_clean_up() {
+        let dir = std::env::temp_dir().join(format!("modelstudio-engine-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("staging-removed");
+
+        // Stands in for the worker: reads the shutdown line, takes longer than
+        // the old budget to unwind, and only then runs its clean-up.
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("read line; sleep 2.5; : > '{}'", marker.display()))
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let engine = Engine {
+            stdin: Mutex::new(stdin),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            child: Mutex::new(child),
+            dead: Arc::new(AtomicBool::new(false)),
+        };
+
+        let started = std::time::Instant::now();
+        engine.shutdown().await;
+
+        assert!(
+            marker.exists(),
+            "the worker was killed before it could remove its staging directory"
+        );
+        assert!(
+            started.elapsed() < GRACEFUL_EXIT,
+            "shutdown should return when the worker is gone, not wait out the budget"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

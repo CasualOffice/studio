@@ -152,8 +152,27 @@ fn first_sentence(raw: &str) -> String {
     let end = trimmed
         .find(". ")
         .map(|i| i + 1)
-        .unwrap_or_else(|| trimmed.len().min(160));
+        .unwrap_or_else(|| floor_char_boundary(trimmed, 160));
     trimmed[..end].trim().to_string()
+}
+
+/// The largest char boundary at or before `limit` bytes.
+///
+/// The cap used to be `len().min(160)`, a byte count used directly as a slice
+/// index. Engine failures echo the prompt back, so a message with a multi-byte
+/// character -- an em dash, an accent, an emoji -- straddling byte 160 panicked
+/// on the slice. That happened inside `impl Serialize for AppError`, which is
+/// to say while building the reply for the command that was about to explain
+/// the failure, so the explanation became a crash.
+fn floor_char_boundary(s: &str, limit: usize) -> usize {
+    if limit >= s.len() {
+        return s.len();
+    }
+    let mut end = limit;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    end
 }
 
 #[cfg(test)]
@@ -264,6 +283,42 @@ mod tests {
         );
         assert!(out.contains("not one the engine recognises"), "{out}");
         assert!(!out.contains("pass family"), "internals leaked: {out}");
+    }
+
+    /// Engine failures echo the prompt back, so the 160-byte cap on the first
+    /// sentence lands wherever the user's text happens to put it. A byte index
+    /// used as a slice index panicked when a multi-byte character straddled it,
+    /// and it panicked inside `impl Serialize for AppError` -- while building
+    /// the reply that was meant to explain the original failure.
+    #[test]
+    fn a_long_message_survives_a_multibyte_character_on_the_cap() {
+        // No ". " anywhere, so the length cap is what decides the cut.
+        let mut raw = String::from("Qwen does not support that combination ");
+        while raw.len() < 158 {
+            raw.push('a');
+        }
+        raw.push('\u{2014}'); // three bytes, spanning 158..161
+        raw.push_str(" and it never did");
+        assert!(
+            !raw.is_char_boundary(160),
+            "the test needs a character straddling the cap"
+        );
+
+        let out = humanize(&raw);
+        assert!(out.contains("does not support"), "{out}");
+
+        let cut = first_sentence(&raw);
+        assert_eq!(cut.len(), 158, "should cut back to the character boundary");
+        assert!(raw.starts_with(&cut));
+    }
+
+    #[test]
+    fn a_short_first_sentence_is_kept_whole() {
+        assert_eq!(
+            first_sentence("Steps must be positive"),
+            "Steps must be positive"
+        );
+        assert_eq!(first_sentence("One. Two"), "One.");
     }
 
     #[test]
