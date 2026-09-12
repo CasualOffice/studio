@@ -38,6 +38,23 @@ library with export and delete across a whole selection, and errors that stay on
 screen with a Copy button, because an error you cannot copy is an error you
 cannot report.
 
+**More than one person in a scene.** The shot list names who is visible in each
+panel, those names are checked against the story, and up to four share one
+labelled lineup reference — so a second character is conditioned on the same
+identity rather than invented fresh every frame.
+
+**The board is a workflow with gates** — read, plan, prepare, draw, compose —
+rather than buttons that can be pressed in any order. Batches resume, coverage
+is reported against the source, and state that no longer matches the story is
+invalidated instead of quietly reused.
+
+**Drafts are encrypted**, and the sensitive data that was sitting in browser
+storage is migrated out of it. Vault ids, exports, masks, temporary plaintext
+and token storage are hardened, and the vault locks while a job is running.
+
+**The Python runtime is pinned by checksum** and its dependency set locked
+outright, along with CI's own dependencies and the actions it calls.
+
 ## What does not work
 
 **Animating a still.** Wan 2.2 TI2V-5B fits — 9.72 GiB measured for a complete
@@ -46,8 +63,15 @@ below the resolution and step count the model asks for, and whether any setting
 on a 16 GB machine is both watchable and worth the wait is an open question.
 Text to video works. The catalog says which is which.
 
-**Two people in one panel.** The board casts one character sheet. A scene with a
-second person draws them fresh each time.
+**Signing and notarisation.** The build is ad-hoc signed, so macOS quarantines
+it and the command above is required. Proper notarisation is untested.
+
+**A generation smoke test in CI.** Nothing in the pipeline actually runs a model
+— that needs multi-gigabyte weights and real GPU time — so every check here is
+of the code around the models, not of a picture.
+
+**Six unmaintained transitive crates** arrive through Tauri. `cargo deny`
+offers no safe upgrade, so they are watched rather than fixed.
 
 ## Installing
 

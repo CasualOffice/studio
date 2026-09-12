@@ -12,7 +12,7 @@
   <p>
     <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Apple%20Silicon-black">
     <img alt="licence" src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue">
-    <img alt="tests" src="https://img.shields.io/badge/tests-173-green">
+    <img alt="tests" src="https://img.shields.io/badge/tests-180-green">
   </p>
 </div>
 
