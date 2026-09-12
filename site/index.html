@@ -1,592 +1,85 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Model Studio</title>
-<meta name="description" content="Image models that run entirely on your Mac. Generate, edit, upscale, and turn a story into an illustrated comic. Offline, encrypted at rest, open source.">
-<link rel="icon" href="img/logo.svg">
-<meta property="og:title" content="Model Studio">
-<meta property="og:description" content="Image models that run entirely on your Mac. Nothing is uploaded.">
-<meta property="og:type" content="website">
-<link rel="preload" as="image" href="img/sheet-a.webp">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Model Studio — Private creative AI for Mac</title>
+<meta name="description" content="Private creative AI for stories, characters and images. Runs locally on Apple Silicon." />
 <style>
-/* ---------------------------------------------------------------------------
-   Typeface: the system stack. This is a Mac app, so SF Pro is the platform's
-   own voice rather than a compromise, and it costs nothing to load.
-   Palette: one accent, locked across the page. Dark is the default because the
-   app is; light follows the reader's preference.
---------------------------------------------------------------------------- */
-:root {
-  --bg:        #0b0d10;
-  --bg-raise:  #12151a;
-  --line:      #1e232b;
-  --line-soft: #171b21;
-  --ink:       #eef1f5;
-  --ink-dim:   #9aa4b2;
-  --ink-faint: #6b7480;
-  --accent:    #35c8e8;
-  --accent-ink:#04242c;
-  --warn:      #e0a44a;
-  --radius:    14px;
-  --shell:     1200px;
+:root{
+  --bg:#09090b;--surface:#101014;--surface-2:#15151a;--text:#f5f5f1;--muted:#9898a2;
+  --faint:#64646d;--line:rgba(255,255,255,.09);--accent:#c8ff5a;--accent-ink:#11130b;
+  --max:1240px;--r:24px;--r-sm:16px;
 }
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg:        #fbfcfd;
-    --bg-raise:  #ffffff;
-    --line:      #e2e7ed;
-    --line-soft: #edf1f5;
-    --ink:       #0e1319;
-    --ink-dim:   #55606d;
-    --ink-faint: #7b8593;
-    --accent:    #0a7d99;
-    --accent-ink:#ffffff;
-    --warn:      #9a6512;
-  }
-}
-* { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
-/* The nav is sticky, so an anchored section has to clear it. */
-section[id], header[id] { scroll-margin-top: 84px; }
-@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--ink);
-  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
-}
-img { max-width: 100%; display: block; }
-a { color: inherit; }
-.shell { max-width: var(--shell); margin: 0 auto; padding: 0 24px; }
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter",system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+a{color:inherit;text-decoration:none}img{display:block;max-width:100%}.shell{width:min(var(--max),calc(100% - 48px));margin:auto}
+.nav{position:sticky;top:0;z-index:50;height:72px;border-bottom:1px solid var(--line);background:rgba(9,9,11,.78);backdrop-filter:blur(20px)}.navin{height:100%;display:flex;align-items:center;gap:28px}.brand{display:flex;align-items:center;gap:11px;font-weight:700;letter-spacing:-.02em}.logo{width:30px;height:30px;border-radius:9px;overflow:hidden;background:#17171c}.logo img{width:100%;height:100%;object-fit:cover}.navlinks{margin-left:auto;display:flex;align-items:center;gap:26px;color:var(--muted);font-size:14px}.navlinks a:hover{color:var(--text)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;border:1px solid var(--line);border-radius:999px;padding:12px 18px;font-weight:650;font-size:14px;transition:.2s ease}.btn:hover{transform:translateY(-1px);border-color:rgba(255,255,255,.2)}.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}.btn.big{padding:15px 23px;font-size:15px}
+.hero{position:relative;padding:88px 0 70px;min-height:760px;border-bottom:1px solid var(--line);overflow:hidden}.hero:before{content:"";position:absolute;left:58%;top:10%;width:650px;height:650px;background:radial-gradient(circle,rgba(200,255,90,.12),transparent 66%);filter:blur(20px);pointer-events:none}.hero-grid{display:grid;grid-template-columns:.95fr 1.05fr;gap:52px;align-items:center}.eyebrow{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);font-weight:750;margin-bottom:22px}.hero h1{font-size:clamp(4.4rem,8vw,7.6rem);line-height:.88;letter-spacing:-.075em;margin:0 0 30px;max-width:8.6ch;font-weight:740}.lede{font-size:20px;line-height:1.55;color:var(--muted);max-width:48ch;margin:0 0 30px}.actions{display:flex;gap:12px;flex-wrap:wrap}.fine{font-size:13px;color:var(--faint);margin-top:17px}
+.artboard{position:relative;min-height:590px;perspective:1600px}.art{position:absolute;border:1px solid var(--line);border-radius:20px;background:var(--surface);box-shadow:0 45px 90px rgba(0,0,0,.42);overflow:hidden}.art img{width:100%;height:100%;object-fit:cover}.art.a{width:52%;aspect-ratio:.75;right:1%;top:8%;transform:rotate(5deg) translateZ(55px)}.art.b{width:40%;aspect-ratio:1;left:4%;top:8%;transform:rotate(-5deg)}.art.c{width:44%;aspect-ratio:1;left:2%;bottom:4%;transform:rotate(3deg) translateZ(20px)}.art.d{width:49%;aspect-ratio:.76;right:12%;bottom:-7%;transform:rotate(-4deg) translateZ(75px)}.tag{position:absolute;z-index:5;padding:8px 12px;border:1px solid rgba(255,255,255,.11);background:rgba(15,15,19,.88);backdrop-filter:blur(14px);border-radius:999px;color:#e9e9e3;font-size:12px;font-weight:650}.tag.one{left:23%;top:2%}.tag.two{right:0;top:45%}.tag.three{left:24%;bottom:0}.tag:before{content:"";width:7px;height:7px;border-radius:50%;display:inline-block;background:var(--accent);margin-right:7px}
+.trust{border-bottom:1px solid var(--line)}.trustrow{min-height:92px;display:grid;grid-template-columns:repeat(4,1fr);align-items:center}.trustitem{display:flex;gap:11px;align-items:center;justify-content:center;color:var(--muted);font-size:14px;border-right:1px solid var(--line);height:34px}.trustitem:last-child{border:0}.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 24px rgba(200,255,90,.5)}
+.section{padding:120px 0;border-bottom:1px solid var(--line)}.section-head{display:grid;grid-template-columns:1fr 1fr;gap:70px;align-items:end;margin-bottom:62px}.kicker{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);font-weight:750;margin-bottom:16px}.section h2{font-size:clamp(2.5rem,5vw,5.2rem);letter-spacing:-.055em;line-height:.95;margin:0;font-weight:690;max-width:12ch}.section-head p{color:var(--muted);font-size:18px;line-height:1.65;margin:0;max-width:50ch}
+.story-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px}.story-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;min-height:500px;position:relative}.story-card.large{grid-column:span 2;display:grid;grid-template-columns:.8fr 1.2fr;min-height:560px}.copy{padding:38px}.stepno{font-size:12px;letter-spacing:.15em;color:var(--accent);font-weight:800}.copy h3{font-size:32px;letter-spacing:-.04em;margin:12px 0 12px}.copy p{color:var(--muted);font-size:16px;line-height:1.65;margin:0}.visual{min-height:330px;background:#0c0c0f;display:grid;place-items:center;overflow:hidden;position:relative}.visual img{width:100%;height:100%;object-fit:cover}.prose{padding:36px;align-content:center;background:linear-gradient(180deg,#0c0c10,#111116)}.quote{font-family:Georgia,serif;font-size:26px;line-height:1.5;color:#e9e7df;max-width:28ch}.quote em{color:var(--accent);font-style:normal}.detect{display:flex;flex-wrap:wrap;gap:8px;margin-top:25px}.chip{border:1px solid var(--line);background:#17171c;border-radius:999px;padding:8px 12px;font-size:12px;color:#b8b8bf}
+.consistency{display:grid;grid-template-columns:.78fr 1.22fr;gap:70px;align-items:center}.consistency h2{max-width:8ch}.panels{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.panel{overflow:hidden;border:1px solid var(--line);border-radius:20px;background:var(--surface);aspect-ratio:1.18}.panel img{width:100%;height:100%;object-fit:cover}.panel:nth-child(2){transform:translateY(28px)}.panel:nth-child(4){transform:translateY(28px)}.captionline{margin-top:28px;color:var(--muted);font-size:14px}.captionline strong{color:var(--text)}
+.feature{display:grid;grid-template-columns:1fr 1fr;gap:70px;align-items:center;margin:90px 0}.feature:first-of-type{margin-top:0}.feature:last-child{margin-bottom:0}.feature.reverse .feature-copy{order:2}.feature h3{font-size:44px;line-height:1.02;letter-spacing:-.05em;margin:0 0 18px}.feature p{font-size:17px;line-height:1.65;color:var(--muted);max-width:44ch}.shot{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.28)}.shot img{width:100%;aspect-ratio:1.28;object-fit:cover}.prompt{padding:16px 18px;border-top:1px solid var(--line);display:flex;align-items:center;gap:10px;color:#d8d8d4;font-size:13px}.prompt code{color:var(--accent);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.privacy{background:#0c0c0f}.privacy-grid{display:grid;grid-template-columns:.9fr 1.1fr;gap:80px;align-items:center}.diagram{border:1px solid var(--line);border-radius:28px;background:#111116;padding:34px;min-height:460px;display:flex;align-items:center;justify-content:center}.machine{border:1px solid rgba(200,255,90,.27);border-radius:24px;padding:30px;width:100%;max-width:520px;background:linear-gradient(180deg,rgba(200,255,90,.035),rgba(255,255,255,.01))}.machine-label{font-size:12px;letter-spacing:.16em;color:var(--accent);text-transform:uppercase;margin-bottom:26px;font-weight:800}.flowline{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;gap:10px}.node{border:1px solid var(--line);border-radius:14px;padding:16px;text-align:center;background:#15151a;font-size:13px;color:#cfcfd2}.arrow{color:var(--faint)}.cross{text-align:center;margin-top:30px;color:#777780;font-size:13px}.privacy-list{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:32px}.privacy-list div{border-top:1px solid var(--line);padding-top:14px;color:var(--muted);font-size:14px}.privacy-list strong{display:block;color:var(--text);font-size:15px;margin-bottom:5px}
+.hardware-card{border:1px solid var(--line);border-radius:28px;background:var(--surface);overflow:hidden}.hw-top{padding:30px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}.hw-title strong{font-size:20px}.hw-title span{display:block;color:var(--muted);margin-top:5px;font-size:13px}.ram{font-size:13px;color:var(--muted)}.models{padding:14px}.model{display:grid;grid-template-columns:18px 1fr auto;gap:12px;align-items:center;padding:16px;border-radius:15px}.model:hover{background:#17171c}.status{width:8px;height:8px;border-radius:50%}.ok{background:var(--accent)}.lim{background:#f4c75b}.no{background:#5b5b65}.model small{display:block;color:var(--muted);font-size:12px;margin-top:3px}.badge{padding:6px 9px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--muted)}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}.metric{padding:28px;border:1px solid var(--line);border-radius:20px;background:var(--surface)}.metric strong{font-size:34px;letter-spacing:-.04em;display:block}.metric span{color:var(--muted);font-size:13px}
+.cta{padding:140px 0}.cta-box{border:1px solid var(--line);border-radius:32px;padding:72px;background:radial-gradient(circle at 80% 0%,rgba(200,255,90,.12),transparent 36%),var(--surface);position:relative;overflow:hidden}.cta h2{font-size:clamp(3rem,6vw,6.5rem);max-width:8ch;margin:0 0 28px;letter-spacing:-.065em;line-height:.91}.cta p{color:var(--muted);font-size:18px;margin:0 0 30px}.foot{height:100px;display:flex;align-items:center;gap:24px;color:var(--faint);font-size:13px;border-top:1px solid var(--line)}.foot .push{margin-left:auto}
+@media(max-width:900px){.navlinks a:not(.btn){display:none}.hero{padding-top:60px}.hero-grid,.section-head,.consistency,.privacy-grid,.feature,.story-card.large{grid-template-columns:1fr}.hero h1{font-size:clamp(4rem,17vw,6.5rem)}.artboard{min-height:510px}.section{padding:88px 0}.story-card.large{grid-column:span 1}.story-grid{grid-template-columns:1fr}.feature.reverse .feature-copy{order:0}.trustrow{grid-template-columns:1fr 1fr}.trustitem:nth-child(2){border-right:0}.metrics{grid-template-columns:1fr 1fr}.section-head{gap:24px}.consistency,.privacy-grid,.feature{gap:38px}.cta-box{padding:44px 28px}}
+@media(max-width:600px){.shell{width:min(var(--max),calc(100% - 28px))}.nav{height:64px}.navlinks{gap:10px}.nav .btn{padding:9px 12px}.hero{min-height:auto;padding-bottom:40px}.hero-grid{gap:18px}.lede{font-size:17px}.artboard{min-height:410px;transform:scale(.96)}.tag{display:none}.trustrow{grid-template-columns:1fr}.trustitem{border-right:0;border-bottom:1px solid var(--line);height:64px}.trustitem:last-child{border:0}.story-card{min-height:auto}.copy{padding:26px}.feature h3{font-size:36px}.privacy-list,.metrics{grid-template-columns:1fr}.flowline{grid-template-columns:1fr}.arrow{transform:rotate(90deg);text-align:center}.cta{padding:90px 0}.foot{height:auto;padding:30px 0;flex-wrap:wrap}.foot .push{margin-left:0;width:100%}}
 
-/* ---- navigation: one line, 68px ---- */
-.nav {
-  position: sticky; top: 0; z-index: 20;
-  height: 68px; display: flex; align-items: center; gap: 28px;
-  background: color-mix(in srgb, var(--bg) 86%, transparent);
-  backdrop-filter: blur(14px);
-  border-bottom: 1px solid var(--line-soft);
-}
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: -0.01em; text-decoration: none; }
-.brand img { width: 26px; height: 26px; border-radius: 7px; }
-.nav .spacer { flex: 1; }
-.nav a.link { color: var(--ink-dim); text-decoration: none; font-size: 14px; }
-.nav a.link:hover { color: var(--ink); }
-@media (max-width: 760px) { .nav a.link { display: none; } }
-
-/* ---- buttons: one radius system, pill for actions ---- */
-.btn {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 11px 20px; border-radius: 999px;
-  font-size: 14.5px; font-weight: 560; letter-spacing: -0.01em;
-  text-decoration: none; white-space: nowrap; border: 1px solid transparent;
-  transition: transform .18s cubic-bezier(.16,1,.3,1), background .18s, border-color .18s;
-}
-.btn-primary { background: var(--accent); color: var(--accent-ink); }
-.btn-primary:hover { transform: translateY(-1px); }
-.btn-primary:active { transform: translateY(0) scale(.985); }
-.btn-ghost { border-color: var(--line); color: var(--ink); }
-.btn-ghost:hover { border-color: var(--ink-faint); transform: translateY(-1px); }
-@media (prefers-reduced-motion: reduce) { .btn:hover, .btn:active { transform: none; } }
-
-/* ---- hero: asymmetric split ---- */
-.hero { position: relative; overflow: hidden; padding: 56px 0 72px; border-bottom: 1px solid var(--line-soft); }
-@media (max-width: 900px) { .hero { padding: 44px 0 60px; } }
-.hero-grid { display: grid; grid-template-columns: 1.06fr .94fr; gap: 56px; align-items: center; }
-@media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; gap: 40px; } }
-h1 {
-  margin: 0 0 20px;
-  font-size: clamp(2rem, 3.3vw, 2.95rem);
-  line-height: 1.08; letter-spacing: -0.032em; font-weight: 640;
-}
-.lede { margin: 0 0 30px; font-size: 1.09rem; color: var(--ink-dim); max-width: 46ch; }
-.hero-cta { display: flex; gap: 12px; flex-wrap: wrap; }
-
-/* ---------------------------------------------------------------------------
-   The stack. This app makes pages, plural, so the hero shows three real ones
-   in depth rather than one flat crop. Tilt follows the pointer, written to two
-   custom properties from a single rAF tick so no work happens per event.
---------------------------------------------------------------------------- */
-.stage {
-  position: relative;
-  perspective: 1400px;
-  perspective-origin: 58% 42%;
-  min-height: 520px;
-  display: grid;
-  place-items: center;
-}
-@media (max-width: 900px) { .stage { min-height: 400px; } }
-
-.stack {
-  position: relative;
-  width: min(430px, 84%);
-  transform-style: preserve-3d;
-  transform:
-    rotateX(calc(var(--ty, 0) * -7deg))
-    rotateY(calc(var(--tx, 0) * 11deg));
-  transition: transform .5s cubic-bezier(.16,1,.3,1);
-}
-.sheet {
-  position: absolute; inset: 0;
-  border-radius: 12px; overflow: hidden;
-  border: 1px solid var(--line);
-  background: var(--bg-raise);
-  transform-style: preserve-3d;
-  will-change: transform;
-}
-.sheet img { width: 100%; height: auto; display: block; }
-/* Fanned back to front. The frontmost sheet is in normal flow so the stack
-   has a height; the two behind it are absolutely placed. */
-.sheet-1 { position: relative; z-index: 3;
-  transform: translateZ(70px);
-  box-shadow: 0 40px 90px -34px rgba(0,0,0,.72); }
-.sheet-2 { z-index: 2;
-  transform: translate3d(7%, -5%, 10px) rotate(3.2deg);
-  box-shadow: 0 30px 70px -36px rgba(0,0,0,.6); }
-.sheet-3 { z-index: 1;
-  transform: translate3d(13%, -10%, -50px) rotate(6.4deg);
-  box-shadow: 0 24px 60px -38px rgba(0,0,0,.5); }
-@media (prefers-color-scheme: light) {
-  .sheet-1 { box-shadow: 0 40px 80px -36px rgba(16,28,48,.34); }
-  .sheet-2 { box-shadow: 0 30px 64px -38px rgba(16,28,48,.26); }
-  .sheet-3 { box-shadow: 0 24px 54px -40px rgba(16,28,48,.2); }
-}
-
-/* A single soft field behind the stack, in the page accent. Not a mesh, not a
-   blob field: one light source, so the depth reads as lit rather than glowy. */
-.stage::before {
-  content: ""; position: absolute; z-index: 0;
-  width: 78%; aspect-ratio: 1; border-radius: 50%;
-  background: radial-gradient(circle,
-      color-mix(in srgb, var(--accent) 26%, transparent) 0%,
-      transparent 68%);
-  filter: blur(60px); opacity: .5; pointer-events: none;
-}
-@media (prefers-color-scheme: light) { .stage::before { opacity: .34; } }
-
-@media (prefers-reduced-motion: reduce) {
-  .stack { transform: none; transition: none; }
-}
-
-/* ---- statement band ---- */
-.band { padding: 92px 0; border-bottom: 1px solid var(--line-soft); }
-.statement {
-  font-size: clamp(1.5rem, 2.9vw, 2.15rem);
-  line-height: 1.32; letter-spacing: -0.025em; font-weight: 560;
-  max-width: 20ch; margin: 0;
-}
-.band-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; align-items: start; }
-@media (max-width: 860px) { .band-grid { grid-template-columns: 1fr; gap: 28px; } .statement { max-width: none; } }
-.band p { color: var(--ink-dim); margin: 0 0 16px; max-width: 56ch; }
-
-/* ---- capability grid: real rhythm, not equal thirds ---- */
-.caps { padding: 92px 0; border-bottom: 1px solid var(--line-soft); }
-h2 { font-size: clamp(1.6rem, 2.6vw, 2.1rem); line-height: 1.18; letter-spacing: -0.03em; font-weight: 620; margin: 0 0 14px; }
-.section-lede { color: var(--ink-dim); max-width: 58ch; margin: 0 0 44px; }
-.flow-result { margin: 42px auto 0; max-width: 620px; }
-.flow-result img {
-  width: 100%; height: auto; display: block; border-radius: var(--radius);
-  border: 1px solid var(--line); background: var(--bg-raise);
-}
-.flow-result figcaption {
-  margin-top: 12px; font-size: .88rem; line-height: 1.6; color: var(--ink-dim);
-  text-align: center;
-}
-.cap-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 18px; }
-.cap {
-  border: 1px solid var(--line); border-radius: var(--radius);
-  background: var(--bg-raise); overflow: hidden;
-  transition: transform .4s cubic-bezier(.16,1,.3,1), border-color .4s;
-}
-@media (prefers-reduced-motion: no-preference) {
-  .cap:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); }
-}
-.cap-wide { grid-column: span 4; }
-.cap-narrow { grid-column: span 2; }
-.cap-half { grid-column: span 3; }
-.cap-body { padding: 22px 24px 26px; }
-.cap h3 { margin: 0 0 7px; font-size: 1.02rem; font-weight: 600; letter-spacing: -0.015em; }
-.cap p { margin: 0; color: var(--ink-dim); font-size: .94rem; }
-.cap figure {
-  margin: 0; border-bottom: 1px solid var(--line-soft); background: var(--bg);
-  height: 210px; overflow: hidden;
-}
-.cap figure img { width: 100%; height: 100%; object-fit: cover; object-position: center 32%; }
-.cap-narrow figure { height: 210px; }
-@media (max-width: 860px) { .cap-grid { grid-template-columns: 1fr; } .cap-wide, .cap-narrow, .cap-half { grid-column: auto; } }
-
-/* ---- pipeline: horizontal sequence ---- */
-.flow { padding: 92px 0; border-bottom: 1px solid var(--line-soft); }
-.flow-track { display: grid; grid-template-columns: repeat(3, 1fr); gap: 26px; }
-@media (max-width: 860px) { .flow-track { grid-template-columns: 1fr; } }
-.step h3 { margin: 16px 0 6px; font-size: 1rem; font-weight: 600; letter-spacing: -0.015em; }
-.step p { margin: 0; color: var(--ink-dim); font-size: .93rem; }
-.step figure { height: 230px; overflow: hidden;
-  margin: 0; border: 1px solid var(--line); border-radius: var(--radius);
-  overflow: hidden; background: var(--bg-raise);
-  box-shadow: 0 20px 50px -40px rgba(0,0,0,.8);
-  transition: transform .4s cubic-bezier(.16,1,.3,1);
-}
-.step figure img { width: 100%; height: 100%; object-fit: cover; }
-@media (prefers-reduced-motion: no-preference) { .step:hover figure { transform: translateY(-4px); } }
-/* The three steps are a sequence, so they sit on a shallow arc rather than a
-   flat row. The middle one leads because it is the idea that does the work. */
-@media (min-width: 861px) and (prefers-reduced-motion: no-preference) {
-  .flow-track { perspective: 1200px; }
-  .step:nth-child(1) figure { transform: rotateY(4deg) translateZ(-18px); }
-  .step:nth-child(3) figure { transform: rotateY(-4deg) translateZ(-18px); }
-  .step:nth-child(1):hover figure { transform: rotateY(4deg) translateZ(-18px) translateY(-4px); }
-  .step:nth-child(3):hover figure { transform: rotateY(-4deg) translateZ(-18px) translateY(-4px); }
-}
-
-/* ---- install ---- */
-.install { padding: 92px 0; border-bottom: 1px solid var(--line-soft); }
-.install-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; }
-@media (max-width: 860px) { .install-grid { grid-template-columns: 1fr; gap: 34px; } }
-ol.steps { margin: 0; padding: 0; list-style: none; counter-reset: s; }
-ol.steps li { counter-increment: s; padding: 0 0 22px 40px; position: relative; color: var(--ink-dim); }
-ol.steps li::before {
-  content: counter(s); position: absolute; left: 0; top: 0;
-  width: 25px; height: 25px; border-radius: 999px;
-  border: 1px solid var(--line); color: var(--ink-faint);
-  font-size: 12px; font-variant-numeric: tabular-nums;
-  display: grid; place-items: center;
-}
-ol.steps b { color: var(--ink); font-weight: 580; display: block; margin-bottom: 3px; }
-pre {
-  margin: 12px 0 0; padding: 14px 16px; overflow-x: auto;
-  background: var(--bg-raise); border: 1px solid var(--line);
-  border-radius: 10px; color: var(--ink);
-  font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
-}
-.note { border-left: 2px solid var(--warn); padding-left: 16px; color: var(--ink-dim); font-size: .94rem; }
-.note b { color: var(--ink); }
-
-/* ---- requirements: grouped, not a hairline table ---- */
-.req { padding: 92px 0 100px; }
-.req-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; margin-top: 40px; }
-@media (max-width: 860px) { .req-grid { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 520px) { .req-grid { grid-template-columns: 1fr; } }
-.req-cell { border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; background: var(--bg-raise); }
-.req-cell .k { font-size: 1.45rem; font-weight: 600; letter-spacing: -0.03em; display: block; margin-bottom: 5px; }
-.req-cell .v { color: var(--ink-dim); font-size: .92rem; }
-
-/* ---------------------------------------------------------------------------
-   Ink layers. Drawn by the app itself, which is the only honest source of
-   decoration for a drawing tool. They drift at different rates as the page
-   moves, which is what gives the scroll depth rather than a flat slide.
-   Native scroll-driven animation: nothing listens to the scroll event.
---------------------------------------------------------------------------- */
-.ink {
-  position: absolute; pointer-events: none; z-index: 0;
-  opacity: .05; filter: blur(.2px);
-  width: 300px; height: auto;
-}
-@media (prefers-color-scheme: light) { .ink { opacity: .07; filter: invert(1) blur(.2px); } }
-.ink-a { top: -40px; right: -70px; width: 380px; }
-.ink-b { bottom: -80px; left: -90px; width: 330px; }
-.ink-c { top: 40px; left: -60px; width: 280px; }
-@media (max-width: 900px) { .ink { display: none; } }
-
-@supports (animation-timeline: view()) {
-  @media (prefers-reduced-motion: no-preference) {
-    .ink {
-      animation: drift linear both;
-      animation-timeline: view();
-      animation-range: cover;
-    }
-    @keyframes drift { from { transform: translateY(58px); } to { transform: translateY(-58px); } }
-    .ink-b { animation-name: drift-slow; }
-    @keyframes drift-slow { from { transform: translateY(30px) rotate(-3deg); } to { transform: translateY(-34px) rotate(3deg); } }
-  }
-}
-
-/* Sections clip their ink, and keep their content above it. */
-.band, .caps, .flow, .compare, .install, .req { position: relative; overflow: hidden; }
-.shell { position: relative; z-index: 1; }
-
-
-/* ---- proof strip: measured, not marketing ---- */
-.proof { border-bottom: 1px solid var(--line-soft); padding: 34px 0; }
-.proof-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; }
-@media (max-width: 720px) { .proof-grid { grid-template-columns: repeat(2, 1fr); gap: 26px; } }
-.proof-grid div { display: flex; flex-direction: column; gap: 2px; }
-.proof .n {
-  font-size: 1.65rem; font-weight: 620; letter-spacing: -0.035em;
-  font-variant-numeric: tabular-nums; color: var(--ink);
-}
-.proof .l { font-size: .86rem; color: var(--ink-faint); }
-
-/* ---- comparison: the close ---- */
-.compare { padding: 92px 0; border-bottom: 1px solid var(--line-soft); }
-.vs { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 40px; }
-@media (max-width: 780px) { .vs { grid-template-columns: 1fr; } }
-.vs-col { border: 1px solid var(--line); border-radius: var(--radius); padding: 28px 28px 30px; }
-.vs-them { background: transparent; }
-.vs-us {
-  background: var(--bg-raise);
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
-  box-shadow: 0 30px 70px -52px color-mix(in srgb, var(--accent) 60%, transparent);
-}
-.vs-col h3 { margin: 0 0 18px; font-size: 1.02rem; font-weight: 620; letter-spacing: -0.015em; }
-.vs-them h3 { color: var(--ink-faint); }
-.vs-col ul { margin: 0; padding: 0; list-style: none; }
-.vs-col li { padding: 10px 0 10px 26px; position: relative; color: var(--ink-dim); font-size: .95rem; }
-.vs-them li::before {
-  content: ""; position: absolute; left: 4px; top: 18px;
-  width: 11px; height: 1px; background: var(--ink-faint);
-}
-.vs-us li { color: var(--ink); }
-.vs-us li::before {
-  content: ""; position: absolute; left: 2px; top: 15px;
-  width: 6px; height: 10px; border-right: 1.6px solid var(--accent);
-  border-bottom: 1.6px solid var(--accent); transform: rotate(42deg);
-}
-
-/* ---- close ---- */
-.close { padding: 104px 0 110px; text-align: center; border-bottom: 1px solid var(--line-soft); }
-.close-head { font-size: clamp(1.8rem, 3.4vw, 2.7rem); letter-spacing: -0.035em; margin: 0 0 12px; }
-.close-lede { color: var(--ink-dim); margin: 0 0 30px; font-size: 1.05rem; }
-.btn-lg { padding: 14px 30px; font-size: 1rem; }
-.close-fine { color: var(--ink-faint); font-size: .86rem; margin: 20px 0 0; }
-
-/* ---- footer ---- */
-footer { border-top: 1px solid var(--line-soft); padding: 40px 0 56px; color: var(--ink-faint); font-size: .88rem; }
-.foot { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; }
-.foot a { color: var(--ink-dim); text-decoration: none; }
-.foot a:hover { color: var(--ink); }
-.foot .spacer { flex: 1; }
-
-/* ---- entry motion: hierarchy only, and only if wanted ---- */
-@media (prefers-reduced-motion: no-preference) {
-  /* Sections arrive as they are reached, so the eye is led down the page
-     rather than meeting everything at once. Native scroll-driven animation,
-     so nothing listens to the scroll event. */
-  @supports (animation-timeline: view()) {
-    .band-grid, .cap, .step, .install-grid > div, .req-cell {
-      opacity: 0;
-      animation: rise-in linear both;
-      animation-timeline: view();
-      animation-range: entry 8% cover 26%;
-    }
-    @keyframes rise-in {
-      from { opacity: 0; transform: translateY(22px); }
-      to   { opacity: 1; transform: none; }
-    }
-  }
-  .rise { opacity: 0; transform: translateY(14px); animation: rise .7s cubic-bezier(.16,1,.3,1) forwards; }
-  .rise-2 { animation-delay: .07s; }
-  .rise-3 { animation-delay: .14s; }
-  @keyframes rise { to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important;
+                       scroll-behavior:auto!important}
+  .art .a,.art .b,.art .c,.art .d{transform:none!important}
 }
 </style>
 </head>
 <body>
+<nav class="nav"><div class="shell navin">
+  <a class="brand" href="#top"><span class="logo"><img src="img/logo.svg" alt=""></span>Model Studio</a>
+  <div class="navlinks"><a href="#story">Story</a><a href="#create">Create</a><a href="#privacy">Privacy</a><a href="install.html">Install</a><a href="#hardware">Models</a><a href="https://github.com/CasualOffice/studio">GitHub</a><a class="btn primary" href="https://github.com/CasualOffice/studio/releases/latest">Download for Mac</a></div>
+</div></nav>
 
-<nav class="nav">
-  <div class="shell" style="display:flex;align-items:center;gap:28px;width:100%">
-    <a class="brand" href="#top"><img src="img/logo.svg" alt="">Model Studio</a>
-    <span class="spacer"></span>
-    <a class="link" href="#what">What it does</a>
-    <a class="link" href="#comic">Comics</a>
-    <a class="link" href="install.html">Install</a>
-    <a class="link" href="https://github.com/CasualOffice/studio">Source</a>
-    <a class="btn btn-primary" href="https://github.com/CasualOffice/studio/releases/latest">Download for Mac</a>
+<header class="hero" id="top"><div class="shell hero-grid">
+  <div><div class="eyebrow">Private creative AI · Apple Silicon</div><h1>Bring your story to life.</h1><p class="lede">Create characters, illustrations and complete visual stories with models running entirely on your Mac. No uploads. No credits. No cloud.</p><div class="actions"><a class="btn primary big" href="https://github.com/CasualOffice/studio/releases/latest">Download for Mac ↓</a>
+        <a class="btn" href="install.html">Installing &amp; requirements</a><a class="btn big" href="#story">See what it can make →</a></div><div class="fine">Free & open source · Apple Silicon · macOS 13+</div></div>
+  <div class="artboard">
+    <div class="art b"><img src="img/character-sheet.webp" alt="Character reference sheet"></div>
+    <div class="art a"><img src="img/sheet-a.webp" alt="Finished comic page"></div>
+    <div class="art c"><img src="img/room-sheet.webp" alt="Location reference"></div>
+    <div class="art d"><img src="img/page-one.webp" alt="Comic page"></div>
+    <div class="tag one">Character</div><div class="tag two">Scene</div><div class="tag three">Finished page</div>
   </div>
-</nav>
+</div></header>
 
-<header class="hero" id="top">
-  <img class="ink ink-b" src="img/ink-rain.webp" alt="" aria-hidden="true">
-  <div class="shell hero-grid">
-    <div>
-      <h1 class="rise">Your work never<br>leaves your Mac.</h1>
-      <p class="lede rise rise-2">Generate, edit and illustrate with open image models running on your own silicon. Nothing is uploaded, ever.</p>
-      <div class="hero-cta rise rise-3">
-        <a class="btn btn-primary" href="https://github.com/CasualOffice/studio/releases/latest">Download for Mac</a>
-        <a class="btn btn-ghost" href="#comic">See what it makes</a>
-      </div>
-    </div>
-    <div class="stage rise rise-2" id="stage">
-      <div class="stack" id="stack">
-        <div class="sheet sheet-3"><img src="img/sheet-c.webp" width="620" height="826" alt="" loading="lazy"></div>
-        <div class="sheet sheet-2"><img src="img/sheet-b.webp" width="620" height="826" alt="" loading="lazy"></div>
-        <div class="sheet sheet-1"><img src="img/sheet-a.webp" width="620" height="672" alt="Pages of a comic drawn by Model Studio, showing the same character across several panels." fetchpriority="high"></div>
-      </div>
-    </div>
+<section class="trust"><div class="shell trustrow"><div class="trustitem"><i class="dot"></i>Runs entirely on device</div><div class="trustitem"><i class="dot"></i>Works offline</div><div class="trustitem"><i class="dot"></i>Encrypted at rest</div><div class="trustitem"><i class="dot"></i>Open source</div></div></section>
+
+<section class="section" id="story"><div class="shell"><div class="section-head"><div><div class="kicker">From prose to page</div><h2>One story. One visual world.</h2></div><p>Studio does more than generate pictures. It turns the source material into characters, places and scenes first—then uses those references to build a coherent visual story.</p></div>
+  <div class="story-grid">
+    <article class="story-card large"><div class="prose"><div class="stepno">01 · READ</div><div class="quote">“The last train pulled into Marseille just after midnight. Elena stepped down into the rain, still wearing <em>the green coat</em> her father had given her.”</div><div class="detect"><span class="chip">Elena · character</span><span class="chip">Green coat · appearance</span><span class="chip">Marseille station · location</span><span class="chip">Rain · scene detail</span></div></div><div class="visual"><img src="img/character-panel.webp" alt="Generated story scene"></div></article>
+    <article class="story-card"><div class="visual"><img src="img/character-sheet.webp" alt="Character sheet"></div><div class="copy"><div class="stepno">02 · CAST</div><h3>Read the story.</h3><p>The cast is read out of your own prose and checked against it &mdash; a name your text never uses is dropped rather than drawn. Character references are then established before anything is rendered, so identity is deliberate instead of rediscovered panel by panel.</p></div></article>
+    <article class="story-card"><div class="visual"><img src="img/room-sheet.webp" alt="Location reference"></div><div class="copy"><div class="stepno">03 · BUILD</div><h3>Remember the places.</h3><p>Locations become reusable visual references. When the story returns to the same room, it should still feel like the same room.</p></div></article>
+    <article class="story-card large"><div class="copy"><div class="stepno">04 · DRAW</div><h3>Turn the plan into pages.</h3><p>Scenes become panels, panels become pages, and each result stays connected to the characters, locations and decisions that produced it. Panels are drawn a few at a time, and a frame that comes out wrong is fixed by writing what is wrong with it rather than rolling again.</p></div><div class="visual"><img src="img/page-two.webp" alt="Finished comic page"></div></article>
   </div>
-</header>
+</div></section>
 
-<section class="proof">
-  <div class="shell proof-grid">
-    <div><span class="n">0</span><span class="l">bytes uploaded</span></div>
-    <div><span class="n">51s</span><span class="l">a picture, on an M4</span></div>
-    <div><span class="n">27</span><span class="l">models, sized for your Mac</span></div>
-    <div><span class="n">16&nbsp;min</span><span class="l">prose to a six-panel comic</span></div>
-  </div>
-</section>
+<section class="section"><div class="shell consistency"><div><div class="kicker">Continuity</div><h2>The same character. Not a similar one.</h2><p class="lede" style="margin-top:24px">The hard part of visual storytelling is not making one good image. It is carrying the same person, clothes and world across the next twenty.</p><div class="captionline"><strong>Character + location references</strong> stay part of the work instead of disappearing after each prompt.</div></div><div class="panels"><div class="panel"><img src="img/character-panel.webp"></div><div class="panel"><img src="img/room-panel.webp"></div><div class="panel"><img src="img/photoreal-panel.webp"></div><div class="panel"><img src="img/sheet-b.webp"></div></div></div></section>
 
-<section class="band">
-  <img class="ink ink-a" src="img/ink-window.webp" alt="" aria-hidden="true" loading="lazy">
-  <div class="shell band-grid">
-    <h2 class="statement">Some work cannot be uploaded.</h2>
-    <div>
-      <p>An unreleased script. A client brief under NDA. A concept for a pitch you have not won yet. Hosted image tools want all of it on their servers, and for a lot of people that is not a preference to weigh but a contract they would be breaking.</p>
-      <p>Model Studio runs the same class of open models on your own machine. No account, no API key, no telemetry, no per-image cost. The only network traffic is fetching a model once, which you start.</p>
-      <p>What it makes is sealed with ChaCha20-Poly1305 before it touches disk, behind a passphrase you choose. Prompts and filenames are encrypted too, so the vault gives nothing away.</p>
-    </div>
-  </div>
-</section>
+<section class="section" id="create"><div class="shell"><div class="section-head"><div><div class="kicker">Creative tools</div><h2>Make it. Then keep working on it.</h2></div><p>Generation is only the beginning. Move from a first image to correction, expansion and restoration without uploading the work anywhere.</p></div>
+  <div class="feature"><div class="feature-copy"><h3>Create from words.</h3><p>Describe what you see. Studio shows models that actually fit your Mac and runs the selected one locally, with live progress while it forms.</p></div><div class="shot"><img src="img/character-panel.webp"><div class="prompt">Prompt <code>cinematic rain, green coat, night platform…</code></div></div></div>
+  <div class="feature reverse"><div class="feature-copy"><h3>Change what you mean. Not everything else.</h3><p>Instruction editing, masks, outpainting and reference-guided changes let you correct the image instead of endlessly re-rolling it.</p></div><div class="shot"><img src="img/photoreal-panel.webp"><div class="prompt">Edit <code>keep the scene, change only the jacket</code></div></div></div>
+  <div class="feature"><div class="feature-copy"><h3>Restore the detail.</h3><p>Upscale locally when a small source needs to become useful again. No file transfer, no external processing queue.</p></div><div class="shot"><img src="img/upscale.webp"><div class="prompt">SeedVR2 <code>2× to 1024px, about 90s</code></div></div></div>
+</div></section>
 
-<section class="caps" id="what">
-  <div class="shell">
-    <h2>Four things, all of them local</h2>
-    <p class="section-lede">Open models, run on your machine, with the memory ceiling worked out for you before you download anything.</p>
-    <div class="cap-grid">
-      <article class="cap cap-wide">
-        <figure><img src="img/character-panel.webp" width="640" height="640" alt="An anime-style illustration of a woman in a green jacket and red scarf on a rainy neon-lit street." loading="lazy"></figure>
-        <div class="cap-body">
-          <h3>Generate</h3>
-          <p>Text to image, with the picture forming step by step as it runs. FLUX.2, Z-Image, Qwen-Image and FLUX.1 all supported.</p>
-        </div>
-      </article>
-      <article class="cap cap-narrow">
-        <figure><img src="img/photoreal-panel.webp" width="640" height="640" alt="A photographic image of a woman walking down a wet street at night." loading="lazy"></figure>
-        <div class="cap-body">
-          <h3>Edit</h3>
-          <p>Instruction editing, inpainting with a painted mask, outpainting, and reference-guided edits.</p>
-        </div>
-      </article>
-      <article class="cap cap-half">
-        <figure><img src="img/upscale.webp" width="760" height="380" alt="The same panel at 256 pixels blown up on the left, and enlarged by the model on the right." loading="lazy"></figure>
-        <div class="cap-body">
-          <h3>Upscale</h3>
-          <p>SeedVR2 restoration. Naive enlargement on the left, the model on the right. A 2x to 1024&nbsp;px takes about a minute and a half, and anything too large for one pass is done in overlapping pieces so it finishes rather than failing.</p>
-        </div>
-      </article>
-      <article class="cap cap-half">
-        <div class="cap-body" style="padding-top:26px">
-          <h3>Keep it yours</h3>
-          <p>Everything lands in an encrypted vault. Export a decrypted copy when you want one, and only then. Relocate the whole model library to an external drive without re-downloading.</p>
-        </div>
-      </article>
-    </div>
-  </div>
-</section>
+<section class="section privacy" id="privacy"><div class="shell privacy-grid"><div><div class="kicker">Private by architecture</div><h2>Your ideas don't need an API.</h2><p class="lede" style="margin-top:24px">The prompt, source images, generated work and project history stay on your machine. The network is for getting a model when you ask for one—not for inference.</p><div class="privacy-list"><div><strong>No account</strong>Open the app and work.</div><div><strong>No telemetry</strong>Your creative activity is not analytics data.</div><div><strong>No per-image billing</strong>Your hardware does the work.</div><div><strong>Encrypted library</strong>Outputs and metadata are sealed at rest.</div></div></div><div class="diagram"><div class="machine"><div class="machine-label">Your Mac</div><div class="flowline"><div class="node">Prompt<br>+ source</div><div class="arrow">→</div><div class="node">Local<br>model</div><div class="arrow">→</div><div class="node">Encrypted<br>library</div></div><div class="cross">✕ no cloud inference · ✕ no remote project storage</div></div></div></div></section>
 
-<section class="flow" id="comic">
-  <img class="ink ink-b" src="img/ink-chair.webp" alt="" aria-hidden="true" loading="lazy">
-  <div class="shell">
-    <h2>Write a story. Get a comic.</h2>
-    <p class="section-lede">Paste prose and it reads it: who is in it, where it happens, and how many panels the story actually needs. Nothing is invented &mdash; a name your text never uses is dropped rather than drawn. Then it is drawn a few panels at a time, so a look you do not like costs three minutes to discover instead of half an hour.</p>
-    <div class="flow-track">
-      <div class="step">
-        <figure><img src="img/character-sheet.webp" width="640" height="640" alt="A character reference sheet: the same woman drawn from three angles in ink and wash." loading="lazy"></figure>
-        <h3>Read the story</h3>
-        <p>The cast comes out of your own prose, ranked by how often each person appears. Or describe them yourself, or bring a photograph.</p>
-      </div>
-      <div class="step">
-        <figure><img src="img/room-sheet.webp" width="560" height="560" alt="An ink-wash drawing of an empty room with a bay window and an armchair." loading="lazy"></figure>
-        <h3>Build the room</h3>
-        <p>Each scene gets its own location, drawn empty, so the walls stop changing between frames.</p>
-      </div>
-      <div class="step">
-        <figure><img src="img/room-panel.webp" width="560" height="560" alt="The same room, now with the character standing at the window." loading="lazy"></figure>
-        <h3>Draw, then correct</h3>
-        <p>Every frame references both, and captions and speech are set into the page. A frame that comes out wrong is fixed by writing what is wrong with it &mdash; &ldquo;older, grey at the temples&rdquo; &mdash; and redrawing only that one. The result is one comic in your library, not a pile of loose pictures.</p>
-      </div>
+<section class="section" id="hardware"><div class="shell privacy-grid"><div><div class="kicker">Hardware aware</div><h2>Built around your Mac, not a requirements spreadsheet.</h2><p class="lede" style="margin-top:24px">Model Studio checks the machine you are actually using and separates what fits, what needs low-memory mode and what simply should not be offered.</p></div><div class="hardware-card"><div class="hw-top"><div class="hw-title"><strong>Your Mac</strong><span>Apple M4 · 16 GB unified memory</span></div><div class="ram">12.0 GB available for models</div></div><div class="models"><div class="model"><i class="status ok"></i><div><strong>FLUX.2 Klein 4B</strong><small>Recommended · image generation</small></div><span class="badge">Fast</span></div><div class="model"><i class="status ok"></i><div><strong>Qwen Image</strong><small>Fits in memory; 27.5 GB download</small></div><span class="badge">Fits</span></div><div class="model"><i class="status ok"></i><div><strong>SeedVR2 3B</strong><small>Upscaling &middot; tiles when one pass will not fit</small></div><span class="badge">Fits</span></div><div class="model"><i class="status no"></i><div><strong>Qwen Image Edit Q8</strong><small>Resident weights exceed this machine</small></div><span class="badge">Unavailable</span></div></div></div></div></section>
 
-      <figure class="flow-result">
-        <img src="img/page-one.webp" width="900" height="960" alt="A finished comic page: three panels of the same woman in the same room, with typeset captions." loading="lazy">
-        <figcaption>A page the app made, from Kate Chopin&rsquo;s <em>The Story of an Hour</em> pasted in whole. Six panels took sixteen minutes on an M4. Captions are typeset into the page rather than drawn into the picture, so they stay readable.</figcaption>
-      </figure>
-    </div>
-  </div>
-</section>
+<section class="section"><div class="shell"><div class="section-head"><div><div class="kicker">Measured, not guessed</div><h2>Real numbers from real hardware.</h2></div><p>Performance claims should come from the machine, not a marketing benchmark. Studio publishes measured timings and model-fit information.</p></div><div class="metrics"><div class="metric"><strong>0 B</strong><span>uploaded during inference</span></div><div class="metric"><strong>~51s</strong><span>512×512 image on M4*</span></div><div class="metric"><strong>27</strong><span>curated model entries*</span></div><div class="metric"><strong>16 GB</strong><span>tested baseline machine</span></div></div><div class="fine">*Sample values based on the current project measurements/catalog; see the repository for the latest numbers.</div></div></section>
 
-<section class="compare">
-  <img class="ink ink-c" src="img/ink-rain.webp" alt="" aria-hidden="true" loading="lazy">
-  <div class="shell">
-    <h2>What changes when it runs locally</h2>
-    <p class="section-lede">The same picture, made two ways. The differences are not small ones.</p>
-    <div class="vs">
-      <div class="vs-col vs-them">
-        <h3>A hosted tool</h3>
-        <ul>
-          <li>Your prompt and your source images sit on someone else's servers</li>
-          <li>Priced per image, forever</li>
-          <li>The model changes under you when they update it</li>
-          <li>A queue between you and the result</li>
-          <li>Terms decide what you are allowed to make</li>
-        </ul>
-      </div>
-      <div class="vs-col vs-us">
-        <h3>Model Studio</h3>
-        <ul>
-          <li>Nothing leaves the machine, so NDA work stays inside it</li>
-          <li>Free after the download, with no per-image cost</li>
-          <li>The model is a file you keep, pinned until you change it</li>
-          <li>No queue, and it works with the wifi off</li>
-          <li>Open source under the GPL, so you can read every line</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-</section>
+<section class="cta"><div class="shell"><div class="cta-box"><div class="kicker">Model Studio</div><h2>Your next project can stay yours.</h2><p>Free, open source and local once the models are installed.</p><div class="actions"><a class="btn primary big" href="https://github.com/CasualOffice/studio/releases/latest">Download for Mac ↓</a><a class="btn big" href="https://github.com/CasualOffice/studio">View source →</a></div></div></div></section>
 
-<section class="close">
-  <div class="shell">
-    <h2 class="close-head">Make the first one this afternoon.</h2>
-    <p class="close-lede">Free, open source, and yours once it is downloaded.</p>
-    <a class="btn btn-primary btn-lg" href="https://github.com/CasualOffice/studio/releases/latest">Download for Mac</a>
-    <p class="close-fine">Apple Silicon, macOS 13 or later.
-      <a href="install.html" style="color:var(--ink-dim)">Installing and requirements</a>.</p>
-  </div>
-</section>
-
-<footer>
-  <div class="shell foot">
-    <span>GPL-3.0-or-later</span>
-    <span class="spacer"></span>
-    <a href="https://github.com/CasualOffice/studio">Source</a>
-    <a href="https://github.com/CasualOffice/studio/releases">Releases</a>
-    <a href="https://github.com/CasualOffice/studio/blob/main/docs/measurements.md">Measured timings</a>
-    <a href="https://github.com/CasualOffice/studio/issues">Issues</a>
-  </div>
-</footer>
-
-
-<script>
-/* Pointer tilt for the hero stack.
-   One rAF tick writes two custom properties. No per-event layout work, no
-   scroll listener, and it stands down entirely when the reader asks for less
-   motion or is on a touch device where there is no pointer to follow. */
-(function () {
-  var stage = document.getElementById("stage");
-  var stack = document.getElementById("stack");
-  if (!stage || !stack) return;
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
-
-  var tx = 0, ty = 0, queued = false;
-  function apply() {
-    queued = false;
-    stack.style.setProperty("--tx", tx.toFixed(3));
-    stack.style.setProperty("--ty", ty.toFixed(3));
-  }
-  stage.addEventListener("pointermove", function (e) {
-    var r = stage.getBoundingClientRect();
-    tx = (e.clientX - r.left) / r.width - 0.5;
-    ty = (e.clientY - r.top) / r.height - 0.5;
-    if (!queued) { queued = true; requestAnimationFrame(apply); }
-  }, { passive: true });
-  stage.addEventListener("pointerleave", function () {
-    tx = ty = 0;
-    if (!queued) { queued = true; requestAnimationFrame(apply); }
-  }, { passive: true });
-})();
-</script>
-</body>
-</html>
+<footer><div class="shell foot"><strong style="color:var(--text)">Model Studio</strong><span>GPL-3.0-or-later</span><span class="push"></span><a href="https://github.com/CasualOffice/studio">GitHub</a><a href="https://github.com/CasualOffice/studio/releases">Releases</a><a href="https://github.com/CasualOffice/studio/blob/main/docs/measurements.md">Measurements</a></div></footer>
+</body></html>
