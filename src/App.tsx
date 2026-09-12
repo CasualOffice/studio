@@ -54,6 +54,35 @@ export default function App() {
   const notify = useCallback((msg: string, bad?: boolean) => setToast({ msg, bad }), []);
 
   /**
+   * Anything that got away.
+   *
+   * A rejected promise nobody caught produces no message at all, which on
+   * screen is indistinguishable from the button doing nothing -- the single
+   * most common way this app has wasted someone's time. The error boundary
+   * only sees failures during render; these happen after it. Surfacing them
+   * costs nothing and turns silence into something a person can act on and
+   * copy.
+   */
+  useEffect(() => {
+    const onReject = (e: PromiseRejectionEvent) => {
+      const r: unknown = e.reason;
+      const msg = typeof r === "string" ? r
+        : r instanceof Error ? r.message
+        : (() => { try { return JSON.stringify(r); } catch { return String(r); } })();
+      notify(msg || "Something failed without saying what.", true);
+    };
+    const onError = (e: ErrorEvent) => {
+      notify(e.message || "Something failed without saying what.", true);
+    };
+    window.addEventListener("unhandledrejection", onReject);
+    window.addEventListener("error", onError);
+    return () => {
+      window.removeEventListener("unhandledrejection", onReject);
+      window.removeEventListener("error", onError);
+    };
+  }, [notify]);
+
+  /**
    * Carry work between tabs by id.
    *
    * Results are already vault items, so moving one onward costs nothing and
