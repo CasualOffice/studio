@@ -20,6 +20,16 @@ export default function Storage({
   const [info, setInfo] = useState<StorageInfo | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [orphans, setOrphans] = useState<Orphans | null>(null);
+  /**
+   * Armed when repointing would hide an existing library.
+   *
+   * "Change location without moving" is the right tool for reconnecting a
+   * drive that already holds the weights. Pointed at an empty folder it is
+   * indistinguishable from having deleted everything: the models are still on
+   * disk, but the app reports none installed and every tab says to download
+   * one. The move path is carefully staged and checked; this path had nothing.
+   */
+  const [confirmSwitch, setConfirmSwitch] = useState(false);
 
   const refresh = async () => {
     try { setInfo(await api.storageInfo()); } catch (e) { notify(errText(e), true); }
@@ -45,6 +55,7 @@ export default function Storage({
   const relocate = async (moveExisting: boolean) => {
     const picked = await open({ directory: true, title: "Choose where models are stored" });
     if (!picked || Array.isArray(picked)) return;
+    setConfirmSwitch(false);
     setBusy(moveExisting ? "Moving models…" : "Switching…");
     try {
       setInfo(await api.setModelsLocation(picked, moveExisting));
@@ -123,8 +134,20 @@ export default function Storage({
         <button className="btn small primary" disabled={!!busy} onClick={() => relocate(true)}>
           {busy ?? "Move models to another drive…"}
         </button>
-        <button className="btn small" disabled={!!busy} onClick={() => relocate(false)}>
-          Change location without moving
+        <button
+          className={"btn small" + (confirmSwitch ? " danger" : "")}
+          disabled={!!busy}
+          onClick={() => {
+            // Only worth asking when there is something to lose sight of.
+            if (!confirmSwitch && (info?.models_bytes ?? 0) > 0) {
+              setConfirmSwitch(true); return;
+            }
+            void relocate(false);
+          }}
+        >
+          {confirmSwitch
+            ? `Point elsewhere? ${fmtBytes(info?.models_bytes ?? 0)} here stays on disk but stops being found`
+            : "Change location without moving"}
         </button>
         <button className="btn small" disabled={!!busy} onClick={refresh}>Refresh</button>
       </div>
@@ -132,6 +155,11 @@ export default function Storage({
         Moving copies every file first and only removes the originals once they
         have all landed. The engine restarts afterwards so it picks up the new
         location; nothing needs re-downloading.
+        <br />
+        Changing the location without moving leaves every file exactly where it
+        is and looks there instead. It is for reconnecting a drive that already
+        holds your weights — pointed at an empty folder, the app will report no
+        models installed until you point it back.
       </div>
     </div>
     </>
