@@ -1,5 +1,17 @@
 # Runtime lock for the Apple-silicon Python 3.12 environment.
 # Update only after running the full worker suite against the new set.
+#
+# Installed with --no-deps, deliberately. Every transitive package is named
+# here, so there is nothing left to resolve, and resolving anyway makes pip
+# enforce constraints between the pins -- where two of them genuinely
+# disagree. mlx-gen 0.36.0 asks for mlx below 0.32; mlx-vlm 0.7.0 asks for
+# 0.32.2 or above. No version satisfies both, and pip is right to refuse.
+#
+# The set runs regardless because the picture reader and the generator never
+# share a process: the engine loads one or the other and unloads it before
+# loading the next. It has been running this way all along. Turning that into
+# a resolved install produced an environment that would not build at all, so
+# the resolution is skipped and this file is the whole truth.
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1

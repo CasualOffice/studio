@@ -61,6 +61,25 @@ fit. `release_text_encoder`, which the engine passes, is not a parameter this
 route accepts and is dropped with a warning; the default already does the right
 thing.
 
+## The runtime cannot be resolved, only locked
+
+`mlx-gen 0.36.0` requires `mlx<0.32.0` on darwin. `mlx-vlm 0.7.0` requires
+`mlx>=0.32.2`. No version of mlx satisfies both, and every mlx-vlm from 0.6.9
+onward wants 0.32 or newer, so there is no pairing that resolves.
+
+The environment works anyway, and has all along, because the picture reader and
+the generator never share a process — the engine loads one, unloads it, then
+loads the other. A partially pinned install never asked pip to check, so nobody
+noticed.
+
+Pinning the set exactly and letting pip resolve it turned a working arrangement
+into `ResolutionImpossible`, and first-run setup failed with no environment at
+all. The lock names every transitive package, so it is installed with
+`--no-deps`: there is nothing to resolve, and the file is the whole truth.
+
+Worth stating plainly because it will look like a mistake to the next person:
+the two constraints really are incompatible, and pip really is right.
+
 ## Panels have to be asked to be panels
 
 FLUX.2 Klein 4B q4, 768×576, 4 steps, same seed, same style words:

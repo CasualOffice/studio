@@ -384,6 +384,15 @@ pub async fn bootstrap(report: Reporter<'_>, paths: &AppPaths, force: bool) -> R
         "install",
         "--no-input",
         "--only-binary=:all:",
+        // The lock names every package including every transitive one, so
+        // there is nothing left to resolve. Letting pip resolve anyway makes
+        // it enforce constraints between the pinned versions, and two of them
+        // genuinely disagree: mlx-gen asks for mlx below 0.32 and mlx-vlm for
+        // 0.32.2 or above. No version satisfies both. The set installs and
+        // runs -- it has been running all along -- because the reader and the
+        // generator never share a process. Resolution turned a working
+        // arrangement into a refusal to install anything at all.
+        "--no-deps",
         "--requirement",
     ]);
     pip.arg(&requirements);
