@@ -1559,6 +1559,21 @@ pub async fn add_lora(
     } else {
         format!("{repo}:{file}")
     };
+
+    // Confirm it holds adapter weights before it is written down.
+    //
+    // The repository listing cannot tell an adapter from a VAE -- both are one
+    // .safetensors file with no pipeline declared -- so a VAE downloaded,
+    // appeared as installed, could be selected and given a strength, and then
+    // changed nothing. The failure surfaced at draw time as mflux's "did not
+    // match any known adapter keys", naming a file but not what was wrong with
+    // it. The weights are on disk the moment the download above returns, which
+    // is the first point the question can be answered; answering it here means
+    // a file that is not an adapter never enters the list.
+    engine
+        .request(&job_id, "verify_adapter", json!({ "handle": handle }))
+        .await?;
+
     list.retain(|l| l.handle != handle);
     list.push(Lora {
         name: if name.trim().is_empty() {

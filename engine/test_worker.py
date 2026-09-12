@@ -15,6 +15,7 @@ import json
 import io
 import os
 import secrets
+import struct
 import sys
 import tempfile
 import unittest
@@ -2120,8 +2121,6 @@ class ModuleIntegrity(unittest.TestCase):
         self.assertTrue(dispatched, "the op table was not found")
         self.assertEqual(sorted(dispatched - functions), [])
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 
 class TruncatedReplySalvage(unittest.TestCase):
@@ -2227,3 +2226,87 @@ class PlaceIdentity(unittest.TestCase):
         self.assertEqual(
             worker._place_described("kitchen", self.KNOWN), "Narrow and green")
         self.assertEqual(worker._place_described("attic", self.KNOWN), "")
+
+
+class AdapterIsReallyAnAdapter(unittest.TestCase):
+    """A file that holds no adapter weights must be refused, by name.
+
+    Reported from use: a VAE repository is one .safetensors file with no
+    pipeline declared, which is indistinguishable from an adapter repository in
+    the listing -- so it installed, appeared as an adapter, could be selected
+    and given a strength, and failed at draw time as mflux's "did not match any
+    known adapter keys". That names the file but not what is wrong with it.
+    """
+
+    def _write(self, path, keys):
+        """A safetensors file: 8-byte header length, then the JSON header."""
+        header = {k: {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}
+                  for k in keys}
+        blob = json.dumps(header).encode()
+        with open(path, "wb") as fh:
+            fh.write(struct.pack("<Q", len(blob)))
+            fh.write(blob)
+            fh.write(b"\0\0\0\0")
+        return path
+
+    def test_a_vae_is_named_as_a_vae(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = self._write(os.path.join(tmp, "Flux_HDR_VAE.safetensors"),
+                            ["decoder.conv_in.weight", "decoder.conv_in.bias",
+                             "encoder.conv_out.weight"])
+            with self.assertRaises(ValueError) as caught:
+                worker._check_is_adapter("r", f)
+            message = str(caught.exception)
+            self.assertIn("Flux_HDR_VAE.safetensors", message)
+            self.assertIn("not a LoRA", message)
+            self.assertIn("VAE", message)
+
+    def test_a_real_adapter_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = self._write(os.path.join(tmp, "style.safetensors"),
+                            ["transformer.blocks.0.lora_A.weight",
+                             "transformer.blocks.0.lora_B.weight"])
+            worker._check_is_adapter("r", f)  # must not raise
+
+    def test_a_text_encoder_is_named_as_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = self._write(os.path.join(tmp, "te.safetensors"),
+                            ["text_model.encoder.layers.0.weight"])
+            with self.assertRaises(ValueError) as caught:
+                worker._check_is_adapter("r", f)
+            self.assertIn("text encoder", str(caught.exception))
+
+    def test_a_plain_path_resolves(self):
+        # The mflux route hands over a resolved path, not a repo handle. It
+        # resolved neither, so the check silently declined to have an opinion.
+        with tempfile.TemporaryDirectory() as tmp:
+            f = self._write(os.path.join(tmp, "x.safetensors"), ["decoder.a"])
+            self.assertEqual(worker._adapter_local_file(f), f)
+
+    def test_an_unresolvable_handle_is_left_alone(self):
+        # Better to let the loader speak than to refuse something that may be
+        # perfectly good but simply is not on this machine yet.
+        worker._check_is_adapter("r", "nobody/nothing:absent.safetensors")
+
+    def test_a_vae_repository_is_not_offered_as_an_adapter(self):
+        class Sibling:
+            def __init__(self, name):
+                self.rfilename = name
+
+        class Repo:
+            def __init__(self, ident, files, tags=()):
+                self.id, self.tags = ident, list(tags)
+                self.siblings = [Sibling(f) for f in files]
+
+        # One .safetensors used to be evidence enough on its own.
+        self.assertFalse(worker._looks_like_adapter(
+            Repo("kpsss34/Flux-VAE-HDR", ["Flux_HDR_VAE.safetensors"])))
+        self.assertFalse(worker._looks_like_adapter(
+            Repo("some/clip-text-encoder", ["model.safetensors"])))
+        self.assertTrue(worker._looks_like_adapter(
+            Repo("ostris/cereal-lora", ["cereal.safetensors"], ["lora"])))
+        self.assertTrue(worker._looks_like_adapter(
+            Repo("someone/style", ["style_lora.safetensors"])))
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

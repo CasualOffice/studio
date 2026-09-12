@@ -532,6 +532,18 @@ def _looks_like_adapter(info: Any) -> bool:
     if any(f in ("model_index.json", "config.json") for f in files):
         return False
     tags = [t.lower() for t in (getattr(info, "tags", None) or [])]
+    # What the repository is plainly not. "One .safetensors file" was treated
+    # as evidence of an adapter, and a VAE repository is exactly that -- which
+    # is how kpsss34/Flux-VAE-HDR was offered, installed and selected as an
+    # adapter, and only refused by mflux at draw time with "did not match any
+    # known adapter keys". Metadata cannot prove a file IS an adapter, but it
+    # can recognise the things that certainly are not; the header check after
+    # download is what actually decides.
+    haystack = " ".join([getattr(info, "id", "") or ""] + weights + tags).lower()
+    if any(word in haystack for word in
+           ("vae", "text_encoder", "text-encoder", "clip-", "/clip", "tokenizer",
+            "controlnet", "upscaler", "refiner")):
+        return False
     return (
         any("lora" in f.lower() for f in weights)
         or any("lora" in t or "adapter" in t for t in tags)
@@ -3790,23 +3802,48 @@ def _describe_weights(keys: list[str]) -> str:
 
 
 def _adapter_local_file(handle: str) -> str | None:
-    """The downloaded file a handle names, if it is on this machine."""
+    """The downloaded file a handle names, if it is on this machine.
+
+    Two places, because adapters land in two. The Hugging Face cache is where
+    this app puts them; mflux resolves a handle itself and keeps its own copy
+    under `~/Library/Caches/mflux/loras`. Only the first was searched, so for a
+    file mflux had fetched the answer was "cannot resolve it", the check
+    returned without an opinion, and the adapter went to the loader unexamined
+    -- which is how a VAE still reached mflux and came back as "did not match
+    any known adapter keys" with the app's own clearer refusal never spoken.
+    """
     repo, _, wanted = handle.partition(":")
     root = Path(os.environ.get("HF_HOME",
                                str(Path.home() / ".cache" / "huggingface"))) / "hub"
     base = root / ("models--" + repo.replace("/", "--")) / "snapshots"
-    if not base.is_dir():
-        return None
-    for snapshot in sorted(base.iterdir(), reverse=True):
+    if base.is_dir():
+        for snapshot in sorted(base.iterdir(), reverse=True):
+            if wanted:
+                candidate = snapshot / wanted
+                if candidate.exists():
+                    return str(candidate)
+            else:
+                files = sorted(snapshot.glob("*.safetensors"),
+                               key=lambda f: -f.stat().st_size)
+                if files:
+                    return str(files[0])
+
+    # mflux's own adapter cache, flat and named by file.
+    mflux_loras = Path.home() / "Library" / "Caches" / "mflux" / "loras"
+    if mflux_loras.is_dir():
         if wanted:
-            candidate = snapshot / wanted
+            candidate = mflux_loras / Path(wanted).name
             if candidate.exists():
                 return str(candidate)
         else:
-            files = sorted(snapshot.glob("*.safetensors"),
-                           key=lambda f: -f.stat().st_size)
-            if files:
-                return str(files[0])
+            stem = repo.replace("/", "_")
+            for f in sorted(mflux_loras.glob("*.safetensors")):
+                if stem.lower() in f.stem.lower():
+                    return str(f)
+
+    # A plain path, which is what the mflux route is handed once resolved.
+    if os.path.isfile(handle):
+        return handle
     return None
 
 
@@ -3843,6 +3880,20 @@ def _check_is_adapter(req_id: str, handle: str) -> None:
         f"{_describe_weights(keys)}. Remove it from your adapters; leaving it "
         f"selected cannot change the picture."
     )
+
+
+def op_verify_adapter(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
+    """Confirm a downloaded file really is an adapter, before it is recorded.
+
+    The check existed and ran at load time, which is the wrong moment: by then
+    the file is installed, listed, selectable and given a strength, and the
+    person finds out only when they try to draw with it. The file is on disk
+    the instant the download finishes, so this is the first moment the question
+    can be answered -- and answering it here means a VAE never reaches the
+    adapter list at all.
+    """
+    _check_is_adapter(req_id, str(req.get("handle") or ""))
+    return {"ok": True}
 
 
 def op_lora_info(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
@@ -4805,6 +4856,12 @@ def _load_mflux_model(req_id: str, backend: str, model_path: str | None,
         "model_path": model_path,
     }
     if loras:
+        # The same refusal the unified route makes. This route did not check,
+        # so a file that holds no adapter weights reached mflux and came back
+        # as "did not match any known adapter keys" -- which names the file but
+        # not what is wrong with it, nor what to do. Reported from use.
+        for spec in loras:
+            _check_is_adapter(req_id, str(spec.get("path") or ""))
         kwargs["lora_paths"] = [l["path"] for l in loras]
         kwargs["lora_scales"] = [float(l.get("scale", 1.0)) for l in loras]
 
@@ -5487,6 +5544,7 @@ OPS = {
     "ping": op_ping,
     "capabilities": op_capabilities,
     "lora_info": op_lora_info,
+    "verify_adapter": op_verify_adapter,
     "image_formats": op_image_formats,
     "resolve": op_resolve,
     "download": op_download,
