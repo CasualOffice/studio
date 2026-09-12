@@ -1775,9 +1775,24 @@ def _quotes_story(source: str, story: str) -> bool:
     words = _significant(source)
     if not words:
         return False
-    story_words = set(_significant(story))
-    hits = sum(1 for w in words if w in story_words)
-    return hits / len(words) >= 0.8
+    story_words = _significant(story)
+    if not story_words:
+        return False
+    # One contiguous run of the story's own words, not a bag of them.
+    #
+    # The test was `hits / len(words) >= 0.8` counted against a *set*, which
+    # asked only whether the words existed somewhere -- in any order, at any
+    # distance. Against prose reading "Anna opened the door slowly. A grey cat
+    # slept on the mat by the fire." it accepted "Anna slept on the mat" (it
+    # was the cat) and even the scrambled "the door opened Anna slowly". A
+    # passage retyped loosely still appears as one run of the story; a
+    # recombination of its words does not, which is the whole distinction this
+    # function exists to make.
+    import difflib
+
+    match = difflib.SequenceMatcher(a=words, b=story_words, autojunk=False) \
+        .find_longest_match(0, len(words), 0, len(story_words))
+    return match.size / len(words) >= 0.8
 
 
 def _as_scene(value: Any) -> int:
@@ -1891,26 +1906,61 @@ def _clean_panel(p: dict[str, Any], story: str) -> dict[str, Any]:
 
 
 def _story_coverage(story: str, panels: list[dict[str, Any]]) -> dict[str, Any]:
-    """Report which prose units are anchored by a panel's exact source quote."""
+    """Report which prose units are anchored by a panel's exact source quote.
+
+    This is the only guarantee against a board that quietly loses the middle of
+    the story, so it has to be wrong in neither direction. It was wrong in both.
+
+    A quote used to be reusable, so one source could be credited against every
+    sentence it resembled: four distinct sentences with a single quote supplied
+    reported 100% covered and nothing missing, when three had been dropped. A
+    fuzzy match is now spent by the sentence it anchors. A quote that genuinely
+    *contains* a sentence is not spent, because one passage can legitimately
+    span several.
+
+    And a sentence with no content words -- "It is." -- can never be anchored by
+    any quote, so counting it as uncovered made a board that quoted every
+    sentence verbatim report 67%. Those are not prose that can go missing, so
+    they are not in the denominator.
+    """
     units = [" ".join(s.split()) for s in re.split(r"(?<=[.!?])\s+|\n+", story)
              if s.strip()]
     sources = [str(p.get("source", "")).lower() for p in panels if p.get("source")]
-    covered: list[int] = []
-    for index, unit in enumerate(units):
+    scorable = [(index, unit) for index, unit in enumerate(units)
+                if _significant(unit)]
+    spent = [False] * len(sources)
+    covered: set[int] = set()
+    for index, unit in scorable:
         words = set(_significant(unit))
-        if not words:
-            continue
-        for source in sources:
+        low = unit.lower()
+        for position, source in enumerate(sources):
+            if low in source:
+                covered.add(index)
+                # A passage longer than the sentence legitimately spans several,
+                # so it is not used up by anchoring one of them. A quote that is
+                # just this sentence is a one-to-one anchor and is spent -- left
+                # unspent it went on to fuzzily match the next sentence too,
+                # which is the double-counting this function is fixing.
+                if len(source.strip()) <= len(low) + 2:
+                    spent[position] = True
+                break
+            if spent[position]:
+                continue
             source_words = set(_significant(source))
             overlap = len(words & source_words) / len(words)
-            if source in unit.lower() or unit.lower() in source or overlap >= 0.45:
-                covered.append(index)
+            if source in low or overlap >= 0.45:
+                covered.add(index)
+                spent[position] = True
                 break
-    missing = [unit for index, unit in enumerate(units) if index not in covered]
+    missing = [unit for index, unit in scorable if index not in covered]
+    total = len(scorable)
     return {
-        "covered": len(covered), "total": len(units),
-        "percent": round(100 * len(covered) / len(units)) if units else 100,
+        "covered": len(covered), "total": total,
+        "percent": round(100 * len(covered) / total) if total else 100,
         "missing": missing[:20],
+        # The real count, because the list above is truncated and the interface
+        # was reporting the length of the truncation as the number lost.
+        "missing_total": len(missing),
     }
 
 
@@ -1958,6 +2008,16 @@ def _wrap(draw: Any, text: str, font: Any, width: int) -> list[str]:
 
 # What a page holds. Four to six panels is the working range in print comics;
 # fewer reads as padding, more forces every panel to be small and simple.
+#
+# The two bounds are not enforced in the same place, and reading them as one
+# rule is how the page-slot arithmetic came to be wrong. PAGE_MAX is a hard
+# ceiling: `_split_run` divides any scene longer than it, and the singleton
+# merge refuses to overfill past it. PAGE_MIN is a floor only *within* one
+# scene -- it is what `_split_run` divides towards -- and a scene boundary
+# deliberately overrides it, because a scene starting halfway down a page reads
+# as a jump rather than a change of place. So a two-panel scene is a two-panel
+# page on purpose, and the number of pages is bounded by the panel count, not
+# by `panels / PAGE_MIN`.
 PANELS_PER_PAGE = 5
 PAGE_MIN, PAGE_MAX = 3, 6
 
@@ -2049,20 +2109,51 @@ def _tiers(shots: list[str]) -> list[list[int]]:
     return tiers
 
 
-def _fit(im: Any, w: int, h: int) -> Any:
-    """Scale and centre-crop to fill a cell without distorting the drawing."""
+PAGE_GROUND = (243, 241, 236)
+
+
+def _fit(im: Any, w: int, h: int, ground: tuple[int, int, int] = PAGE_GROUND) -> Any:
+    """Scale and centre-crop to fill a cell, but never enlarge the drawing.
+
+    `scale = max(...)` on its own always filled the cell, which meant the one
+    panel the layout deliberately sets largest was the only one being stretched:
+    a full-width establishing cell is 1144px on a 1240px page, against a panel
+    drawn at 768, so every establishing shot was resampled 1.49x and came back
+    the softest thing on the page. That is the inverse of what the tier is for.
+
+    Capped at 1.0 the drawing keeps its own pixels. Where a cell is larger than
+    the panel the remainder is the page's own paper rather than invented detail
+    -- and with the page width now derived from the panels, the common path
+    lands at exactly 1.0 and no padding is visible at all.
+    """
     from PIL import Image
 
-    scale = max(w / im.width, h / im.height)
-    im = im.resize((max(1, round(im.width * scale)), max(1, round(im.height * scale))),
-                   Image.LANCZOS)
-    left, top = (im.width - w) // 2, (im.height - h) // 2
-    return im.crop((left, top, left + w, top + h))
+    scale = min(1.0, max(w / im.width, h / im.height))
+    if scale < 1.0:
+        im = im.resize((max(1, round(im.width * scale)), max(1, round(im.height * scale))),
+                       Image.LANCZOS)
+    if im.width == w and im.height == h:
+        return im
+    # Trim whatever overflows, then centre what is left on the paper.
+    if im.width > w or im.height > h:
+        cx, cy = max(0, (im.width - w) // 2), max(0, (im.height - h) // 2)
+        im = im.crop((cx, cy, cx + min(w, im.width), cy + min(h, im.height)))
+    cell = Image.new("RGB", (w, h), ground)
+    cell.paste(im, ((w - im.width) // 2, (h - im.height) // 2))
+    return cell
 
 
 def _caption_box(draw: Any, text: str, font: Any, box: tuple[int, int, int, int],
-                 line_h: int) -> None:
-    """A narration box in the corner of a panel, as a comic sets one."""
+                 line_h: int) -> int:
+    """A narration box in the corner of a panel, as a comic sets one.
+
+    Returns the height it used, which the caller needs: the caption wraps by
+    measurement, so only this function knows how many lines it took. It used to
+    return nothing and `_render_page` assumed a flat 78px, so any caption that
+    wrapped to three lines -- from about thirteen words, which is an ordinary
+    length for narration -- had the first speech balloon painted across it and
+    both ended up unreadable.
+    """
     x, y, w, _ = box
     lines = _wrap(draw, text, font, w - 18)
     bh = len(lines) * line_h + 12
@@ -2070,6 +2161,7 @@ def _caption_box(draw: Any, text: str, font: Any, box: tuple[int, int, int, int]
                    outline=(20, 20, 22), width=2)
     for n, line in enumerate(lines):
         draw.text((x + 9, y + 6 + n * line_h), line, font=font, fill=(20, 20, 22))
+    return bh
 
 
 def _bubble(draw: Any, text: str, speaker: str, font: Any, small: Any,
@@ -2103,6 +2195,34 @@ def _bubble(draw: Any, text: str, speaker: str, font: Any, small: Any,
     return used
 
 
+def _page_plan(shots: list[str], style: dict[str, Any]) -> tuple[list[Any], int]:
+    """The cells one page needs, and the height they come to.
+
+    Split out of `_render_page` so the height can be known before anything is
+    drawn -- which is what lets every page of a board share one.
+    """
+    margin, gutter = style["margin"], style["gutter"]
+    inner = style["width"] - margin * 2
+    plan, total_h = [], margin
+    for tier in _tiers(shots):
+        cell_w = (inner - gutter * (len(tier) - 1)) // len(tier)
+        # One WIDE panel across the page is an establishing beat, and is set
+        # shallower so the page does not become a ladder of squares.
+        #
+        # Keyed off the shot, not off the tier size. `len(tier) == 1` alone was
+        # the wrong test: `_tiers` strands a tight shot alone whenever it has no
+        # tight neighbour to pair with, and 562 of the 1092 shot layouts up to
+        # six panels do exactly that -- so a close-up got the shallow cell and
+        # lost 42% of its height to the centre crop, which on a face is the top
+        # of the head and the chin. An establishing shot is shallow because it
+        # is establishing, not because it happens to be by itself.
+        establishing = len(tier) == 1 and shots[tier[0]] == "wide"
+        cell_h = round(cell_w * (0.58 if establishing else 1.0))
+        plan.append((tier, cell_w, cell_h))
+        total_h += cell_h + gutter
+    return plan, total_h + margin - gutter
+
+
 def _render_page(panels: list[Any], idx: list[int], meta: dict[str, list[Any]],
                  style: dict[str, Any]) -> Any:
     """Draw one page of panels as tiers."""
@@ -2111,23 +2231,27 @@ def _render_page(panels: list[Any], idx: list[int], meta: dict[str, list[Any]],
     page_w, margin, gutter = style["width"], style["margin"], style["gutter"]
     font, small, line_h = style["font"], style["small"], style["line_h"]
     shots = [meta["shots"][i] for i in idx]
-    tiers = _tiers(shots)
-    inner = page_w - margin * 2
 
     probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
-    plan, total_h = [], margin
-    for tier in tiers:
-        cell_w = (inner - gutter * (len(tier) - 1)) // len(tier)
-        # One panel across the page is an establishing beat, and is set
-        # shallower so the page does not become a ladder of squares.
-        cell_h = round(cell_w * (0.58 if len(tier) == 1 else 1.0))
-        plan.append((tier, cell_w, cell_h))
-        total_h += cell_h + gutter
-    total_h += margin - gutter
+    plan, natural_h = _page_plan(shots, style)
+    # One height for every page of a board.
+    #
+    # Page height used to be whatever its own tiers summed to, so the pages of
+    # a single board came out at wildly different shapes -- a two-panel page
+    # holding a wide shot is three times the height of one holding two tight
+    # shots, and a six-wide-shot board produced a 1:3.4 strip. That is not
+    # something anyone can read as a book or print. The caller measures every
+    # page first and passes the tallest; short pages carry paper at the bottom
+    # rather than having their panels stretched to fill, because a panel
+    # stretched to fit the book is the defect this pass exists to remove.
+    total_h = max(natural_h, int(style.get("page_height") or 0))
 
-    page = Image.new("RGB", (page_w, total_h), (243, 241, 236))
+    page = Image.new("RGB", (page_w, total_h), PAGE_GROUND)
     draw = ImageDraw.Draw(page)
-    y = margin
+    # A page shorter than the board's tallest carries its spare paper split
+    # top and bottom. All of it at the bottom reads as a page that ran out;
+    # centred, a sparse page reads as a deliberately quiet one.
+    y = margin + max(0, total_h - natural_h) // 2
     for tier, cell_w, cell_h in plan:
         x = margin
         for local in tier:
@@ -2136,10 +2260,14 @@ def _render_page(panels: list[Any], idx: list[int], meta: dict[str, list[Any]],
             draw.rectangle([x, y, x + cell_w, y + cell_h],
                            outline=(20, 20, 22), width=3)
             cap = meta["captions"][src].strip()
+            cap_h = 0
             if cap:
-                _caption_box(draw, cap, font,
-                             (x + 10, y + 10, min(cell_w - 20, 430), 0), line_h)
-            by = y + (78 if cap else 16)
+                cap_h = _caption_box(draw, cap, font,
+                                     (x + 10, y + 10, min(cell_w - 20, 430), 0),
+                                     line_h)
+            # Below the caption that was actually drawn, rather than below a
+            # guess at how tall it might be.
+            by = y + (10 + cap_h + 8 if cap else 16)
             for line in meta["dialogue"][src][:2]:
                 by += _bubble(draw, line.get("text", ""), line.get("speaker", ""),
                               font, small, x + cell_w // 2, by,
@@ -2247,14 +2375,8 @@ def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             return default
 
     size = _dim("font_size", 19, 8, 72)
-    style = {
-        "width": _dim("page_width", 1240 if layout == "page" else 860, 320, 8192),
-        "margin": _dim("margin", 34, 0, 400),
-        "gutter": _dim("gutter", 18, 0, 400),
-        "font": _caption_font(size),
-        "small": _caption_font(13),
-        "line_h": int(size * 1.4),
-    }
+    margin = _dim("margin", 34, 0, 400)
+    gutter = _dim("gutter", 18, 0, 400)
 
     outputs: list[str] = []
     sizes: list[int] = []
@@ -2265,12 +2387,39 @@ def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             with Image.open(path) as im:
                 panels.append(im.convert("RGB"))
 
+        # Page width derived from the panels, not fixed at 1240.
+        #
+        # The widest cell on a page is the full-width tier, so sizing the page
+        # so that cell matches the panel is what lets `_fit` place an
+        # establishing shot at 1:1. Hardcoded at 1240 against panels drawn at
+        # 768, every establishing shot was upscaled 1.49x -- a page that was
+        # nominally 1240 wide but carried only 768 of real detail. Derived, the
+        # number is smaller and every pixel on it is one the model drew.
+        widest = max((im.width for im in panels), default=768)
+        style = {
+            "width": _dim("page_width", widest + margin * 2, 320, 8192),
+            "margin": margin,
+            "gutter": gutter,
+            "font": _caption_font(size),
+            "small": _caption_font(13),
+            "line_h": int(size * 1.4),
+        }
+
         pages = (_paginate(meta["scenes"]) if layout == "page"
                  else [list(range(n))])
         if len(pages) > len(slots):
             raise ValueError(
                 f"this board makes {len(pages)} pages but only {len(slots)} "
                 "were reserved; ask for that many again"
+            )
+
+        # Measure every page before drawing any, so they can all be set to one
+        # height. A board whose pages are different shapes is a stack of
+        # pictures rather than a comic.
+        if layout == "page":
+            style["page_height"] = max(
+                _page_plan([meta["shots"][i] for i in idx], style)[1]
+                for idx in pages
             )
 
         import io
@@ -2521,6 +2670,20 @@ def _json_block(raw: str, opener: str = "[", closer: str = "]") -> Any:
     return json.loads(body[start:end + 1])
 
 
+def _whole_word_count(haystack: str, needle: str) -> int:
+    """Occurrences of `needle` as whole words rather than as a substring.
+
+    The boundary is only asserted at an end that is alphanumeric, so a name
+    carrying its own punctuation ("Mrs. Mallard") still matches: `\\b` between a
+    period and a space never holds.
+    """
+    if not needle:
+        return 0
+    lead = r"\b" if needle[0].isalnum() else ""
+    trail = r"\b" if needle[-1].isalnum() else ""
+    return len(re.findall(lead + re.escape(needle) + trail, haystack))
+
+
 def _mentions(story: str, name: str) -> int:
     """How often the story refers to this person or place.
 
@@ -2528,16 +2691,25 @@ def _mentions(story: str, name: str) -> int:
     "Louise" and "Louise Mallard" all count toward the same person. Pronouns
     are deliberately not counted: they cannot be attributed without resolving
     them, and a wrong attribution here changes who the story is about.
+
+    Whole words throughout. The full-name count was `low.count(name.lower())`,
+    a raw substring count, and short names collected other words' letters:
+    "Ed" scored 5 against prose reading "Marta opened the door and turned on
+    the tap. The photographs were scattered." while Marta, the actual
+    protagonist, scored 1. This number sets the cast tiers, which pick the lead,
+    which fills the shared lineup sheet and every panel's cast brief -- so a
+    name the story never contains could dress every frame of the board. It is
+    also the check behind "verifies every name against the text before it is
+    kept", which a hallucinated name passed with a score of 5.
     """
     if not name.strip():
         return 0
     low = story.lower()
-    total = low.count(name.lower())
+    total = _whole_word_count(low, name.lower())
     for word in re.findall(r"[A-Za-z][A-Za-z'-]{2,}", name):
         if word.lower() in ("the", "her", "his", "mrs", "mr", "miss"):
             continue
-        total = max(total, len(re.findall(
-            r"\b" + re.escape(word.lower()) + r"\b", low)))
+        total = max(total, _whole_word_count(low, word.lower()))
     return total
 
 
@@ -2887,8 +3059,17 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                 return {
                     "prompt": original_prompt, "original": original_prompt,
                     "saw_image": bool(staged) and not blind,
+                    # `outcome` and `changed` belong on every reply, and this
+                    # was the one path that omitted both. With neither set, the
+                    # interface's fallback chain reaches its last branch and
+                    # renders the card for a successful rewrite -- so the user
+                    # was shown their own untouched prompt, folklore and all,
+                    # headed "Suggested prompt", above a button that replaced
+                    # it with itself. The rejection is the whole message here.
+                    "changed": False, "outcome": "rewrite_rejected",
                     "description": description, "rejected_because": why,
-                    "note": ("Your words were kept: the rewrite drifted from "
+                    "note": _WHY_REJECTED.get(
+                        why, "Your words were kept: the rewrite drifted from "
                              "them. Try again, or add a detail yourself."),
                 }
 

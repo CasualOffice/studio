@@ -387,11 +387,23 @@ export default function Storyboard({
    * every panel was 512.
    */
   const estimate = useMemo(() => {
-    const pieces = Math.min(batch, Math.max(1, remaining)) + (ownSheet.length ? 0 : 1);
+    // Every image the run will draw, not just the panels in the batch.
+    // `draw()` calls buildPlaces() first, which draws a room sheet for each
+    // scene that has a place and has not got one yet, and the cast sheet if it
+    // is missing. Counting the panels alone understated a first run by a sheet
+    // per scene -- so the one figure quoted before the expensive part was the
+    // one number the user could not rely on.
+    const rooms = new Set(
+      (panels ?? [])
+        .filter((p) => (p.place ?? "").trim() && !placeSheets[p.scene ?? 1])
+        .map((p) => p.scene ?? 1)
+    ).size;
+    const pieces = Math.min(batch, Math.max(1, remaining))
+      + (ownSheet.length ? 0 : 1) + rooms;
     const per = panelPx >= 768 ? 77 : 36;
     return { low: Math.ceil(pieces * per / 60),
              high: Math.ceil(pieces * per * 2 / 60) };
-  }, [batch, remaining, ownSheet.length, panelPx]);
+  }, [batch, remaining, ownSheet.length, panelPx, panels, placeSheets]);
 
   /** What a reset would throw away, named so the question can be answered. */
   const atRisk = useMemo(() => {
@@ -807,18 +819,29 @@ export default function Storyboard({
                       || p.caption || `Panel ${i + 1}`}
                   </span>
                 ))}
-                {coverage && coverage.total > 0 && (
-                  <div className={"notice" + (coverage.missing.length ? " warn" : " good")}
-                       style={{ marginTop: 10 }}>
-                    <strong>{coverage.percent}% of the prose is anchored</strong>
-                    {coverage.missing.length > 0 ? (
-                      <details>
-                        <summary>{coverage.missing.length} passage{coverage.missing.length === 1 ? "" : "s"} need review</summary>
-                        {coverage.missing.map((text, i) => <p key={i}>{text}</p>)}
-                      </details>
-                    ) : "Every passage has a panel source quote."}
-                  </div>
-                )}
+                {coverage && coverage.total > 0 && (() => {
+                  // The engine caps the listed passages at twenty. Counting
+                  // the list meant the worst-covered boards reported the
+                  // smallest shortfall, so count what it actually found and
+                  // say when the list below it is only part of that.
+                  const lost = coverage.missing_total ?? coverage.missing.length;
+                  const shown = coverage.missing.length;
+                  return (
+                    <div className={"notice" + (lost ? " warn" : " good")}
+                         style={{ marginTop: 10 }}>
+                      <strong>{coverage.percent}% of the prose is anchored</strong>
+                      {lost > 0 ? (
+                        <details>
+                          <summary>
+                            {lost} passage{lost === 1 ? "" : "s"} need review
+                            {shown < lost ? ` (first ${shown} shown)` : ""}
+                          </summary>
+                          {coverage.missing.map((text, i) => <p key={i}>{text}</p>)}
+                        </details>
+                      ) : "Every passage has a panel source quote."}
+                    </div>
+                  );
+                })()}
                 <button
                   className={"btn small" + (confirmReset === "prose" ? " danger" : "")}
                   style={{ marginTop: 8 }} disabled={busy}
@@ -1174,13 +1197,20 @@ export default function Storyboard({
                 ))}
               </select>
             )}
-            {preparedCount === 0 && (
+            {/* Gated on the panels still waiting for a picture, which is what
+                `unpreparedRemaining` was written for. `preparedCount > 0` let
+                one prepared panel unlock drawing all of them, and the rest went
+                down the terse-field path -- a minute of drawing each to find
+                out. Preparing comes first, as the stage order promises. */}
+            {unpreparedRemaining > 0 && (
               <button className="btn primary small" disabled={busy}
                       onClick={() => void enrich()}>
-                {stage === "enriching" ? "Preparing briefs…" : "Prepare drawing briefs"}
+                {stage === "enriching" ? "Preparing briefs…"
+                  : preparedCount === 0 ? "Prepare drawing briefs"
+                  : `Prepare ${unpreparedRemaining} remaining brief${unpreparedRemaining === 1 ? "" : "s"}`}
               </button>
             )}
-            {remaining > 0 && preparedCount > 0 && (
+            {remaining > 0 && unpreparedRemaining === 0 && (
               <button className="btn primary small" disabled={busy} onClick={draw}>
                 {stage === "drawing" ? `Drawing ${done}/${panels.length}…`
                   : stage === "building" ? "Building the rooms…"

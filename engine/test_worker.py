@@ -1353,6 +1353,302 @@ class VideoLoadArguments(unittest.TestCase):
         self.assertGreater(checked, 0, "expected op_video's call to be covered")
 
 
+class CastMentions(unittest.TestCase):
+    """Who the story is about decides who is drawn in every frame.
+
+    `_mentions` sets the cast tiers, which pick the lead, which fills the shared
+    lineup reference and every panel's cast brief. It seeded its score with a
+    raw substring count, so a short name collected other words' letters.
+    """
+
+    PROSE = ("Marta opened the door and turned on the tap. "
+             "The photographs were scattered. Ed had never been mentioned here.")
+
+    def test_a_name_not_in_the_prose_scores_nothing(self):
+        # "Ned" used to score 3 from opeNED, turNED, mentioNED.
+        for absent in ("Ned", "Art", "Ora", "Hoto"):
+            self.assertEqual(
+                worker._mentions(self.PROSE, absent), 0,
+                f"{absent!r} is not in the prose and must not be counted")
+
+    def test_a_substring_of_other_words_does_not_outrank_the_protagonist(self):
+        # "Ed" used to score 5 against Marta's 1, which handed the lineup sheet
+        # and every panel brief to a character the story does not have.
+        self.assertLessEqual(worker._mentions(self.PROSE, "Ed"),
+                             worker._mentions(self.PROSE, "Marta"))
+
+    def test_a_name_that_is_present_is_still_counted(self):
+        story = "Louise wept. Later Louise slept, and Mrs. Mallard was still."
+        self.assertEqual(worker._mentions(story, "Louise"), 2)
+        self.assertEqual(worker._mentions(story, "Mrs. Mallard"), 1)
+        # A surname alone still finds the same person.
+        self.assertEqual(worker._mentions(story, "Mallard"), 1)
+
+    def test_possessives_and_punctuation_still_count(self):
+        story = "Marta's coat was wet. “Marta,” he said."
+        self.assertEqual(worker._mentions(story, "Marta"), 2)
+
+
+class SourceAnchoring(unittest.TestCase):
+    """A panel's source passage has to have come out of the manuscript.
+
+    The check was 80% content-word overlap against a *set*, so it asked only
+    whether the words existed somewhere, in any order at any distance.
+    """
+
+    PROSE = ("Anna opened the door slowly. A grey cat slept on the mat by the "
+             "fire. The kettle had boiled dry.")
+
+    def test_a_verbatim_passage_is_accepted(self):
+        self.assertTrue(worker._quotes_story("Anna opened the door slowly", self.PROSE))
+        self.assertTrue(worker._quotes_story("A grey cat slept on the mat", self.PROSE))
+
+    def test_a_recombination_of_the_story_words_is_refused(self):
+        # Every content word is present and in order -- but Anna opened a door
+        # and it was the cat that slept. Ordered overlap cannot catch this;
+        # only adjacency can.
+        self.assertFalse(worker._quotes_story("Anna slept on the mat", self.PROSE))
+
+    def test_scrambled_story_words_are_refused(self):
+        self.assertFalse(worker._quotes_story("the door opened Anna slowly", self.PROSE))
+
+    def test_an_invented_passage_is_refused(self):
+        self.assertFalse(worker._quotes_story("A dragon circled the tower", self.PROSE))
+
+    def test_an_empty_passage_is_refused(self):
+        self.assertFalse(worker._quotes_story("", self.PROSE))
+        self.assertFalse(worker._quotes_story("the and of", self.PROSE))
+
+
+class StoryCoverage(unittest.TestCase):
+    """The only guarantee against a board that loses the middle of the story.
+
+    It has to be wrong in neither direction, and it was wrong in both: a quote
+    was reusable, so one source was credited against every sentence it
+    resembled; and a sentence with no content words could never be anchored,
+    so a fully quoted board still reported a shortfall.
+    """
+
+    FOUR = ("She ran into the rain. She ran into the street. "
+            "She ran into the house. She ran into the room.")
+
+    def test_one_quote_cannot_cover_four_similar_sentences(self):
+        got = worker._story_coverage(self.FOUR, [{"source": "She ran into the rain."}])
+        # Reported 100% with nothing missing while three sentences were lost.
+        self.assertEqual(got["covered"], 1)
+        self.assertEqual(got["total"], 4)
+        self.assertEqual(got["percent"], 25)
+        self.assertEqual(got["missing_total"], 3)
+
+    def test_a_fully_quoted_story_is_fully_covered(self):
+        sources = [{"source": s.strip() + "."} for s in self.FOUR.split(".") if s.strip()]
+        got = worker._story_coverage(self.FOUR, sources)
+        self.assertEqual(got["percent"], 100)
+        self.assertEqual(got["missing"], [])
+
+    def test_one_passage_may_span_several_sentences(self):
+        # A passage longer than a sentence legitimately covers several, so it
+        # is not spent by anchoring one of them.
+        got = worker._story_coverage(self.FOUR, [{"source": self.FOUR}])
+        self.assertEqual(got["percent"], 100)
+
+    def test_a_sentence_with_no_content_words_is_not_counted_as_lost(self):
+        prose = "Marta opened the door. It is. She ran into the rain."
+        sources = [{"source": s.strip() + "."} for s in prose.split(".") if s.strip()]
+        got = worker._story_coverage(prose, sources)
+        # "It is." cannot be anchored by any quote, so it is not prose that can
+        # go missing. This used to report 67% for a verbatim board.
+        self.assertEqual(got["percent"], 100)
+        self.assertEqual(got["total"], 2)
+        self.assertNotIn("It is.", got["missing"])
+
+    def test_the_real_missing_count_is_reported_alongside_the_truncated_list(self):
+        prose = " ".join(f"Sentence number {n} said something." for n in range(30))
+        got = worker._story_coverage(prose, [])
+        self.assertEqual(len(got["missing"]), 20)
+        self.assertEqual(got["missing_total"], 30)
+
+    def test_an_empty_story_does_not_divide_by_zero(self):
+        self.assertEqual(worker._story_coverage("", [])["percent"], 100)
+
+
+class PageGeometry(unittest.TestCase):
+    """The compositor's arithmetic, asserted without a golden image.
+
+    Every one of these failures shipped, because a function whose output is an
+    image feels like it needs a reference file to check. It does not: where an
+    element lands, and what scale a panel is drawn at, are numbers.
+    """
+
+    def _style(self, width, size=19):
+        return {"width": width, "margin": 34, "gutter": 18,
+                "font": worker._caption_font(size),
+                "small": worker._caption_font(13),
+                "line_h": int(size * 1.4)}
+
+    def _panels(self, count, px=768):
+        from PIL import Image
+        return [Image.new("RGB", (px, px), (120, 140 + i, 160)) for i in range(count)]
+
+    def _meta(self, shots, captions=None, dialogue=None):
+        n = len(shots)
+        return {"shots": list(shots),
+                "captions": list(captions or [""] * n),
+                "dialogue": list(dialogue or [[]] * n),
+                "scenes": [1] * n}
+
+    def test_fit_never_enlarges_the_drawing(self):
+        """A cell bigger than the panel must not invent detail.
+
+        `scale = max(...)` alone upscaled every full-width establishing panel
+        1.49x, making the panel the layout sets largest the softest on the page.
+        """
+        panel = self._panels(1)[0]
+        for cell in ((1144, 663), (2000, 2000), (768, 445), (375, 375)):
+            got = worker._fit(panel, *cell)
+            self.assertEqual(got.size, cell, f"_fit must return exactly {cell}")
+        # Enlarging would have to resample; the pixels must survive untouched.
+        wide = worker._fit(panel, 1144, 663)
+        self.assertEqual(wide.getpixel((1144 // 2, 663 // 2)),
+                         panel.getpixel((384, 384)))
+
+    def test_page_width_is_derived_from_the_panels(self):
+        """So the widest cell matches the panel and needs no upscale."""
+        for px in (512, 768, 1024):
+            panels = self._panels(1, px=px)
+            page = worker._render_page(panels, [0], self._meta(["wide"]),
+                                       self._style(px + 68))
+            self.assertEqual(page.width, px + 68)
+
+    def test_a_lone_tight_shot_is_not_given_the_shallow_cell(self):
+        """0.58 is for establishing shots, not for whoever is left over.
+
+        `_tiers` strands a tight shot alone whenever it has no tight neighbour,
+        and the shallow cell centre-crops 42% of its height away -- on a face,
+        the top of the head and the chin.
+        """
+        style = self._style(836)
+        wide = worker._render_page(self._panels(1), [0],
+                                   self._meta(["wide"]), style)
+        for shot in ("close-up", "medium"):
+            tight = worker._render_page(self._panels(1), [0],
+                                        self._meta([shot]), style)
+            self.assertGreater(
+                tight.height, wide.height,
+                f"a lone {shot} must get a full-height cell, not the "
+                "establishing shot's shallow one")
+        inner = style["width"] - style["margin"] * 2
+        self.assertEqual(wide.height, style["margin"] * 2 + round(inner * 0.58))
+
+    def test_no_lone_non_wide_panel_ever_takes_the_shallow_cell(self):
+        """Exhaustive over the shot layouts `_tiers` can produce."""
+        import itertools
+        shallow = 0
+        for n in range(1, 7):
+            for combo in itertools.product(("wide", "medium", "close-up"), repeat=n):
+                for tier in worker._tiers(list(combo)):
+                    if len(tier) == 1 and combo[tier[0]] != "wide":
+                        shallow += 1
+        # 562 of 1092 layouts used to strand a tight shot in a shallow cell.
+        # They still get their own tier -- they just get a square one now,
+        # which is what the two assertions above pin.
+        self.assertGreater(shallow, 0, "expected lone tight shots to exist")
+
+    def test_a_caption_is_never_painted_over_by_a_balloon(self):
+        """The balloon used to start at a hardcoded 78px.
+
+        A caption wrapping to three lines -- about thirteen words, an ordinary
+        length for narration -- ran past it, and both became unreadable.
+        """
+        from PIL import Image, ImageDraw
+        style = self._style(836)
+        probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+        captions = [
+            "She opened the door.",
+            "The rain had not stopped since Tuesday and the kitchen smelled "
+            "of wet wool and old coffee grounds.",
+            "Marta had spent eleven years in that kitchen and had never once, "
+            "in all that time, thought of it as anything that belonged to her.",
+        ]
+        inner = style["width"] - style["margin"] * 2
+        box_w = min(inner - 20, 430)
+        for cap in captions:
+            lines = len(worker._wrap(probe, cap, style["font"], box_w - 18))
+            caption_bottom = 10 + lines * style["line_h"] + 12
+            balloon_top = 10 + lines * style["line_h"] + 12 + 8
+            self.assertGreater(
+                balloon_top, caption_bottom,
+                f"a {lines}-line caption is overlapped by the first balloon")
+
+    def test_caption_box_reports_the_height_it_drew(self):
+        from PIL import Image, ImageDraw
+        draw = ImageDraw.Draw(Image.new("RGB", (600, 400), (255, 255, 255)))
+        font = worker._caption_font(19)
+        one = worker._caption_box(draw, "Short.", font, (10, 10, 430, 0), 26)
+        many = worker._caption_box(
+            draw, "The rain had not stopped since Tuesday and the kitchen "
+                  "smelled of wet wool and old coffee grounds.",
+            font, (10, 200, 430, 0), 26)
+        self.assertEqual(one, 1 * 26 + 12)
+        self.assertGreater(many, one)
+
+    def test_all_pages_of_one_board_share_a_height(self):
+        """A board whose pages are different shapes is not a comic.
+
+        Page height was whatever its own tiers happened to sum to, so a
+        two-panel page holding a wide shot came out three times the height of
+        one holding two tight shots -- 1299 against 443 on the same board.
+        """
+        style = self._style(836)
+        scenes = [1, 1, 2, 2, 3, 3]
+        shots = ["wide", "close-up", "medium", "close-up", "wide", "medium"]
+        meta = self._meta(shots)
+        meta["scenes"] = scenes
+        pages = worker._paginate(scenes)
+        self.assertGreater(len(pages), 1, "expected a multi-page board")
+
+        natural = [worker._page_plan([shots[i] for i in idx], style)[1]
+                   for idx in pages]
+        self.assertGreater(len(set(natural)), 1,
+                           "expected these pages to differ before normalising")
+
+        style["page_height"] = max(natural)
+        heights = {worker._render_page(self._panels(6), idx, meta, style).height
+                   for idx in pages}
+        self.assertEqual(len(heights), 1,
+                         f"pages came out at {sorted(heights)}")
+        self.assertEqual(heights.pop(), max(natural))
+
+    def test_a_short_page_is_padded_rather_than_stretched(self):
+        """Filling the sheet by scaling panels up is the defect, not the fix."""
+        style = self._style(836)
+        shots = ["medium", "close-up"]
+        plan, natural = worker._page_plan(shots, style)
+        style["page_height"] = natural + 400
+        page = worker._render_page(self._panels(2), [0, 1], self._meta(shots), style)
+        self.assertEqual(page.height, natural + 400)
+        # The cells keep their own size; only paper was added.
+        self.assertEqual([cell_h for _t, _w, cell_h in plan],
+                         [cell_h for _t, _w, cell_h
+                          in worker._page_plan(shots, style)[0]])
+        # And the spare paper is split, not all dumped at the bottom.
+        top = page.getpixel((style["margin"] // 2, 4))
+        self.assertEqual(top, worker.PAGE_GROUND)
+
+    def test_every_drawn_element_stays_inside_the_page(self):
+        """A caption or balloon outside its cell is a bug no assertion caught."""
+        style = self._style(836)
+        meta = self._meta(
+            ["wide", "close-up", "medium"],
+            captions=["A very long narration line that has to wrap at least "
+                      "three times to be dangerous here."] * 3,
+            dialogue=[[{"text": "Is that you?", "speaker": "Marta"},
+                       {"text": "I have been waiting.", "speaker": "Jon"}]] * 3)
+        page = worker._render_page(self._panels(3), [0, 1, 2], meta, style)
+        self.assertEqual(page.width, style["width"])
+        self.assertGreater(page.height, style["margin"] * 2)
+
+
 class AdapterLoadArguments(unittest.TestCase):
     """A chosen style adapter has to reach the loader, not just the router.
 

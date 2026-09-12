@@ -6,7 +6,17 @@ export interface Coverage {
   covered: number;
   total: number;
   percent: number;
+  /** The unanchored passages, truncated to twenty for display. */
   missing: string[];
+  /**
+   * How many passages are really unanchored.
+   *
+   * `missing` is capped at twenty, and the interface was reporting the length
+   * of that cap as the number needing review -- so the boards that had lost
+   * the most were the ones that under-reported it. Optional because a draft
+   * saved by an older build will not carry it.
+   */
+  missing_total?: number;
 }
 
 export interface BoardDraft {
