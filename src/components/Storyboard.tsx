@@ -630,11 +630,27 @@ export default function Storyboard({
         .filter((p) => (p.place ?? "").trim() && !placeSheets[placeKey(p)])
         .map((p) => placeKey(p))
     ).size;
-    const pieces = Math.min(batch, Math.max(1, remaining))
-      + (ownSheet.length ? 0 : 1) + rooms;
-    const per = panelPx >= 768 ? 77 : 36;
-    return { low: Math.ceil(pieces * per / 60),
-             high: Math.ceil(pieces * per * 2 / 60) };
+    const drawing = Math.min(batch, Math.max(1, remaining));
+    const sheets = (ownSheet.length ? 0 : 1) + rooms;
+
+    /**
+     * A panel costs more than a picture, because a panel has references.
+     *
+     * 77s at 768 was measured on a bare text-to-image run, and no panel a
+     * board draws is one: every one of them is conditioned on the cast sheet,
+     * the room, or both, which is the whole mechanism that keeps a face and a
+     * room the same. Timed on this machine driving the real engine, low-RAM
+     * on: the sheet and the rooms took 41-59s with no references, and the
+     * panels took 159s, 168s and 257s with two. So the figure quoted before
+     * the expensive part -- the one number the tool asks to be trusted --
+     * understated a board by about two and a half times.
+     *
+     * The sheets keep the unreferenced rate, since that is what they are.
+     */
+    const perSheet = panelPx >= 768 ? 60 : 36;
+    const perPanel = panelPx >= 768 ? 170 : 90;
+    const low = sheets * perSheet + drawing * perPanel;
+    return { low: Math.ceil(low / 60), high: Math.ceil(low * 1.6 / 60) };
   }, [batch, remaining, ownSheet.length, panelPx, panels, placeSheets]);
 
   /** What a reset would throw away, named so the question can be answered. */

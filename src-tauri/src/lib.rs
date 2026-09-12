@@ -110,6 +110,19 @@ fn vault_protocol(
         .header("Content-Length", bytes.len().to_string())
         // Decrypted bytes must not be cached anywhere they could outlive a lock.
         .header("Cache-Control", "no-store, no-cache, must-revalidate")
+        // Readable back off a canvas.
+        //
+        // `vault://` is a different origin from the page, so a canvas that has
+        // drawn one of these images is tainted and every pixel read off it
+        // throws SecurityError -- "The operation is insecure." That is what
+        // Adjust hit on save: it rotates and crops through a canvas and then
+        // calls `toBlob`, so straightening a picture failed at the last step,
+        // after the work, with a message that names nothing the user did.
+        //
+        // Nothing is exposed by allowing it. A custom scheme is not reachable
+        // from a web page; the only thing that can ask is this app's own
+        // webview, which is already displaying the pixels it wants to read.
+        .header("Access-Control-Allow-Origin", "*")
         .body(bytes)
         .unwrap_or_else(|_| deny(500, "could not build response"))
 }

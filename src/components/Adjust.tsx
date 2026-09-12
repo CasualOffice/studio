@@ -84,29 +84,38 @@ export default function Adjust({
     if (!img) return;
     setBusy(true);
     try {
-      // Crop first, in source pixels, then rotate and flip the result.
-      const sx = crop ? crop.x * natural.w : 0;
-      const sy = crop ? crop.y * natural.h : 0;
-      const sw = crop ? crop.w * natural.w : natural.w;
-      const sh = crop ? crop.h * natural.h : natural.h;
-
-      const cut = document.createElement("canvas");
-      cut.width = Math.max(1, Math.round(sw));
-      cut.height = Math.max(1, Math.round(sh));
-      cut.getContext("2d")!.drawImage(img, sx, sy, sw, sh, 0, 0, cut.width, cut.height);
-
+      // Turn first, then cut what was actually selected.
+      //
+      // This was the other way round -- crop the source, rotate the result --
+      // while the preview turns the picture on screen with a CSS transform. So
+      // the rectangle was drawn over a rotated image and applied to an
+      // unrotated one: after a quarter turn a horizontal drag took a vertical
+      // band out of the source, and the saved picture was of somewhere else.
+      // The selection is normalised against what is on screen, so the thing it
+      // has to be applied to is the turned picture.
       const angle = (quarter * 90 + straighten) * (Math.PI / 180);
       const cos = Math.abs(Math.cos(angle)), sin = Math.abs(Math.sin(angle));
-      const outW = Math.round(cut.width * cos + cut.height * sin);
-      const outH = Math.round(cut.width * sin + cut.height * cos);
+      const rotW = Math.max(1, Math.round(natural.w * cos + natural.h * sin));
+      const rotH = Math.max(1, Math.round(natural.w * sin + natural.h * cos));
+
+      const turned = document.createElement("canvas");
+      turned.width = rotW; turned.height = rotH;
+      const tctx = turned.getContext("2d")!;
+      tctx.translate(rotW / 2, rotH / 2);
+      tctx.rotate(angle);
+      tctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
+      tctx.drawImage(img, -natural.w / 2, -natural.h / 2);
+
+      const sx = crop ? crop.x * rotW : 0;
+      const sy = crop ? crop.y * rotH : 0;
+      const sw = crop ? crop.w * rotW : rotW;
+      const sh = crop ? crop.h * rotH : rotH;
 
       const out = document.createElement("canvas");
+      const outW = Math.max(1, Math.round(sw));
+      const outH = Math.max(1, Math.round(sh));
       out.width = outW; out.height = outH;
-      const ctx = out.getContext("2d")!;
-      ctx.translate(outW / 2, outH / 2);
-      ctx.rotate(angle);
-      ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
-      ctx.drawImage(cut, -cut.width / 2, -cut.height / 2);
+      out.getContext("2d")!.drawImage(turned, sx, sy, sw, sh, 0, 0, outW, outH);
 
       const blob = await new Promise<Blob | null>((r) => out.toBlob(r, "image/png"));
       if (!blob) throw new Error("could not render the result");
@@ -122,10 +131,31 @@ export default function Adjust({
     }
   };
 
-  const preview = {
-    transform: `rotate(${quarter * 90 + straighten}deg) scale(${flipH ? -1 : 1}, ${flipV ? -1 : 1})`,
-    transition: "transform .12s",
-  };
+  /**
+   * The turned picture, scaled to stay inside the frame it is turned in.
+   *
+   * A CSS transform does not affect layout, so the container kept the height
+   * of the unturned image while `overflow: hidden` cut off the taller turned
+   * one -- at a quarter turn the top and bottom of the picture were simply not
+   * on screen, which is the one thing the crop rectangle is drawn against.
+   *
+   * Worked in units of the container's width, so the width itself cancels:
+   * the unturned picture is 1 wide by `ratio` tall, and its turned bounding
+   * box is the usual cos/sin combination of the two.
+   */
+  const preview = (() => {
+    const ratio = natural.w > 0 ? natural.h / natural.w : 1;
+    const angle = (quarter * 90 + straighten) * (Math.PI / 180);
+    const cos = Math.abs(Math.cos(angle)), sin = Math.abs(Math.sin(angle));
+    const turnedW = cos + ratio * sin;
+    const turnedH = sin + ratio * cos;
+    const fit = Math.min(1 / (turnedW || 1), ratio / (turnedH || 1), 1);
+    return {
+      transform: `rotate(${quarter * 90 + straighten}deg) `
+        + `scale(${fit * (flipH ? -1 : 1)}, ${fit * (flipV ? -1 : 1)})`,
+      transition: "transform .12s",
+    };
+  })();
 
   return (
     <div>
@@ -159,6 +189,15 @@ export default function Adjust({
       >
         <img
           ref={imgRef} src={vaultUrl(sourceId)} alt="" onLoad={onLoad}
+          /* Fetched as a CORS request so the canvas that saves the result is
+             not tainted by it. `vault://` is a different origin from the page,
+             and without this the rotate-and-crop save threw SecurityError --
+             "The operation is insecure." -- at `toBlob`, which is the last
+             step, after the work. Needs the matching
+             `Access-Control-Allow-Origin` on the protocol in lib.rs: with
+             `crossOrigin` set and no such header the image does not load at
+             all, so the two only work together. */
+          crossOrigin="anonymous"
           style={{ display: "block", width: "100%", ...preview }}
         />
         {crop && (
