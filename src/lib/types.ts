@@ -249,6 +249,14 @@ export interface ResolvedLora {
   bytes: number;
   gated: boolean;
   base_model: string | null;
+  /**
+   * Why this repository holds no adapter, when it does not.
+   *
+   * Read from the file's own header before the download is offered. Nothing
+   * checked before: a VAE repository was indistinguishable from an adapter
+   * repository right up to the point where the adapter changed nothing.
+   */
+  not_an_adapter?: string;
 }
 
 /** One frame of a picture board, as the writer divided the story. */
@@ -273,6 +281,10 @@ export interface Panel {
   /** The scene's location, settled once and shared by every panel in it.
    *  Without this each panel invented its own version of the same room. */
   place?: string;
+  /** Which place this is, by identity. Panels sharing a key share one drawn
+   *  room, so returning to the kitchen looks like returning to it -- and a
+   *  story the writer left in one scene still changes rooms when it moves. */
+  place_key?: string;
   /** The worked-up description: surface, background, light. Empty until the
    *  panel has been through the enrich stage, and the prompt falls back to
    *  the terse fields when it is. Distinct from `scene`, which is a number. */
@@ -323,6 +335,8 @@ export interface AssistResult {
   changed?: boolean;
   /** Significant words the rewrite introduced. */
   added?: string[];
+  /** Spellings the rewrite fixed, as [typed, written] pairs. */
+  corrected?: [string, string][];
   /** Empty quality labels it stripped out. */
   removed?: string[];
   /** What it wrote, when that was rejected — shown so you can judge it. */

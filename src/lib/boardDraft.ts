@@ -44,7 +44,10 @@ export interface BoardDraft {
   notes: Record<number, string>;
   pages: string[];
   ownSheet: string[];
-  placeSheets: Record<number, string>;
+  /** One drawn room per place, keyed by place identity. Drafts written
+   *  before this were keyed by scene number; those keys simply will not
+   *  match, so the rooms are drawn once more and then reused. */
+  placeSheets: Record<string, string>;
   coverage: Coverage | null;
 }
 

@@ -161,7 +161,33 @@ export function reviveLock(raw: unknown): StyleLock | null {
  * telling someone starting chapter twelve that the Anime of chapter eleven is
  * not today's Anime.
  */
+/** The id a look the user described for themselves carries. */
+export const CUSTOM_STYLE = "custom";
+
+/**
+ * A look that is not on the list.
+ *
+ * The four presets are a starting point, not the range of what the models can
+ * do, and someone who wants "1950s newspaper strip" or "soft pencil, no ink"
+ * had no way to say so -- the picker was four words and nothing else, and the
+ * only thing the tool ever said about any of them appeared after twenty
+ * minutes of drawing. A described look is pinned exactly like a preset one, so
+ * it survives a restart and holds for the length of the board.
+ *
+ * Version 0 marks it as belonging to nobody's preset, so `styleHasMoved` never
+ * claims a described look has drifted: there is nothing for it to drift from.
+ */
+export function lockCustomStyle(words: string): StyleLock {
+  return {
+    id: CUSTOM_STYLE,
+    version: 0,
+    words: words.trim(),
+    framing: PANEL_FRAMING,
+  };
+}
+
 export function styleHasMoved(lock: StyleLock): boolean {
+  if (lock.id === CUSTOM_STYLE) return false;
   const current = STYLES.find((s) => s.id === lock.id);
   if (!current) return true;
   return current.words !== lock.words || lock.framing !== PANEL_FRAMING;
@@ -175,6 +201,39 @@ export function styleHasMoved(lock: StyleLock): boolean {
  * panel: a close-up of a running tap, handed the protagonist's description,
  * draws her running instead of the tap.
  */
+/**
+ * How much of the place belongs in a panel, by shot.
+ *
+ * A comic page does not draw the room again in every frame, and this one was.
+ * Every panel asked for the walls, the floor, the furniture and the light --
+ * the enrichment stage is told to state all four -- so a close-up of a face
+ * came back as a face in a fully furnished room, and the room was re-invented
+ * from prose each time, which is also why it drifted. Two problems with one
+ * cause: the place was being drawn twelve times instead of established once.
+ *
+ * How the form actually works: a wide shot opens a scene and carries the
+ * location; the frames after it live inside the place the reader has already
+ * been shown, so they carry less and less of it; a close-up carries almost
+ * none, because at that distance there is nothing but the subject. Backgrounds
+ * are the expensive part of a real page and are spent deliberately.
+ *
+ * Style-neutral on purpose, like the framing clause: the board has to hold for
+ * the photographic style as well as the drawn ones, so this says how much
+ * scene is in frame rather than naming a technique. Not measured against
+ * fixed seeds the way PANEL_FRAMING was -- this is the composition of the
+ * form, and the claim is about what a panel is, not about what one model does
+ * with a phrase.
+ */
+const SHOT_BACKGROUND: Record<string, string> = {
+  wide: "the place itself in frame, full depth",
+  medium: "only what stands directly behind the figure, kept simple",
+  "close-up": "plain ground behind the subject, no scenery",
+};
+
+export function shotBackground(shot: string): string {
+  return SHOT_BACKGROUND[shot] ?? SHOT_BACKGROUND.medium;
+}
+
 export function panelPrompt(
   panel: Panel, style: StyleLock, character: string, note?: string
 ): string {
@@ -193,8 +252,8 @@ export function panelPrompt(
   // repair for a wrong frame: a sentence in English about that one panel,
   // rather than rolling the dice on a new seed and hoping. It is kept with
   // the panel, so a later redraw is still the panel you asked for.
-  return [style.words, style.framing, `${panel.shot} shot`, ...body,
-          (note ?? "").trim()]
+  return [style.words, style.framing, `${panel.shot} shot`,
+          shotBackground(panel.shot), ...body, (note ?? "").trim()]
     .map((b) => b.trim())
     .filter(Boolean)
     .join(". ") + ".";
@@ -222,6 +281,49 @@ export function panelSeed(index: number, redraws: number): number {
   return 7 + index + redraws * 1000;
 }
 
+/** Words that do not distinguish one room from another. */
+const PLACE_NOISE = new Set([
+  "the", "a", "an", "in", "at", "on", "of", "into", "inside", "outside",
+  "her", "his", "their", "my", "our", "its", "this", "that",
+]);
+
+/**
+ * Which place a panel is in, by identity rather than by scene number.
+ *
+ * Mirrors the engine's `_place_key`, and prefers the key the engine already
+ * stamped on the panel. Rooms were keyed on the scene number the writer
+ * assigned, which fails in both directions: a story the writer puts entirely
+ * in scene 1 got one room however far it travelled, and the same kitchen in
+ * scenes 1 and 5 got two separately invented kitchens. Articles and
+ * possessives are dropped, so "the kitchen", "kitchen" and "her kitchen" are
+ * one place.
+ */
+export function placeKey(panel: Panel): string {
+  const stamped = (panel.place_key ?? "").trim();
+  if (stamped) return stamped;
+  const setting = (panel.setting ?? "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ");
+  const words = setting.split(/\s+/).filter((w) => w && !PLACE_NOISE.has(w));
+  if (words.length > 0) return words.join(" ");
+  const title = (panel.scene_title ?? "").trim().toLowerCase();
+  return title || `scene ${panel.scene ?? 1}`;
+}
+
+/**
+ * A seed for a place, derived from the place itself.
+ *
+ * It was `21 + scene`, so renumbering the scenes redrew every room, and two
+ * scenes in one place drew it twice from different seeds. Derived from the key
+ * instead, the same room is the same picture whenever the story comes back
+ * to it.
+ */
+export function placeSeed(key: string): number {
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = (hash * 31 + key.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash) % 100000;
+}
+
 /** The prompt for a scene's location sheet: the room, empty. */
 export function placePrompt(style: StyleLock, place: string): string {
   return `${style.words}. Empty interior, no people. ${place.trim()}.`;
@@ -240,7 +342,13 @@ export function panelReferences(
 ): string[] {
   const refs: string[] = [];
   if (panel.character_in_frame && sheet) refs.push(sheet);
-  if (place) refs.push(place);
+  // No room for a close-up. At that distance the room is not in frame, and
+  // handing the drawer a picture of it asks for two things at once: it pulls
+  // the shot wider to fit the furniture in, which is the opposite of what a
+  // close-up is for. The same reasoning as withholding the character sheet
+  // from a panel she is not in -- a reference is an instruction, and an
+  // instruction for something outside the frame fights the frame.
+  if (place && panel.shot !== "close-up") refs.push(place);
   // Nothing, when there is nothing that belongs. This used to fall back to the
   // character sheet so the drawer always had an image to work from, which put
   // her in every panel she is not in whenever the room failed to draw -- the

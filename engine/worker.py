@@ -27,6 +27,7 @@ import gc
 import io
 import json
 import math
+import struct
 import os
 import queue
 import re
@@ -702,6 +703,8 @@ def _load_model(req_id: str, model: str, quantize: int | None,
     # something that looks like it worked.
     adapters: dict[str, Any] = {}
     if loras:
+        for spec in loras:
+            _check_is_adapter(req_id, str(spec.get("path") or ""))
         adapters["lora_paths"] = [l["path"] for l in loras]
         adapters["lora_scales"] = [float(l.get("scale", 1.0)) for l in loras]
 
@@ -1143,10 +1146,16 @@ SCENE_DIRECTION_SYSTEM = (
     "chair'. It may not become 'a chair beside a fireplace'.\n"
     "4. Never write 'beautiful', 'stunning', 'high quality', '8k', "
     "'cinematic' or 'masterpiece'. They describe nothing.\n"
-    "5. If the request names no thing at all -- 'make it better', 'something "
+    "5. Correct the spelling and the grammar. Write the words properly, in a "
+    "sentence that reads correctly. A misspelled request is still that "
+    "request: 'a hous at nite' is a house at night.\n"
+    "6. If the request names no thing at all -- 'make it better', 'something "
     "nice' -- you cannot make it precise. Reply with exactly: UNCLEAR\n\n"
     "Reply with the rewritten request on one line and nothing else.\n\n"
     "Examples\n"
+    "Request: a pictuer of a hous at nite\n"
+    "a house at night, warm light in the windows, the road wet and black "
+    "in front of it\n\n"
     "Request: a cat on a chair\n"
     "a tabby cat with dense grey-brown fur, curled on a worn oak chair\n\n"
     "Request: a woman walking in the rain at night\n"
@@ -1319,17 +1328,152 @@ def _clean_prompt_request(text: str) -> tuple[str, list[str]]:
     return cleaned, removed
 
 
+def _edits(a: str, b: str) -> int:
+    """Levenshtein distance, for deciding whether one word is the other
+    misspelled."""
+    if a == b:
+        return 0
+    if len(a) > len(b):
+        a, b = b, a
+    row = list(range(len(a) + 1))
+    for j, cb in enumerate(b, start=1):
+        prev, row[0] = row[0], j
+        for i, ca in enumerate(a, start=1):
+            prev, row[i] = row[i], min(row[i] + 1, row[i - 1] + 1,
+                                       prev + (ca != cb))
+    return row[-1]
+
+
+# Deliberate misspellings, which are not typos and are not close enough in
+# edit distance to be treated as any. People type these on purpose.
+_SLANG = {
+    "nite": "night", "lite": "light", "thru": "through", "tho": "though",
+    "foto": "photo", "fotos": "photos", "wanna": "want", "gonna": "going",
+    "cuz": "because", "ur": "your", "u": "you", "pls": "please",
+    "kool": "cool", "kolor": "colour", "color": "colour", "gray": "grey",
+    "nyte": "night", "brite": "bright", "rite": "right", "luv": "love",
+}
+
+
+# The system word list, used to tell a typo from a different word.
+#
+# Edit distance alone cannot: "tabel" -> "table" and "horse" -> "house" are
+# both one or two edits with the same first letter, and the first is the
+# correction the user wants while the second silently redraws the picture. What
+# separates them is that "tabel" is not a word and "horse" is. Two attempts at
+# this without a dictionary were both worse than the bug -- the first let "a
+# cat on a chair" become "a hat on a chair" and called it a spelling fix.
+_WORDS_FILE = "/usr/share/dict/words"
+_DICTIONARY: set[str] | None = None
+
+
+def _dictionary() -> set[str]:
+    """The word list, read once. Empty if the file is not there."""
+    global _DICTIONARY
+    if _DICTIONARY is None:
+        try:
+            with open(_WORDS_FILE, encoding="utf-8", errors="ignore") as fh:
+                _DICTIONARY = {
+                    w for w in (line.strip().lower() for line in fh)
+                    if 2 < len(w) <= 20
+                }
+        except OSError:
+            # No dictionary, no guessing: fall back to exact and prefix
+            # matching, which is where this started and is never wrong, only
+            # sometimes strict.
+            _DICTIONARY = set()
+    return _DICTIONARY
+
+
+def _corrections(original: str, improved: str) -> list[list[str]]:
+    """The spellings the rewrite fixed, as typed-then-written pairs.
+
+    Shown rather than slipped in. Someone who typed "hous" should see that it
+    became "house", both so they can tell the enhancer did something and so
+    they can object if it guessed wrong.
+    """
+    written = [g.lower() for g in _significant(improved)]
+    pairs: list[list[str]] = []
+    for w in _significant(original):
+        word = w.lower()
+        if word in _dictionary() or not _dictionary():
+            continue
+        for candidate in written:
+            if candidate != word and _misspelling_of(word, candidate):
+                pairs.append([word, candidate])
+                break
+    return pairs
+
+
+def _misspelling_of(typed: str, candidate: str) -> bool:
+    """Whether `typed` is `candidate` with a typing mistake in it.
+
+    A real word is never treated as a misspelling of another real word, which
+    is the whole guard: the rewrite may fix what you typed wrong, and may not
+    quietly change what you typed right.
+    """
+    if typed == candidate:
+        return True
+    if _SLANG.get(typed) == candidate:
+        return True
+    words = _dictionary()
+    if not words:
+        return False
+    if typed in words or candidate not in words:
+        return False
+    if len(typed) < 4 or typed[0] != candidate[0]:
+        return False
+    # Two edits once there is something to work with, so a transposition like
+    # "tabel" counts; one for the shortest words, where two edits is most of
+    # the word.
+    limit = 2 if max(len(typed), len(candidate)) >= 5 else 1
+    return abs(len(typed) - len(candidate)) <= limit \
+        and _edits(typed, candidate) <= limit
+
+
+# Words that carry no subject of their own, for the retention check only.
+#
+# Two kinds. The medium -- "picture", "photo", "drawing" -- is not a thing in
+# the scene: "a pictuer of a hous" and "a photograph of a house" are the same
+# request, and insisting the rewrite keep the word "picture" rejects the
+# correction. And pronouns and auxiliaries, because "me and him was walking"
+# becoming "two people walking" is the grammar fix being asked for, not a loss.
+_NOT_A_SUBJECT = {
+    "picture", "pictur", "pic", "photo", "photograph", "image", "img",
+    "drawing", "draw", "painting", "paint", "render", "shot", "art",
+    "artwork", "illustration", "wallpaper",
+    "him", "her", "his", "hers", "she", "he", "they", "them", "their",
+    "was", "were", "been", "has", "had", "have", "did", "does", "doing",
+    "walking",
+}
+
+
 def _dropped_words(original: str, line: str) -> list[str]:
     """Significant words in the request that the rewrite does not carry.
 
     The comparison is by stem and by prefix in both directions, so "rise" and
     "rises" agree, and "rainy" is satisfied by "rain".
     """
-    kept = {_stem(g) for g in _significant(line)}
-    return [w for w in _significant(original)
-            if not any(_stem(w) == k or k.startswith(_stem(w))
-                       or _stem(w).startswith(k)
-                       for k in kept)]
+    # Whole words as well as stems: the dictionary check has to see "sitting",
+    # not the stem "sitt", to know it is a word.
+    line_words = [g.lower() for g in _significant(line)]
+    kept = {_stem(g) for g in line_words}
+    out: list[str] = []
+    for w in _significant(original):
+        word = w.lower()
+        # The medium is not a subject, misspelled or not: "a pictuer of a
+        # hous" and "a photograph of a house" are the same request.
+        if any(word == n or _misspelling_of(word, n) for n in _NOT_A_SUBJECT):
+            continue
+        stem = _stem(word)
+        if any(stem == k or k.startswith(stem) or stem.startswith(k)
+               for k in kept):
+            continue
+        # A corrected spelling is the same word, not a missing one.
+        if any(_misspelling_of(word, g) for g in line_words):
+            continue
+        out.append(w)
+    return out
 
 
 def _repair_dropped(original: str, line: str) -> str | None:
@@ -1347,6 +1491,18 @@ def _repair_dropped(original: str, line: str) -> str | None:
     losing it.
     """
     missing = _dropped_words(original, line)
+    # A word whose near-spelling is already in the rewrite is not missing, it
+    # is disagreed with: asked for a cat "setting" on a chair the writer wrote
+    # "sitting", which is almost certainly what was meant. Appending the
+    # original produced "...sitting on a worn oak chair, setting." -- the word
+    # dangling off the end, meaning nothing, in every rewrite that corrected a
+    # homophone. Better to leave it rejected and show the attempt, so the
+    # choice between "setting" and "sitting" is made by the person who typed
+    # it rather than by a string that satisfies a check.
+    written = [g.lower() for g in _significant(line)]
+    if any(_edits(w.lower(), g) <= 2 and w.lower()[:1] == g[:1]
+           and len(g) >= 5 for w in missing for g in written):
+        return None
     if not missing or len(missing) > 2:
         # One word missing is a paraphrase; two is a paraphrase with a
         # compound in it. Three or more is the rewrite ignoring a clause --
@@ -2605,8 +2761,44 @@ PLACE_SYSTEM = (
 )
 
 
+# Words that do not distinguish one room from another.
+_PLACE_NOISE = frozenset({
+    "the", "a", "an", "in", "at", "on", "of", "into", "inside", "outside",
+    "her", "his", "their", "my", "our", "its", "this", "that",
+})
+
+
+def _place_key(panel: dict[str, Any]) -> str:
+    """Which place a panel is in, by identity rather than by scene number.
+
+    Rooms were keyed on the scene number the writer assigned, and that fails in
+    both directions at once. A writer that puts the whole story in scene 1 --
+    which it does, often -- gave one room to a story that moves house, so the
+    background never changed however far the story travelled. And the same
+    kitchen in scenes 1 and 5 got two separately invented kitchens, so coming
+    back to it did not look like coming back. Neither is a rare case; both were
+    reported from one reading.
+
+    Keyed on what the panel says the place is, both stop: two panels in "the
+    kitchen" share a room whatever scene they are in, and a panel on a station
+    platform gets its own whatever scene it is in. Articles and possessives are
+    dropped so "the kitchen", "kitchen" and "her kitchen" are one place.
+    """
+    setting = re.sub(r"[^a-z0-9 ]+", " ",
+                     " ".join(str(panel.get("setting", "")).lower().split()))
+    words = [w for w in setting.split() if w not in _PLACE_NOISE]
+    if words:
+        return " ".join(words)
+    title = " ".join(str(panel.get("scene_title", "")).lower().split())
+    if title:
+        return title
+    # Nothing says where this is. Fall back to the scene so panels that at
+    # least agree on a scene still agree on a room.
+    return f"scene {_as_scene(panel.get('scene', 1))}"
+
+
 def _establish_places(req_id: str, panels: list[dict[str, Any]],
-                      style: str, writer: str | None) -> dict[int, str]:
+                      style: str, writer: str | None) -> dict[str, str]:
     """Describe each scene's location once, for every panel in it to share.
 
     Panels were described one at a time, so the same room came back as floral
@@ -2614,17 +2806,17 @@ def _establish_places(req_id: str, panels: list[dict[str, Any]],
     the place still. Settling it per scene is what makes consecutive frames
     look like the same house.
     """
-    by_scene: dict[int, list[dict[str, Any]]] = {}
+    by_place: dict[str, list[dict[str, Any]]] = {}
     for p in panels:
-        by_scene.setdefault(_as_scene(p.get("scene", 1)), []).append(p)
+        by_place.setdefault(_place_key(p), []).append(p)
 
-    places: dict[int, str] = {}
-    for n, (scene, group) in enumerate(sorted(by_scene.items())):
+    places: dict[str, str] = {}
+    for n, (key, group) in enumerate(by_place.items()):
         if is_cancelled(req_id):
             raise Cancelled()
         emit({"id": req_id, "type": "progress", "phase": "denoise",
-              "progress": n / max(len(by_scene), 1),
-              "message": f"Settling the look of scene {scene}"})
+              "progress": n / max(len(by_place), 1),
+              "message": f"Settling the look of {key}"})
 
         beats = "; ".join(
             f"{p.get('action', '')} ({p.get('setting', '')})".strip()
@@ -2635,12 +2827,12 @@ def _establish_places(req_id: str, panels: list[dict[str, Any]],
             raw = _write(req_id, PLACE_SYSTEM,
                          f"Style: {style}\nScene: {title}\nWhat happens here: {beats}",
                          max_tokens=150, temperature=0.4, repo=writer, label="Describing the place")
-            places[scene] = " ".join(raw.strip().splitlines()[0].split())[:400]
+            places[key] = " ".join(raw.strip().splitlines()[0].split())[:400]
         except Cancelled:
             raise
         except Exception as exc:
-            log(req_id, f"scene {scene} place not settled: {exc}", "warn")
-            places[scene] = ""
+            log(req_id, f"place {key!r} not settled: {exc}", "warn")
+            places[key] = ""
     return places
 
 
@@ -2656,22 +2848,39 @@ ENRICH_SYSTEM = (
     "change the walls, the floor, the furniture or where the light comes "
     "from -- every panel of this scene is the same room, and a reader notices "
     "when it is not.\n"
-    "3. Add only what the moment implies -- the surface a thing rests on, "
+    "3. How much of the place you describe depends on the shot, the way it "
+    "does on a real page:\n"
+    "   - wide shot: the place in full. This is the frame that shows the "
+    "reader where they are.\n"
+    "   - medium shot: only what stands directly behind the figure. The "
+    "reader has already been shown the room.\n"
+    "   - close-up: none of it. At that distance the room is not in frame. "
+    "Describe the face, the hands, the one thing being looked at, and what "
+    "the light is doing to it -- nothing behind them.\n"
+    "4. Add only what the moment implies -- the surface a thing rests on, "
     "what is behind it, how the light falls on it. Never a new character, "
     "never an event.\n"
-    "4. Say where the light is and what it is doing. A panel with no stated "
+    "5. Say where the light is and what it is doing. A panel with no stated "
     "light is drawn with no light.\n"
-    "5. Describe only what is visible. No sound, no thought, no dialogue.\n"
-    "6. Never write 'beautiful', 'cinematic', 'dramatic', 'high quality' or "
+    "6. Describe only what is visible. No sound, no thought, no dialogue.\n"
+    "7. Never write 'beautiful', 'cinematic', 'dramatic', 'high quality' or "
     "'masterpiece'. They describe nothing.\n\n"
     "One paragraph, at most forty words, no preamble.\n\n"
-    "Example\n"
+    "The same place at three distances. Notice how much of the room is in each.\n\n"
     "Place: a narrow kitchen, dark green walls, bare oak boards, one window "
-    "over the sink.\n"
+    "over the sink.\n\n"
+    "Panel: wide shot. Anna comes into the kitchen. kitchen.\n"
+    "The narrow kitchen from the doorway, dark green walls, bare oak boards "
+    "running away to the sink, one window above it. Grey afternoon light "
+    "across the floor, no lamp lit. Anna small in the doorway.\n\n"
     "Panel: medium shot. Anna stands at the kitchen window. kitchen.\n"
-    "Anna at the window over the sink, rain running down the glass. Grey "
-    "afternoon light through it, no lamp lit. Dark green walls behind her, "
-    "bare oak boards underfoot, a cup steaming on the draining board.\n"
+    "Anna at the window over the sink, rain running down the glass, grey "
+    "light on her face and shoulders. The dark green wall directly behind "
+    "her, a cup steaming on the draining board.\n\n"
+    "Panel: close-up. Anna watches the rain. kitchen.\n"
+    "Anna's face turned to the glass, grey light along her cheek, her eyes "
+    "following one drop down. Rain-blurred brightness behind her, nothing "
+    "else in frame.\n"
 )
 
 
@@ -2709,7 +2918,7 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             str(p.get("action", "")).strip(),
             str(p.get("setting", "")).strip(),
         ) if x)
-        place = places.get(_as_scene(p.get("scene", 1)), "")
+        place = places.get(_place_key(p), "")
         user = (f"Style: {style}\n"
                 + (f"Place, already settled: {place}\n" if place else "")
                 + f"Panel: {moment}.")
@@ -2721,7 +2930,8 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             log(req_id, f"panel {i + 1} not enriched: {exc}", "warn")
             out.append({**p, "description": "",
-                        "place": places.get(_as_scene(p.get("scene", 1)), "")})
+                        "place": places.get(_place_key(p), ""),
+                        "place_key": _place_key(p)})
             continue
 
         text = " ".join(raw.strip().splitlines()[0].split())
@@ -2748,7 +2958,10 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             log(req_id, f"panel {i + 1} brief lost the subject; restoring it", "warn")
             text = f"{subject}. {text}"
         out.append({**p, "description": text[:400],
-                    "place": places.get(_as_scene(p.get("scene", 1)), "")})
+                    "place": places.get(_place_key(p), ""),
+                    # The board draws one room per key and hands the same
+                    # picture to every panel that shares it.
+                    "place_key": _place_key(p)})
 
     return {"panels": out}
 
@@ -2957,6 +3170,49 @@ def _shotlist_instruction_derived(story: str, low: int, high: int) -> str:
     )
 
 
+# A pronoun is not a character.
+#
+# The cast is verified by asking whether the name appears in the story, which
+# a pronoun always does -- so a story told in the first person came back with a
+# cast of "I", "her" and "she", each one "verified", each one a separate
+# person, and "she" and "her" the same person twice. Those names then went into
+# the reference sheet as "Character reference sheet, full body, neutral pose.
+# I." and into every panel prompt as "I: ; her: ". A character drawn from that
+# is a stranger in every frame.
+#
+# Only whole names are rejected. "her sister" and "the conductor" are exactly
+# what the cast reader is told to return when a story does not name someone.
+_PRONOUN_NAMES = frozenset({
+    "i", "me", "my", "mine", "myself",
+    "we", "us", "our", "ours", "ourselves",
+    "you", "your", "yours", "yourself",
+    "he", "him", "his", "himself",
+    "she", "her", "hers", "herself",
+    "it", "its", "itself",
+    "they", "them", "their", "theirs", "themselves",
+    "narrator", "the narrator", "protagonist", "the protagonist",
+    "someone", "somebody", "anyone", "anybody", "everyone", "nobody",
+})
+
+
+def _is_pronoun_name(name: str) -> bool:
+    flat = " ".join(name.lower().replace(".", " ").split())
+    return flat in _PRONOUN_NAMES
+
+
+def _is_first_person(story: str) -> bool:
+    """Whether the story is told by someone it never names.
+
+    A first-person story has no name for its own narrator, so the cast reader
+    has nothing to return for the person the whole story is about -- and the
+    board then draws its lead from nothing at all. Worth detecting so the
+    interface can ask for a name once, rather than the user discovering it from
+    the pictures.
+    """
+    low = story.lower()
+    return any(_whole_word_count(low, w) > 0 for w in ("i", "me", "my", "mine"))
+
+
 def op_cast(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     """Read a story and report who is in it and where it happens.
 
@@ -2993,6 +3249,13 @@ def op_cast(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             name = str(item.get("name", "")).strip()
             if not name or name.lower() in seen:
                 continue
+            if key == "people" and _is_pronoun_name(name):
+                # A pronoun always appears in the story, so verification can
+                # never catch it, and it names nobody. The interface asks for a
+                # name instead -- see `first_person` below.
+                log(req_id, f"dropping person {name!r}: a pronoun is not a name",
+                    "warn")
+                continue
             count = _mentions(story, name)
             if count == 0:
                 # Not in the story. Dropped rather than drawn.
@@ -3017,7 +3280,14 @@ def op_cast(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         + ", ".join(f"{p['name']} x{p['mentions']} t{p['tier']}"
                     for p in people[:6])
         + f"), {len(places)} places")
+    # A story told in the first person never names the person it is about, so
+    # there is nothing for the cast reader to return for the lead. Said here
+    # rather than left for the user to work out from the pictures.
+    first_person = _is_first_person(story)
+    if first_person:
+        log(req_id, "told in the first person: the narrator needs a name", "warn")
     return {"people": people, "places": places,
+            "first_person": first_person,
             "words": len(re.findall(r"\S+", story))}
 
 
@@ -3232,6 +3502,15 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                     # it with itself. The rejection is the whole message here.
                     "changed": False, "outcome": "rewrite_rejected",
                     "description": description, "rejected_because": why,
+                    # What it wrote, so a rejection is a choice rather than a
+                    # loss. This path had no `attempt` at all, so the whole
+                    # rewrite was discarded in silence -- and the checks here
+                    # are literal by design, which means the text they refuse
+                    # is often the one the user wanted. Asked for a cat
+                    # "setting" on a chair the writer says "sitting", which is
+                    # certainly what was meant and cannot be proven so by any
+                    # string comparison. Show it and let them decide.
+                    "attempt": _first_line(raw),
                     "note": _WHY_REJECTED.get(
                         why, "Your words were kept: the rewrite drifted from "
                              "them. Try again, or add a detail yourself."),
@@ -3260,7 +3539,12 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
            # identical otherwise, and saying the first when the second is true
            # is why this feature reads as doing nothing.
            "outcome": "proposal" if changed else "already_specific",
-           "added": _added_words(original_prompt, improved)}
+           "added": _added_words(original_prompt, improved),
+           # Spellings it fixed, named so they are visible rather than slipped
+           # in. The retention check used to count a corrected word as a lost
+           # one and throw the whole rewrite away, so an enhancer that could
+           # not fix a typo was the entire behaviour anyone saw.
+           "corrected": _corrections(original_prompt, improved)}
     if blind:
         out["note"] = ("Rewritten from your words only. Install the prompt "
                        "assistant (1.2 GiB) if you want it to look at the "
@@ -3322,6 +3606,87 @@ def op_image_formats(req_id: str, _req: dict[str, Any]) -> dict[str, Any]:
     return {"extensions": useful, "heic": "heic" in useful}
 
 
+def _safetensors_header(path: str) -> dict[str, Any]:
+    """The tensor index at the front of a safetensors file.
+
+    Only the header is read -- eight bytes of length then that much JSON -- so
+    this costs nothing on a multi-gigabyte file.
+    """
+    with open(path, "rb") as fh:
+        size = struct.unpack("<Q", fh.read(8))[0]
+        if not 0 < size <= 100 * 1024 * 1024:
+            raise ValueError("safetensors header is not a sensible size")
+        return json.loads(fh.read(size))
+
+
+def _describe_weights(keys: list[str]) -> str:
+    """What a file full of these tensors actually is."""
+    if any(k.startswith(("decoder.", "encoder.")) for k in keys) and not any(
+            k.startswith(("transformer.", "model.", "unet.")) for k in keys):
+        return "a VAE -- an image decoder, not an adapter"
+    if any(k.startswith(("text_model.", "text_encoder.")) for k in keys):
+        return "a text encoder, not an adapter"
+    if len(keys) > 400:
+        return "a full model, not an adapter"
+    return "no adapter weights"
+
+
+def _adapter_local_file(handle: str) -> str | None:
+    """The downloaded file a handle names, if it is on this machine."""
+    repo, _, wanted = handle.partition(":")
+    root = Path(os.environ.get("HF_HOME",
+                               str(Path.home() / ".cache" / "huggingface"))) / "hub"
+    base = root / ("models--" + repo.replace("/", "--")) / "snapshots"
+    if not base.is_dir():
+        return None
+    for snapshot in sorted(base.iterdir(), reverse=True):
+        if wanted:
+            candidate = snapshot / wanted
+            if candidate.exists():
+                return str(candidate)
+        else:
+            files = sorted(snapshot.glob("*.safetensors"),
+                           key=lambda f: -f.stat().st_size)
+            if files:
+                return str(files[0])
+    return None
+
+
+def _check_is_adapter(req_id: str, handle: str) -> None:
+    """Refuse a "LoRA" that holds no adapter weights.
+
+    Nothing checked this. `lora_info` listed every .safetensors file in a
+    repository with its size and offered them all as adapters, so a VAE
+    repository looked exactly like an adapter repository: it downloaded, it
+    appeared in the list as installed, it could be selected and given a
+    strength, and then it changed nothing, because there is no adapter in it to
+    apply. The log said "adapters: ... @ 1.0" the whole time.
+
+    Silence is the wrong answer here. An adapter that does nothing is
+    indistinguishable from an adapter that is not working, which is a long way
+    to go before finding out the file was never one.
+    """
+    path = _adapter_local_file(handle)
+    if path is None:
+        # Not resolvable locally; let the loader speak for itself rather than
+        # refusing something that might be fine.
+        return
+    try:
+        header = _safetensors_header(path)
+    except Exception as exc:
+        log(req_id, f"could not read {handle} to check it: {exc}", "warn")
+        return
+    keys = [k for k in header if k != "__metadata__"]
+    if any("lora" in k.lower() for k in keys):
+        return
+    raise ValueError(
+        f"{os.path.basename(path)} is not a LoRA. It holds "
+        f"{len(keys)} tensors and none of them are adapter weights \u2014 it is "
+        f"{_describe_weights(keys)}. Remove it from your adapters; leaving it "
+        f"selected cannot change the picture."
+    )
+
+
 def op_lora_info(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     """Inspect an adapter repository before offering to install it."""
     from huggingface_hub import HfApi
@@ -3334,13 +3699,61 @@ def op_lora_info(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         if s.rfilename.endswith(".safetensors")
     ]
     # A repo with several adapters needs the exact file naming its handle.
-    return {
+    ranked = sorted(files, key=lambda f: -f["bytes"])
+    out = {
         "repo": repo,
-        "files": sorted(files, key=lambda f: -f["bytes"]),
+        "files": ranked,
         "bytes": sum(f["bytes"] for f in files),
         "gated": bool(getattr(info, "gated", False)),
         "base_model": (getattr(info, "cardData", None) or {}).get("base_model"),
     }
+    # Whether there is an adapter in here at all, decided before the download
+    # is offered rather than after it has finished and changed nothing. Only
+    # the header is fetched, which is a few kilobytes of a file that may be
+    # gigabytes.
+    if ranked:
+        verdict = _remote_adapter_verdict(repo, ranked[0]["name"])
+        if verdict:
+            out["not_an_adapter"] = verdict
+    return out
+
+
+def _remote_adapter_verdict(repo: str, filename: str) -> str | None:
+    """Why this file is not an adapter, read from its header over HTTP.
+
+    Returns None when it is an adapter, or when the question could not be
+    answered -- a probe that fails must not block a download that would work.
+    """
+    try:
+        from huggingface_hub import hf_hub_url
+        from huggingface_hub.utils import build_hf_headers, get_session
+
+        url = hf_hub_url(repo_id=repo, filename=filename)
+        # The app's own token, the same one every other fetch here uses.
+        # build_hf_headers() alone reads the environment and the huggingface
+        # CLI's login, neither of which this app populates -- so the probe got
+        # a 401 and, failing closed, reported nothing and let the download of a
+        # VAE proceed exactly as before.
+        headers = dict(build_hf_headers(token=_hf_token()))
+        headers["Range"] = "bytes=0-1048575"
+        response = get_session().get(url, headers=headers, timeout=20)
+        response.raise_for_status()
+        blob = response.content
+        if len(blob) < 8:
+            return None
+        size = struct.unpack("<Q", blob[:8])[0]
+        if not 0 < size <= len(blob) - 8:
+            # The index did not fit in the range asked for, which only happens
+            # on very large files. Not worth a second request to refuse
+            # something that is probably fine.
+            return None
+        header = json.loads(blob[8:8 + size])
+        keys = [k for k in header if k != "__metadata__"]
+        if not keys or any("lora" in k.lower() for k in keys):
+            return None
+        return _describe_weights(keys)
+    except Exception:
+        return None
 
 
 def op_capabilities(req_id: str, req: dict[str, Any]) -> dict[str, Any]:

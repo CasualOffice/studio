@@ -4,8 +4,9 @@ import type { Cast, EngineProgress, ModelStatus, Panel } from "../lib/types";
 import { ImageDrop, JobProgress } from "./shared";
 import { loadPref, savePref } from "../lib/prefs";
 import { loadBoardDraft, type BoardDraft, type Coverage } from "../lib/boardDraft";
-import { STYLES, isKnownStyle, lockStyle, panelPrompt, panelReferences,
-         panelSeed, placePrompt, reviveLock, sheetPrompt, styleHasMoved,
+import { CUSTOM_STYLE, STYLES, isKnownStyle, lockCustomStyle, lockStyle,
+         panelPrompt, panelReferences, panelSeed, placeKey, placePrompt,
+         placeSeed, reviveLock, sheetPrompt, styleHasMoved,
          styleLabel } from "../lib/board";
 import type { StyleLock } from "../lib/board";
 
@@ -193,6 +194,9 @@ export default function Storyboard({
   const [railTab, setRailTab] = useState<"panel" | "board">("panel");
   /** A style change that would discard drawn work, waiting on a second press. */
   const [confirmStyle, setConfirmStyle] = useState<string | null>(null);
+  /** The look the user is describing for themselves, and whether it is open. */
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customWords, setCustomWords] = useState("");
 
   const [stage, setStage] = useState<Stage>("idle");
   const [prog, setProg] = useState<EngineProgress | null>(null);
@@ -224,7 +228,16 @@ export default function Storyboard({
   const [ownSheet, setOwnSheet] = useState<string[]>([]);
   /** One location sheet per scene, keyed by scene number. The character sheet
    *  holds the person; these hold the rooms. */
-  const [placeSheets, setPlaceSheets] = useState<Record<number, string>>({});
+  /**
+   * One drawn room per place, keyed by the place itself.
+   *
+   * Keyed by scene number before, which meant a story the writer put entirely
+   * in scene 1 got one room however far it travelled -- the background never
+   * changed -- while the same kitchen in two scenes got two different
+   * kitchens. The engine now names each place and every panel carries its
+   * key, so a room is drawn once and reused wherever the story returns to it.
+   */
+  const [placeSheets, setPlaceSheets] = useState<Record<string, string>>({});
   const [coverage, setCoverage] = useState<Coverage | null>(null);
   const timer = useRef<number | null>(null);
   const [draftLoaded, setDraftLoaded] = useState(false);
@@ -270,6 +283,7 @@ export default function Storyboard({
           const locked = reviveLock(draft.style);
           if (locked) {
             setStyle(locked);
+            if (locked.id === CUSTOM_STYLE) setCustomWords(locked.words);
             if (styleHasMoved(locked) && (draft.drawn ?? []).some(Boolean)) {
               notify(
                 `This board is drawn in ${styleLabel(locked.id)} as it was when `
@@ -380,9 +394,17 @@ export default function Storyboard({
    * a note to change a look is what made the look uncorrectable in practice.
    */
   const changeStyle = (id: string) => {
-    if (id === style.id) return;
+    const next = id === CUSTOM_STYLE
+      ? lockCustomStyle(customWords)
+      : lockStyle(id);
+    if (!next.words.trim()) {
+      notify("Describe the look first, then it can be used.", true);
+      return;
+    }
+    // Same words already in force: nothing to invalidate.
+    if (next.id === style.id && next.words === style.words) return;
     if (drawnInStyle && confirmStyle !== id) { setConfirmStyle(id); return; }
-    setStyle(lockStyle(id));
+    setStyle(next);
     setSheet(null); setDrawn([]); setRedraws([]);
     setPlaceSheets({}); setPages([]);
     setConfirmStyle(null);
@@ -404,15 +426,25 @@ export default function Storyboard({
   };
 
   /** The same, for one scene's room. */
-  const rebuildPlace = (scene: number) => {
+  const rebuildPlace = (key: string) => {
     setPlaceSheets((prev) => {
       const next = { ...prev };
-      delete next[scene];
+      delete next[key];
       return next;
     });
     setPages([]);
-    notify(`Scene ${scene}'s room will be drawn again on the next run.`);
+    notify(`${key} will be drawn again on the next run.`);
   };
+
+  /** The places this board actually has, in the order the story reaches them. */
+  const places = useMemo(() => {
+    const seen: string[] = [];
+    for (const p of panels ?? []) {
+      const key = placeKey(p);
+      if (!seen.includes(key)) seen.push(key);
+    }
+    return seen;
+  }, [panels]);
 
   /** Step one: divide the prose. Nothing is drawn yet. */
   /**
@@ -525,8 +557,8 @@ export default function Storyboard({
     // one number the user could not rely on.
     const rooms = new Set(
       (panels ?? [])
-        .filter((p) => (p.place ?? "").trim() && !placeSheets[p.scene ?? 1])
-        .map((p) => p.scene ?? 1)
+        .filter((p) => (p.place ?? "").trim() && !placeSheets[placeKey(p)])
+        .map((p) => placeKey(p))
     ).size;
     const pieces = Math.min(batch, Math.max(1, remaining))
       + (ownSheet.length ? 0 : 1) + rooms;
@@ -670,19 +702,19 @@ export default function Storyboard({
    *  The same mechanism that holds the character, applied to the place. A
    *  described room is drawn differently every time; a referenced one is not.
    */
-  const buildPlaces = async (): Promise<Record<number, string>> => {
+  const buildPlaces = async (): Promise<Record<string, string>> => {
     if (!model || !panels) return {};
-    const wanted = new Map<number, string>();
+    const wanted = new Map<string, string>();
     for (const p of panels) {
-      const key = p.scene ?? 1;
+      const key = placeKey(p);
       const place = (p.place ?? "").trim();
       if (place && !wanted.has(key) && !placeSheets[key]) wanted.set(key, place);
     }
     if (wanted.size === 0) return placeSheets;
 
     setStage("building");
-    const made: Record<number, string> = { ...placeSheets };
-    for (const [scene, place] of wanted) {
+    const made: Record<string, string> = { ...placeSheets };
+    for (const [key, place] of wanted) {
       if (stop.current) break;
       const id = newJobId();
       setJobId(id);
@@ -695,7 +727,7 @@ export default function Storyboard({
           width: panelPx, height: panelPx,
           steps: model.steps_default || 4,
           guidance: Math.min(1.0, model.guidance_max),
-          seed: 21 + scene, count: 1, images: [], image_strength: null,
+          seed: 21 + placeSeed(key), count: 1, images: [], image_strength: null,
           i2i_mode: null, low_ram: true, preview: false, cache_limit_gb: null,
           allow_over_budget: false, loras: [], mask: null,
           outpaint_padding: null, outpaint_fill: null,
@@ -703,12 +735,12 @@ export default function Storyboard({
           // the sheets live inside the comic they were drawn for.
           project: projectId, project_name: projectName,
         });
-        if (res[0]) made[scene] = res[0];
+        if (res[0]) made[key] = res[0];
         onProduced();
       } catch (e) {
         // A missing room is survivable: the panel falls back to its written
         // description, which is what it used before this existed.
-        notify(`Scene ${scene}: ${errText(e)}`, true);
+        notify(`The room for ${key}: ${errText(e)}`, true);
       } finally {
         un();
       }
@@ -720,14 +752,14 @@ export default function Storyboard({
   /** Draw a single panel against the sheet. Shared by the run and by redraw,
    *  so a board with one bad panel costs one panel to fix rather than six. */
   const drawOne = async (i: number, sheetId: string | null,
-                         places: Record<number, string> = placeSheets,
+                         places: Record<string, string> = placeSheets,
                          redrawCount = redraws[i] ?? 0): Promise<boolean> => {
     if (!model || !panels) return false;
     const id = newJobId();
     setJobId(id);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
     const refs = panelReferences(panels[i], sheetId,
-                                 places[panels[i].scene ?? 1] ?? null);
+                                 places[placeKey(panels[i])] ?? null);
     try {
       const params = {
         job_id: id, model_id: model.id,
@@ -1121,16 +1153,51 @@ export default function Storyboard({
                 <div className="field">
                   <label>Style</label>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                    {STYLES.map(({ id, label }) => (
+                    {STYLES.map(({ id, label, words }) => (
                       <button key={id}
                               className={"pill" + (style.id === id ? " installed" : "")
                                 + (confirmStyle === id ? " danger" : "")}
+                              // What the pill will actually ask for. The only
+                              // thing the tool ever said about a style used to
+                              // appear after the board was drawn.
+                              title={words}
                               style={{ cursor: "pointer" }} disabled={busy}
                               onClick={() => changeStyle(id)}>
                         {confirmStyle === id ? `Restyle? ${label}` : label}
                       </button>
                     ))}
+                    <button className={"pill" + (style.id === CUSTOM_STYLE ? " installed" : "")}
+                            title="Describe a look in your own words"
+                            style={{ cursor: "pointer" }} disabled={busy}
+                            onClick={() => setCustomOpen((v) => !v)}>
+                      Describe it…
+                    </button>
                   </div>
+                  {(customOpen || style.id === CUSTOM_STYLE) && (
+                    <div style={{ marginTop: 7 }}>
+                      <textarea
+                        rows={2} disabled={busy}
+                        value={customWords}
+                        onChange={(e) => setCustomWords(e.target.value)}
+                        placeholder="1950s newspaper strip, coarse halftone, three colours"
+                      />
+                      <div style={{ display: "flex", gap: 6, alignItems: "center",
+                                    flexWrap: "wrap", marginTop: 5 }}>
+                        <button className="btn small" disabled={busy || !customWords.trim()
+                                  || customWords.trim() === style.words}
+                                onClick={() => changeStyle(CUSTOM_STYLE)}>
+                          {drawnInStyle && confirmStyle === CUSTOM_STYLE
+                            ? "Press again to restyle"
+                            : "Use this look"}
+                        </button>
+                        <span style={{ fontSize: 10.5, color: "var(--text-faint)",
+                                       lineHeight: 1.5 }}>
+                          These words lead every panel prompt. The four presets
+                          are a starting point, not the range.
+                        </span>
+                      </div>
+                    </div>
+                  )}
                   {confirmStyle && (
                     <div style={{ fontSize: 10.5, color: "var(--bad)", marginTop: 5,
                                   lineHeight: 1.5 }}>
@@ -1160,10 +1227,10 @@ export default function Storyboard({
                               onClick={recastSheet}>
                         {sheet ? "Draw the cast sheet again" : "No cast sheet yet"}
                       </button>
-                      {scenes.filter((s) => placeSheets[s]).map((s) => (
-                        <button key={s} className="btn small" disabled={busy}
-                                onClick={() => rebuildPlace(s)}>
-                          Redraw scene {s}&rsquo;s room
+                      {places.filter((k) => placeSheets[k]).map((k) => (
+                        <button key={k} className="btn small" disabled={busy}
+                                onClick={() => rebuildPlace(k)}>
+                          Redraw {k}
                         </button>
                       ))}
                     </div>

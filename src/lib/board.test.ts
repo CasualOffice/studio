@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { isKnownStyle, lockStyle, panelPrompt, panelReferences, panelSeed,
-         placePrompt, reviveLock, sheetPrompt, styleHasMoved, styleWords,
+import { CUSTOM_STYLE, isKnownStyle, lockCustomStyle, lockStyle, panelPrompt,
+         panelReferences, panelSeed, placeKey, placePrompt, placeSeed,
+         reviveLock, sheetPrompt, shotBackground, styleHasMoved, styleWords,
          STYLES } from "./board";
 import type { Panel } from "./types";
 
@@ -308,5 +309,121 @@ describe("reviveLock", () => {
                        { words: "" }, { words: "   " }]) {
       expect(reviveLock(bad)).toBe(null);
     }
+  });
+});
+
+describe("how much place a panel asks for", () => {
+  // A comic page establishes a location once and then lives inside it. Every
+  // panel here used to ask for the walls, the floor, the furniture and the
+  // light, so a close-up of a face came back as a face in a furnished room --
+  // and the room was re-invented from prose each time, which is why it
+  // drifted. The shot decides how much of the place is in frame.
+  it("asks for the whole place only in a wide shot", () => {
+    const wide = panelPrompt(panel({ shot: "wide" }), ANIME, CHAR);
+    expect(wide).toContain("the place itself in frame");
+  });
+
+  it("keeps the background simple behind a medium shot", () => {
+    const mid = panelPrompt(panel({ shot: "medium" }), ANIME, CHAR);
+    expect(mid).toContain("only what stands directly behind the figure");
+    expect(mid).not.toContain("the place itself in frame");
+  });
+
+  it("asks for no scenery at all in a close-up", () => {
+    const close = panelPrompt(panel({ shot: "close-up" }), ANIME, CHAR);
+    expect(close).toContain("no scenery");
+    expect(close).not.toContain("the place itself in frame");
+  });
+
+  it("still leads with the style and the framing", () => {
+    for (const shot of ["wide", "medium", "close-up"] as const) {
+      const out = panelPrompt(panel({ shot }), ANIME, CHAR);
+      expect(out.startsWith(ANIME.words)).toBe(true);
+      expect(out).toContain("cropped composition");
+      expect(out).toContain(`${shot} shot`);
+    }
+  });
+
+  it("falls back to the medium treatment for an unknown shot", () => {
+    expect(shotBackground("establishing")).toBe(shotBackground("medium"));
+  });
+
+  it("does not hand a close-up the room reference", () => {
+    // A picture of the room is an instruction, and at this distance the room
+    // is not in frame: it pulls the shot wider to fit the furniture in, which
+    // is the opposite of what a close-up is for.
+    const close = panel({ shot: "close-up", character_in_frame: true });
+    expect(panelReferences(close, "sheet-id", "place-id")).toEqual(["sheet-id"]);
+  });
+
+  it("still hands the room to the shots that show it", () => {
+    for (const shot of ["wide", "medium"] as const) {
+      expect(panelReferences(panel({ shot, character_in_frame: true }),
+                             "sheet-id", "place-id"))
+        .toEqual(["sheet-id", "place-id"]);
+    }
+  });
+
+  it("leaves a close-up she is not in with no reference at all", () => {
+    const close = panel({ shot: "close-up", character_in_frame: false });
+    expect(panelReferences(close, "sheet-id", "place-id")).toEqual([]);
+  });
+});
+
+describe("a look described in your own words", () => {
+  it("is pinned exactly like a preset", () => {
+    const lock = lockCustomStyle("  1950s newspaper strip, coarse halftone  ");
+    expect(lock.id).toBe(CUSTOM_STYLE);
+    expect(lock.words).toBe("1950s newspaper strip, coarse halftone");
+    expect(lock.framing).toContain("cropped composition");
+  });
+
+  it("leads every prompt, the same way a preset does", () => {
+    const lock = lockCustomStyle("soft pencil, no ink");
+    expect(panelPrompt(panel(), lock, CHAR).startsWith("soft pencil, no ink")).toBe(true);
+    expect(sheetPrompt(lock, CHAR).startsWith("soft pencil, no ink")).toBe(true);
+    expect(placePrompt(lock, "a kitchen").startsWith("soft pencil, no ink")).toBe(true);
+  });
+
+  it("is never reported as having drifted", () => {
+    // There is no preset behind it for it to drift from.
+    expect(styleHasMoved(lockCustomStyle("soft pencil"))).toBe(false);
+  });
+
+  it("survives a restart", () => {
+    const lock = lockCustomStyle("woodcut, heavy black, no grey");
+    expect(reviveLock(JSON.parse(JSON.stringify(lock)))).toEqual(lock);
+  });
+});
+
+describe("one room per place, not per scene number", () => {
+  it("gives the same place one key however the scenes are numbered", () => {
+    // A story the writer leaves in scene 1 still changes rooms when it moves,
+    // and coming back to the kitchen comes back to the same kitchen.
+    expect(placeKey(panel({ setting: "the kitchen", scene: 1 })))
+      .toBe(placeKey(panel({ setting: "Kitchen", scene: 5 })));
+    expect(placeKey(panel({ setting: "her kitchen", scene: 9 })))
+      .toBe(placeKey(panel({ setting: "the kitchen", scene: 1 })));
+  });
+
+  it("gives different places different keys inside one scene", () => {
+    expect(placeKey(panel({ setting: "the kitchen", scene: 1 })))
+      .not.toBe(placeKey(panel({ setting: "the station platform", scene: 1 })));
+  });
+
+  it("prefers the key the engine stamped", () => {
+    expect(placeKey(panel({ setting: "anything", place_key: "iron roof" })))
+      .toBe("iron roof");
+  });
+
+  it("falls back to the scene title, then to the scene", () => {
+    expect(placeKey(panel({ setting: "", scene_title: "On the road", scene: 2 })))
+      .toBe("on the road");
+    expect(placeKey(panel({ setting: "", scene: 7 }))).toBe("scene 7");
+  });
+
+  it("draws one room from one seed wherever the story returns to it", () => {
+    expect(placeSeed("kitchen")).toBe(placeSeed("kitchen"));
+    expect(placeSeed("kitchen")).not.toBe(placeSeed("station platform"));
   });
 });
