@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, errDetail, errText, fmtDuration, newJobId, onEnginePreview, onEngineProgress, vaultUrl } from "../lib/api";
+import { api, errDetail, errText, isCancelled, fmtDuration, newJobId, onEnginePreview, onEngineProgress, vaultUrl } from "../lib/api";
 import type { AssistResult, EngineProgress, ModelStatus, Recipe } from "../lib/types";
 import { autoPick, estimateSeconds, humanDuration, QUALITY_LABEL, SHAPES, stepsFor, type Quality } from "../lib/presets";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
@@ -264,7 +264,7 @@ export default function Studio({
       // Keep the engine's own wording where it differs; the toast is short by
       // design and the original is what a diagnosis needs.
       if (detail) console.error("engine:", detail);
-      notify(msg.includes("ancelled") ? "Cancelled." : msg, !msg.includes("ancelled"));
+      notify(isCancelled(e) ? "Cancelled." : msg, !isCancelled(e));
     } finally {
       // Masks are private working material, not library items. The engine has
       // finished reading it at this point, regardless of success or failure.

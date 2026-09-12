@@ -30,11 +30,24 @@ export default function Security({
     if (!sel) return;
     const paths = Array.isArray(sel) ? sel : [sel];
     let n = 0;
+    const failed: string[] = [];
     for (const p of paths) {
       try { await api.vaultImport(p, "any"); n++; }
-      catch (e) { notify(errText(e), true); }
+      // Collected rather than announced one at a time: a toast per failure
+      // means importing twenty files shows you the last one and hides the
+      // other nineteen, including how many there were.
+      catch (e) { failed.push(errText(e)); }
     }
-    if (n) { notify(`Sealed ${n} file${n === 1 ? "" : "s"} into the vault.`); onImported(); }
+    if (n) onImported();
+    if (failed.length) {
+      notify(
+        `Sealed ${n} of ${paths.length}. ${failed.length} could not be read` +
+        (failed.length === 1 ? `: ${failed[0]}` : "."),
+        true
+      );
+    } else if (n) {
+      notify(`Sealed ${n} file${n === 1 ? "" : "s"} into the vault.`);
+    }
   });
 
   return (

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { api, errText, newJobId, onEngineProgress, onEnginePreview, vaultUrl } from "../lib/api";
+import { api, errText, isCancelled, newJobId, onEngineProgress, onEnginePreview, vaultUrl } from "../lib/api";
 import type { EngineProgress, ModelStatus } from "../lib/types";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
 import SendTo, { type Destination } from "./SendTo";
@@ -91,8 +91,7 @@ export default function Upscale({
       setOut(res[0] ?? null);
       onProduced();
     } catch (e) {
-      const msg = errText(e);
-      notify(msg.includes("cancelled") ? "Cancelled." : msg, !msg.includes("cancelled"));
+      notify(isCancelled(e) ? "Cancelled." : errText(e), !isCancelled(e));
     } finally {
       un(); unp?.(); setPreview(null); setRunning(false); setJobId(null); setProg(null);
     }

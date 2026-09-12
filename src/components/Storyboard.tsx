@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { api, errText, newJobId, onEngineProgress, vaultUrl } from "../lib/api";
+import { api, errText, isCancelled, newJobId, onEngineProgress, vaultUrl } from "../lib/api";
 import type { Cast, EngineProgress, ModelStatus, Panel } from "../lib/types";
 import { ImageDrop, JobProgress } from "./shared";
 import { loadPref, savePref } from "../lib/prefs";
@@ -160,6 +160,17 @@ export default function Storyboard({
   const [coverage, setCoverage] = useState<Coverage | null>(null);
   const timer = useRef<number | null>(null);
   const [draftLoaded, setDraftLoaded] = useState(false);
+  /**
+   * Which reset is armed, if any.
+   *
+   * Both resets discard the board, and neither used to ask. "Back to the
+   * prose" is a small button directly under the coverage panel -- exactly
+   * where someone goes after being told a passage needs review -- and it threw
+   * away every drawn panel, every note, the composed pages and the project
+   * identity in one click. The pictures survive in the Vault, but nothing
+   * loads a Vault project back into a board, and the notes exist nowhere else.
+   */
+  const [confirmReset, setConfirmReset] = useState<"prose" | "new" | null>(null);
 
 
   // A Board contains the manuscript and creative history. Load it from the
@@ -206,6 +217,18 @@ export default function Storyboard({
     return () => window.clearTimeout(timeout);
   }, [draftLoaded, story, cast, projectId, character, panels, sheet, drawn,
       redraws, notes, pages, ownSheet, placeSheets, coverage, notify]);
+
+  // An armed reset is disarmed by anything else happening: pressing Escape,
+  // or the board changing under it. A destructive button left loaded is how a
+  // later, unrelated click deletes something.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConfirmReset(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  useEffect(() => { setConfirmReset(null); }, [stage, drawn, panels]);
 
   // These are interface choices, not project content, so they remain prefs.
   useEffect(() => { savePref("boardBatch", batch); }, [batch]);
@@ -304,6 +327,17 @@ export default function Storyboard({
   const drawnCount = useMemo(
     () => drawn.filter(Boolean).length, [drawn]);
   const remaining = Math.max(0, (panels?.length ?? 0) - drawnCount);
+  /** What a reset would throw away, named so the question can be answered. */
+  const atRisk = useMemo(() => {
+    const bits: string[] = [];
+    const noted = Object.values(notes).filter((n) => n.trim()).length;
+    const plural = (n: number, word: string) =>
+      `${n} ${word}${n === 1 ? "" : "s"}`;
+    if (drawnCount) bits.push(plural(drawnCount, "drawn panel"));
+    if (noted) bits.push(plural(noted, "note"));
+    if (pages.length) bits.push(plural(pages.length, "composed page"));
+    return bits;
+  }, [drawnCount, notes, pages]);
   const preparedCount = panels?.filter((p) => (p.description ?? "").trim()).length ?? 0;
   // Every panel still waiting for a picture has to be worked up first. Gating
   // on "at least one" let a single prepared panel unlock drawing all of them,
@@ -525,7 +559,7 @@ export default function Storyboard({
     } catch (e) {
       const msg = errText(e);
       notify(`Panel ${i + 1}: ${msg}`, true);
-      if (msg.includes("ancelled")) stop.current = true;
+      if (isCancelled(e)) stop.current = true;
       return false;
     } finally {
       un();
@@ -719,13 +753,21 @@ export default function Storyboard({
                     ) : "Every passage has a panel source quote."}
                   </div>
                 )}
-                <button className="btn small" style={{ marginTop: 8 }} disabled={busy}
-                        onClick={() => {
-                          setPanels(null); setProjectId(null); setSheet(null);
-                          setDrawn([]); setRedraws([]); setNotes({}); setPages([]);
-                          setPlaceSheets({}); setCoverage(null); setSelected(0);
-                        }}>
-                  Back to the prose
+                <button
+                  className={"btn small" + (confirmReset === "prose" ? " danger" : "")}
+                  style={{ marginTop: 8 }} disabled={busy}
+                  onClick={() => {
+                    if (atRisk.length && confirmReset !== "prose") {
+                      setConfirmReset("prose"); return;
+                    }
+                    setConfirmReset(null);
+                    setPanels(null); setProjectId(null); setSheet(null);
+                    setDrawn([]); setRedraws([]); setNotes({}); setPages([]);
+                    setPlaceSheets({}); setCoverage(null); setSelected(0);
+                  }}>
+                  {confirmReset === "prose"
+                    ? `Discard ${atRisk.join(", ")}? The pictures stay in the Vault`
+                    : "Back to the prose"}
                 </button>
               </div>
             )}
@@ -1098,14 +1140,22 @@ export default function Storyboard({
         )}
         <div style={{ flex: 1 }} />
         {!busy && (story || panels) && (
-          <button className="btn small" onClick={() => {
-            setStory(""); setCast(null); setPanels(null); setProjectId(null);
-            setCharacter(""); setSheet(null); setDrawn([]); setRedraws([]);
-            setNotes({}); setPages([]); setOwnSheet([]); setPlaceSheets({});
-            setCoverage(null);
-            setSelected(0);
-          }}>
-            New board
+          <button
+            className={"btn small" + (confirmReset === "new" ? " danger" : "")}
+            onClick={() => {
+              if (atRisk.length && confirmReset !== "new") {
+                setConfirmReset("new"); return;
+              }
+              setConfirmReset(null);
+              setStory(""); setCast(null); setPanels(null); setProjectId(null);
+              setCharacter(""); setSheet(null); setDrawn([]); setRedraws([]);
+              setNotes({}); setPages([]); setOwnSheet([]); setPlaceSheets({});
+              setCoverage(null);
+              setSelected(0);
+            }}>
+            {confirmReset === "new"
+              ? `Start over, discarding ${atRisk.join(", ")}?`
+              : "New board"}
           </button>
         )}
         {elapsed > 0 && busy && (

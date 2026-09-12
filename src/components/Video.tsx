@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, errText, fmtDuration, newJobId, onEngineProgress, onEnginePreview, vaultUrl } from "../lib/api";
-import type { EngineProgress, ModelStatus } from "../lib/types";
+import { api, errText, isCancelled, fmtDuration, newJobId, onEngineProgress, onEnginePreview, vaultUrl } from "../lib/api";
+import type { AssistResult, EngineProgress, ModelStatus } from "../lib/types";
 import { humanDuration } from "../lib/presets";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
 import { loadPref, savePref } from "../lib/prefs";
+import PromptProposal from "./PromptProposal";
 
 /**
  * Canvas sizes, up to what these models were actually trained at.
@@ -72,6 +73,9 @@ export default function Video({
   const setFirstFrame = onFirstFrameChange ?? setLocalFrame;
 
   const [assisting, setAssisting] = useState(false);
+  /** What the enhancer suggests, pending your decision. */
+  const [proposal, setProposal] = useState<AssistResult | null>(null);
+  const [undoPrompt, setUndoPrompt] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [prog, setProg] = useState<EngineProgress | null>(null);
@@ -118,15 +122,12 @@ export default function Video({
       // Hand it the starting picture when there is one: a clip that animates
       // a photograph should describe how that photograph moves, not invent a
       // scene from the words alone.
-      const r = await api.assistPrompt(id, prompt, "video", firstFrame);
-      if (r.unclear) {
-        notify(r.note ?? "Say what should be in the clip first.", true);
-        return;
-      }
-      setPrompt(r.prompt);
-      notify(r.saw_image
-        ? "Described how your picture moves."
-        : "Made your prompt specific, and said how it moves.");
+      // Shown, not applied -- the same as in the studio. Overwriting the
+      // prompt the moment a rewrite existed hid what changed, and the two ways
+      // it could decline without rewriting anything both reported
+      // "made your prompt specific", which was untrue and is most of why this
+      // button reads as doing nothing.
+      setProposal(await api.assistPrompt(id, prompt, "video", firstFrame));
     } catch (e) {
       notify(errText(e), true);
     } finally {
@@ -202,15 +203,20 @@ export default function Video({
         jobId: id, modelId: model.id, prompt, negativePrompt: null,
         width: w, height: h, frames, fps, steps,
         guidance: model.guidance_default, seed: s,
-        firstFrame: firstFrame[0] ?? null,
+        // A picture carried in from another tab stays in state when the model
+        // is switched to one that cannot start from a still, and the drop zone
+        // that would show it is hidden for exactly that model -- so it was
+        // sent invisibly and the run failed with "this model cannot start
+        // from a picture", about a picture the screen was not showing.
+        firstFrame: model.video_from_image === false
+          ? null : (firstFrame[0] ?? null),
       });
       setOut(res[0] ?? null);
       setTook(performance.now() - t0);
       setSeed(s);
       onProduced();
     } catch (e) {
-      const msg = errText(e);
-      notify(msg.includes("cancelled") ? "Cancelled." : msg, !msg.includes("cancelled"));
+      notify(isCancelled(e) ? "Cancelled." : errText(e), !isCancelled(e));
     } finally {
       un(); unp?.(); setRunning(false); setJobId(null); setProg(null);
       setPreview(null);
@@ -229,6 +235,8 @@ export default function Video({
               It transforms existing footage rather than animating a still, so
               it has no way to use a starting picture. Pick a model listed as
               image to video to animate a photo.
+              {firstFrame.length > 0 && " The picture you carried over is not "
+                + "being used; it stays where it came from."}
             </div>
           ) : (
             <div className="field">
@@ -253,9 +261,15 @@ export default function Video({
             <label>What should happen?</label>
             <textarea
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              onChange={(e) => { setPrompt(e.target.value); setUndoPrompt(null); setProposal(null); }}
               placeholder="steam rises slowly from the teapot, the light shifts"
             />
+            {undoPrompt !== null && (
+              <button className="btn small" style={{ marginTop: 6 }}
+                      onClick={() => { setPrompt(undoPrompt); setUndoPrompt(null); }}>
+                Undo the rewrite
+              </button>
+            )}
             <button
               className="btn small full"
               style={{ marginTop: 7 }}
@@ -267,6 +281,19 @@ export default function Video({
             >
               {assisting ? "Thinking…" : "\u2728 Make my prompt precise"}
             </button>
+            {proposal && (
+              <PromptProposal
+                result={proposal}
+                busy={assisting}
+                onAccept={(text) => {
+                  setUndoPrompt(prompt);
+                  setPrompt(text);
+                  setProposal(null);
+                  notify("Prompt updated. Undo is next to the box.");
+                }}
+                onDismiss={() => setProposal(null)}
+              />
+            )}
             {!assistantReady && (
               <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5 }}>
                 Needs the prompt writer — a 2.1 GB download in the Models tab.

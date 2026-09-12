@@ -26,6 +26,17 @@ export function errDetail(e: unknown): string | null {
   return null;
 }
 
+/**
+ * Whether a failure is the user's own Cancel.
+ *
+ * One place, because the host normalises the wording to "Cancelled." with a
+ * capital C and two call sites matched the lowercase word -- so pressing
+ * Cancel raised a red failure toast about the cancellation succeeding.
+ */
+export function isCancelled(e: unknown): boolean {
+  return errText(e).toLowerCase().includes("cancelled");
+}
+
 export const api = {
   hostInfo: () => invoke<HostInfo>("host_info"),
   setupState: () => invoke<SetupState>("setup_state"),

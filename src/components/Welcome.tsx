@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { api, errText, fmtBytes, newJobId, onEngineProgress } from "../lib/api";
+import { api, errText, isCancelled, fmtBytes, newJobId, onEngineProgress } from "../lib/api";
 import type { EngineProgress, ModelStatus } from "../lib/types";
 import { JobProgress } from "./shared";
 
@@ -64,7 +64,7 @@ export default function Welcome({
         const msg = errText(e);
         notify(`${p.m.name}: ${msg}`, true);
         // One failure should not abandon the rest; the others still help.
-        if (msg.includes("ancelled")) { cancelled = true; break; }
+        if (isCancelled(e)) { cancelled = true; break; }
         failures++;
       } finally {
         un(); setBusy(null); setJobId(null); setProg(null);

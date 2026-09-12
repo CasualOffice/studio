@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, errText, fmtBytes, newJobId, onEngineProgress } from "../lib/api";
 import type { EngineProgress, Fit, HostInfo, ModelStatus } from "../lib/types";
 import { JobProgress } from "./shared";
@@ -21,6 +21,14 @@ export default function Models({
   notify: (m: string, bad?: boolean) => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
+  /**
+   * Which model's delete is armed.
+   *
+   * Deleting weights is several gigabytes and an hour of downloading to
+   * undo, and the button sat one click from the Download button it replaces.
+   * The Vault asks before a bulk delete for less than this.
+   */
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [prog, setProg] = useState<EngineProgress | null>(null);
 
@@ -45,6 +53,7 @@ export default function Models({
   };
 
   const remove = async (m: ModelStatus) => {
+    setConfirmDelete(null);
     try {
       const freed = await api.deleteModel(m.id);
       notify(`Removed ${m.name} — freed ${fmtBytes(freed)}.`);
@@ -65,6 +74,17 @@ export default function Models({
       notify(errText(e), true);
     }
   };
+
+  // An armed delete is disarmed by anything else happening, so it cannot be
+  // triggered by a later, unrelated click.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConfirmDelete(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  useEffect(() => { setConfirmDelete(null); }, [busy, models]);
 
   const cancel = async () => {
     if (jobId) {
@@ -144,8 +164,16 @@ export default function Models({
         ) : (
           <div className="actions">
             {m.installed ? (
-              <button className="btn small danger" onClick={() => remove(m)}>
-                Delete weights
+              <button
+                className="btn small danger"
+                onClick={() => {
+                  if (confirmDelete !== m.id) { setConfirmDelete(m.id); return; }
+                  void remove(m);
+                }}
+              >
+                {confirmDelete === m.id
+                  ? `Delete ${m.package_gib.toFixed(1)} GiB? It downloads again`
+                  : "Delete weights"}
               </button>
             ) : (
               <button
