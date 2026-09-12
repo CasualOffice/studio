@@ -415,6 +415,21 @@ pub fn find_orphans(state: State<'_, AppState>) -> models::Orphans {
 /// Delete it, returning the bytes recovered.
 #[tauri::command]
 pub fn sweep_orphans(state: State<'_, AppState>) -> Result<u64> {
+    sweep_orphans_gated(&state)
+}
+
+/// The body of `sweep_orphans`, split out only because `State` cannot be built
+/// outside a running Tauri app and the gate below is worth a test.
+///
+/// This is a model-store mutation and takes the exclusive job gate like every
+/// other one. It used to take nothing at all, and huggingface_hub materialises a
+/// blob in `blobs/` before it creates the snapshot symlink that points at it --
+/// so a sweep that ran during a download saw a weight file that had just landed
+/// as unreferenced and deleted it out from under the downloader.
+fn sweep_orphans_gated(state: &AppState) -> Result<u64> {
+    let _exclusive = state.job_gate.try_write().map_err(|_| {
+        AppError::msg("Wait for the current local job before clearing unused files.")
+    })?;
     models::sweep_orphans(&state.paths())
 }
 
@@ -430,11 +445,135 @@ pub fn storage_info(state: State<'_, AppState>) -> StorageInfo {
     }
 }
 
+/// Top-level entries in a model root that this app puts there itself.
+///
+/// `HF_HOME` is pointed at the model root, so everything the downloader writes
+/// lands directly inside it: the hub cache, the Xet chunk cache, the lock
+/// directory it serialises concurrent fetches with, and the few smaller caches
+/// and token files huggingface_hub keeps beside them. Nothing else in there is
+/// ours, and a move may only touch what is.
+const APP_OWNED_MODEL_ENTRIES: &[&str] = &[
+    "hub",
+    "xet",
+    ".locks",
+    "assets",
+    "datasets",
+    "modules",
+    "token",
+    "stored_tokens",
+];
+
+/// Prefix of the staging directory a move copies into, recognised by name so an
+/// abandoned one is neither mistaken for the user's own files nor left to block
+/// every later move.
+const MOVE_STAGING_PREFIX: &str = ".modelstudio-move-";
+
+/// Whether an entry name is one a move may copy and then delete.
+fn is_app_owned_model_entry(name: &str) -> bool {
+    APP_OWNED_MODEL_ENTRIES.contains(&name)
+}
+
+/// Whether an entry is neither ours nor worth refusing over. Finder writes a
+/// `.DS_Store` into any folder that has been looked at, and an abandoned
+/// staging directory holds nothing but a copy of a model root.
+fn is_ignorable_model_entry(name: &str) -> bool {
+    name == ".DS_Store" || name.starts_with(MOVE_STAGING_PREFIX)
+}
+
+/// Names in a model root that this app did not create.
+fn foreign_model_entries(root: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|name| !is_app_owned_model_entry(name) && !is_ignorable_model_entry(name))
+        .collect();
+    names.sort();
+    names
+}
+
+/// The entries a move is allowed to copy, and afterwards to remove.
+fn app_owned_model_entries(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| is_app_owned_model_entry(&e.file_name().to_string_lossy()))
+        .map(|e| e.path())
+        .collect()
+}
+
+/// Staging directories left behind by an interrupted move. Their contents are
+/// always a copy of a model root that still exists, so they are disposable.
+fn stale_staging_dirs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(MOVE_STAGING_PREFIX)
+        })
+        .map(|e| e.path())
+        .collect()
+}
+
+/// Whether the destination holds anything a move could overwrite.
+fn dest_holds_other_files(dest: &std::path::Path) -> Result<bool> {
+    for entry in std::fs::read_dir(dest)? {
+        if !is_ignorable_model_entry(&entry?.file_name().to_string_lossy()) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Copy one top-level entry of a model root. Usually a directory, but
+/// huggingface_hub also caches plain files such as `token` beside them.
+fn copy_model_entry(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    if std::fs::symlink_metadata(src)?.is_dir() {
+        models::copy_tree(src, dst)
+    } else {
+        std::fs::copy(src, dst)?;
+        Ok(())
+    }
+}
+
+/// Delete one, whichever kind it is. Best effort: the bytes are already safe at
+/// the destination by the time this runs, so a failure here is wasted space
+/// rather than lost data.
+fn remove_model_entry(path: &std::path::Path) {
+    let is_dir = std::fs::symlink_metadata(path)
+        .map(|md| md.is_dir())
+        .unwrap_or(false);
+    if is_dir {
+        let _ = std::fs::remove_dir_all(path);
+    } else {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// The first few names, for an error message that has to fit in a dialog.
+fn name_list(names: &[String]) -> String {
+    let shown = names.len().min(3);
+    let mut out = names[..shown].join(", ");
+    if names.len() > shown {
+        out.push_str(&format!(" and {} more", names.len() - shown));
+    }
+    out
+}
+
 /// Move model storage to another location, e.g. an external drive.
 ///
 /// Copying rather than renaming, because the destination is usually a
 /// different filesystem where rename cannot work. The originals are only
-/// removed once every byte has landed.
+/// removed once every byte has landed, and only the entries this app created
+/// are copied or removed at all.
 #[tauri::command]
 pub async fn set_models_location(
     app: AppHandle,
@@ -479,14 +618,26 @@ pub async fn set_models_location(
     // engine used to be shut down first, so choosing a folder that turned out
     // to be non-empty left the app with no engine and nothing moved -- a
     // rejected request that still cost the user their running session.
-    if move_existing
-        && current.exists()
-        && current_cmp != dest_cmp
-        && std::fs::read_dir(&dest)?.next().is_some()
-    {
-        return Err(AppError::msg(
-            "Choose an empty destination folder so existing files cannot be overwritten.",
-        ));
+    if move_existing && current.exists() && current_cmp != dest_cmp {
+        // Refuse outright when the folder this is about to empty holds anything
+        // the app did not put there. The emptiness check below only ever ran
+        // with `move_existing` set, so changing the location *without* moving
+        // accepted a folder full of the user's own files and made it the model
+        // root -- and a later move with the box ticked then copied that whole
+        // folder and removed the original.
+        let foreign = foreign_model_entries(&current);
+        if !foreign.is_empty() {
+            return Err(AppError::msg(format!(
+                "The current model folder holds files this app did not create ({}). \
+                 Move them elsewhere first, or change the location without moving.",
+                name_list(&foreign)
+            )));
+        }
+        if dest_holds_other_files(&dest)? {
+            return Err(AppError::msg(
+                "Choose an empty destination folder so existing files cannot be overwritten.",
+            ));
+        }
     }
 
     // The engine holds the old location in its environment.
@@ -498,24 +649,54 @@ pub async fn set_models_location(
     }
 
     if move_existing && current.exists() && current_cmp != dest_cmp {
-        let from = current.clone();
-        let parent = dest
-            .parent()
-            .ok_or_else(|| AppError::msg("the destination has no parent folder"))?;
-        let staging = parent.join(format!(".modelstudio-move-{}", uuid::Uuid::new_v4()));
+        let entries = app_owned_model_entries(&current);
+        // Stage inside the destination, not beside it. The staging directory
+        // used to be created at `dest.parent()`, which for `/Volumes/T7` is
+        // `/Volumes` -- on the boot volume, whose free space the check above
+        // never probed. The rename into place then failed with EXDEV, and unlike
+        // the copy-failure branch this path never removed the staging copy, so
+        // tens of gigabytes were left in a dot-directory nobody would look for.
+        for stale in stale_staging_dirs(&dest) {
+            let _ = std::fs::remove_dir_all(stale);
+        }
+        let staging = dest.join(format!("{MOVE_STAGING_PREFIX}{}", uuid::Uuid::new_v4()));
+        let sources = entries.clone();
         let to = staging.clone();
-        let copied = tauri::async_runtime::spawn_blocking(move || models::copy_tree(&from, &to))
-            .await
-            .map_err(|e| AppError::msg(format!("move task failed: {e}")))?;
+        let copied = tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+            std::fs::create_dir_all(&to)?;
+            for src in &sources {
+                let Some(name) = src.file_name() else {
+                    continue;
+                };
+                copy_model_entry(src, &to.join(name))?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::msg(format!("move task failed: {e}")))?;
         if let Err(error) = copied {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(error);
         }
-        std::fs::remove_dir(&dest)?;
-        if let Err(error) = std::fs::rename(&staging, &dest) {
-            let _ = std::fs::create_dir_all(&dest);
-            return Err(error.into());
+        // Staging and destination are the same filesystem, so each of these is
+        // a directory-entry move rather than a second copy. Anything that fails
+        // here is cleaned up on both sides: the originals are still untouched,
+        // so the copies are what gets thrown away.
+        for src in &entries {
+            let Some(name) = src.file_name() else {
+                continue;
+            };
+            if let Err(error) = std::fs::rename(staging.join(name), dest.join(name)) {
+                for entry in &entries {
+                    if let Some(name) = entry.file_name() {
+                        remove_model_entry(&dest.join(name));
+                    }
+                }
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(error.into());
+            }
         }
+        let _ = std::fs::remove_dir(&staging);
     }
 
     let mut paths = state.paths();
@@ -525,7 +706,15 @@ pub async fn set_models_location(
     paths.set_models_root(dest.clone())?;
     state.replace_paths(paths.clone());
     if move_existing && current.exists() && current_cmp != dest_cmp {
-        let _ = std::fs::remove_dir_all(&current);
+        // Only what was copied. This used to be `remove_dir_all(&current)`,
+        // which for a model root the user had pointed at a folder of their own
+        // deleted everything in it along with the cache.
+        for entry in app_owned_model_entries(&current) {
+            remove_model_entry(&entry);
+        }
+        // Succeeds only if nothing else is in there, which is the intent: a
+        // stray `.DS_Store` keeps the folder rather than losing it.
+        let _ = std::fs::remove_dir(&current);
     }
     let _ = app;
     Ok(storage_info_for(&paths))
@@ -1118,9 +1307,14 @@ async fn run_job(
         // with steps and canvas size.
         let generate_ms = result["generate_ms"].as_u64().unwrap_or(elapsed);
         let load_ms = result["load_ms"].as_u64().unwrap_or(0);
-        let _ = crate::timings::record(
+        // Keyed by whether the run was conditioned on reference images, which
+        // is what `args.images` is. Folding a board panel -- two to three times
+        // the cost per step -- into the same average as a plain text-to-image
+        // run produced an estimate that described neither.
+        let _ = crate::timings::record_for(
             &state.paths(),
             &entry.id,
+            !args.images.is_empty(),
             args.steps,
             args.width,
             args.height,
@@ -1606,7 +1800,86 @@ pub fn remove_lora(state: State<'_, AppState>, handle: String) -> Result<Vec<Lor
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_repo;
+    use super::{
+        app_owned_model_entries, dest_holds_other_files, foreign_model_entries, normalize_repo,
+        sweep_orphans_gated, AppPaths, AppState, Vault, MOVE_STAGING_PREFIX,
+    };
+    use std::sync::Arc;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("modelstudio-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn names_of(paths: &[std::path::PathBuf]) -> Vec<String> {
+        let mut names: Vec<String> = paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A move copies and then deletes; it may only ever touch the entries this
+    /// app created. It used to take the whole folder, so a model root the user
+    /// had pointed at a folder of their own lost everything in it.
+    #[test]
+    fn a_move_only_touches_the_apps_own_entries() {
+        let root = scratch("models-root");
+        std::fs::create_dir_all(root.join("hub/models--owner--model")).unwrap();
+        std::fs::create_dir_all(root.join("xet")).unwrap();
+        std::fs::write(root.join(".DS_Store"), b"finder").unwrap();
+        std::fs::create_dir_all(root.join(format!("{MOVE_STAGING_PREFIX}abandoned"))).unwrap();
+        assert!(
+            foreign_model_entries(&root).is_empty(),
+            "a cache folder should be movable"
+        );
+        assert_eq!(names_of(&app_owned_model_entries(&root)), ["hub", "xet"]);
+
+        std::fs::write(root.join("tax-return.pdf"), b"mine").unwrap();
+        std::fs::create_dir_all(root.join("Holiday photos")).unwrap();
+        assert_eq!(
+            foreign_model_entries(&root),
+            ["Holiday photos", "tax-return.pdf"]
+        );
+        assert_eq!(names_of(&app_owned_model_entries(&root)), ["hub", "xet"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The destination has to be empty so nothing can be overwritten, but the
+    /// two files that mean nothing must not stand in the way.
+    #[test]
+    fn destination_emptiness_ignores_what_does_not_matter() {
+        let dest = scratch("models-dest");
+        assert!(!dest_holds_other_files(&dest).unwrap());
+        std::fs::write(dest.join(".DS_Store"), b"finder").unwrap();
+        std::fs::create_dir_all(dest.join(format!("{MOVE_STAGING_PREFIX}abandoned"))).unwrap();
+        assert!(!dest_holds_other_files(&dest).unwrap());
+        std::fs::create_dir_all(dest.join("hub")).unwrap();
+        assert!(dest_holds_other_files(&dest).unwrap());
+        std::fs::remove_dir_all(dest).unwrap();
+    }
+
+    /// huggingface_hub writes a blob before it links the snapshot at it, so a
+    /// sweep that ran during a download deleted a weight that had just landed.
+    /// It took no job gate at all, unlike every other model-store mutation.
+    #[test]
+    fn sweeping_orphans_waits_for_a_running_job() {
+        let root = scratch("sweep-gate");
+        let paths = AppPaths::at(root.clone());
+        let vault = Arc::new(Vault::new(paths.vault()));
+        let state = AppState::new(paths, vault);
+
+        let job = state.job_gate.try_read().unwrap();
+        assert!(
+            sweep_orphans_gated(&state).is_err(),
+            "swept the cache while a job held the gate"
+        );
+        drop(job);
+        assert!(sweep_orphans_gated(&state).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn accepts_the_shapes_people_actually_paste() {

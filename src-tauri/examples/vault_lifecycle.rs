@@ -146,6 +146,35 @@ fn main() {
         bad
     });
 
+    // The wrapped data key exists nowhere else: no keychain copy, no second
+    // record in the index, and `repair` cannot rebuild it. Losing `vault.json`
+    // used to seal every blob in the vault forever, so the second copy is
+    // checked here rather than only in a unit test.
+    check!(
+        "a backup manifest is kept",
+        vault.manifest_backup_path().exists()
+    );
+    vault.lock();
+    std::fs::remove_file(vault.manifest_path()).unwrap();
+    check!(
+        "a vault with only the backup still counts as one",
+        vault.exists()
+    );
+    check!(
+        "it reopens after the live manifest is deleted",
+        vault.unlock_with_passphrase("a longer new one").is_ok()
+    );
+    check!(
+        "items survived losing the live manifest",
+        vault.list().unwrap().len() == 3
+    );
+    vault.lock();
+    std::fs::write(dir.join("vault.json"), b"{ truncated").unwrap();
+    check!(
+        "it reopens after the live manifest is corrupted",
+        vault.unlock_with_passphrase("a longer new one").is_ok()
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
     println!();
     if failures == 0 {

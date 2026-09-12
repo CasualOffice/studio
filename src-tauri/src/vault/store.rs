@@ -5,6 +5,7 @@
 //! ```text
 //! vault/
 //!   vault.json     wrapped data keys and KDF parameters -- no secrets
+//!   vault.json.bak second copy of the same, so losing one is survivable
 //!   index.enc      encrypted item metadata (names, prompts, seeds)
 //!   blobs/<uuid>   encrypted content, random names, no extensions
 //! ```
@@ -306,6 +307,11 @@ impl Vault {
     pub fn manifest_path(&self) -> PathBuf {
         self.root.join("vault.json")
     }
+    /// Second copy of the manifest. Not a previous version: both copies are
+    /// kept current, see `write_manifest`.
+    pub fn manifest_backup_path(&self) -> PathBuf {
+        self.root.join("vault.json.bak")
+    }
     fn index_path(&self) -> PathBuf {
         self.root.join("index.enc")
     }
@@ -322,30 +328,98 @@ impl Vault {
             .map_err(|_| VaultError::NoSuchItem(id.to_string()))
     }
 
+    /// Whether there is a vault here at all.
+    ///
+    /// The backup counts. This used to look only at `vault.json`, so a vault
+    /// whose live manifest had been lost read as "no vault yet" -- and `create`
+    /// would then write a brand-new data key over the one surviving copy of the
+    /// old one, turning a recoverable accident into every blob being unopenable
+    /// forever.
     pub fn exists(&self) -> bool {
-        self.manifest_path().exists()
+        self.manifest_path().exists() || self.manifest_backup_path().exists()
     }
 
     pub fn is_unlocked(&self) -> bool {
         self.inner.read().map(|g| g.is_some()).unwrap_or(false)
     }
 
-    fn read_manifest(&self) -> Result<Manifest, VaultError> {
-        if !self.exists() {
+    fn read_manifest_file(path: &Path) -> Result<Manifest, VaultError> {
+        if !path.exists() {
             return Err(VaultError::Absent);
         }
-        let raw = std::fs::read(self.manifest_path())?;
+        let raw = std::fs::read(path)?;
         serde_json::from_slice(&raw).map_err(|e| VaultError::Corrupt(e.to_string()))
     }
 
+    /// Read the manifest, falling back to the backup copy.
+    ///
+    /// There is no other record anywhere of the wrapped data key, `repair`
+    /// cannot reconstruct it and nothing re-creates it, so an unreadable
+    /// `vault.json` used to mean every blob in the vault was lost. Reading the
+    /// second copy instead turns that into an inconvenience.
+    fn read_manifest(&self) -> Result<Manifest, VaultError> {
+        let primary = match Self::read_manifest_file(&self.manifest_path()) {
+            Ok(m) => return Ok(m),
+            Err(e) => e,
+        };
+        let backup = self.manifest_backup_path();
+        if !backup.exists() {
+            return Err(primary);
+        }
+        let m = Self::read_manifest_file(&backup)?;
+        let reason = match primary {
+            VaultError::Absent => "vault.json is missing".to_string(),
+            other => format!("vault.json is unreadable: {other}"),
+        };
+        eprintln!("vault: {reason}; recovered the backup manifest");
+        Ok(m)
+    }
+
+    /// Write the manifest to both the backup path and the live path.
+    ///
+    /// `vault.json` was written as a single temp-file-and-rename with no second
+    /// copy and no `fsync`, which meant a crash, a full disk or a power loss
+    /// during `change_passphrase`, `enable_biometry` or `disable_biometry` could
+    /// leave a populated vault with no readable wrapped key and nothing to fall
+    /// back on.
+    ///
+    /// The backup is written first and the live copy second, so at every moment
+    /// in between at least one of the two is a complete manifest. Both end up
+    /// holding the *current* wraps rather than one lagging a version behind: a
+    /// deliberately stale backup would mean a passphrase the user had just
+    /// replaced still unwrapped the data key, which is the opposite of what
+    /// changing a passphrase is for.
     fn write_manifest(&self, m: &Manifest) -> Result<(), VaultError> {
         std::fs::create_dir_all(&self.root)?;
-        let tmp = self.manifest_path().with_extension("json.tmp");
-        std::fs::write(
-            &tmp,
-            serde_json::to_vec_pretty(m).map_err(|e| VaultError::Corrupt(e.to_string()))?,
-        )?;
-        std::fs::rename(&tmp, self.manifest_path())?;
+        let bytes = serde_json::to_vec_pretty(m).map_err(|e| VaultError::Corrupt(e.to_string()))?;
+        self.write_manifest_file(&self.manifest_backup_path(), &bytes)?;
+        self.write_manifest_file(&self.manifest_path(), &bytes)
+    }
+
+    /// One durable copy: write a temporary file, flush it, rename it into
+    /// place, then flush the directory entry as well.
+    ///
+    /// Without the `sync_all` the rename could reach the disk while the
+    /// contents had not, which is precisely how a truncated or empty
+    /// `vault.json` appears after a power loss.
+    fn write_manifest_file(&self, path: &Path, bytes: &[u8]) -> Result<(), VaultError> {
+        use std::io::Write;
+        let name = path
+            .file_name()
+            .ok_or_else(|| VaultError::Corrupt("manifest path has no file name".into()))?
+            .to_string_lossy()
+            .to_string();
+        let tmp = path.with_file_name(format!("{name}.tmp"));
+        {
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&tmp, path)?;
+        // Best-effort on purpose: not every filesystem lets a directory handle
+        // be flushed, and a refusal here must not fail a write whose data is
+        // already safely on disk.
+        let _ = std::fs::File::open(&self.root).and_then(|dir| dir.sync_all());
         Ok(())
     }
 
@@ -956,6 +1030,90 @@ mod tests {
         );
         let raw_index = std::fs::read(root.join("index.enc")).unwrap();
         assert!(!raw_index.windows(7).any(|bytes| bytes == b"private"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn an_item(name: &str) -> VaultItem {
+        VaultItem {
+            id: uuid::Uuid::new_v4().to_string(),
+            content_hash: None,
+            kind: "import".into(),
+            name: name.into(),
+            mime: "image/png".into(),
+            bytes: 0,
+            model: String::new(),
+            prompt: String::new(),
+            seed: 0,
+            width: None,
+            height: None,
+            steps: None,
+            guidance: None,
+            inputs: vec![],
+            created_at: "now".into(),
+            duration_ms: 0,
+            project: None,
+            project_name: None,
+            project_index: None,
+        }
+    }
+
+    /// Losing or corrupting `vault.json` used to destroy the only copy of the
+    /// wrapped data key, and with it every blob in the vault.
+    #[test]
+    fn vault_opens_from_the_manifest_backup() {
+        let root = scratch("manifest-backup");
+        let vault = Vault::new(root.clone());
+        vault.create("a long test passphrase", false).unwrap();
+        let id = vault.put(b"the only copy", an_item("a.png")).unwrap();
+        assert!(
+            vault.manifest_backup_path().exists(),
+            "no backup was written"
+        );
+
+        std::fs::remove_file(vault.manifest_path()).unwrap();
+        assert!(
+            vault.exists(),
+            "a vault with only a backup manifest is still a vault"
+        );
+        vault.lock();
+        vault
+            .unlock_with_passphrase("a long test passphrase")
+            .unwrap();
+        assert_eq!(vault.get(&id).unwrap(), b"the only copy");
+
+        // A manifest that is present but unparseable takes the same path.
+        std::fs::write(vault.manifest_path(), b"{ truncated").unwrap();
+        vault.lock();
+        vault
+            .unlock_with_passphrase("a long test passphrase")
+            .unwrap();
+        assert_eq!(vault.get(&id).unwrap(), b"the only copy");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The backup must never lag a version behind: a superseded passphrase
+    /// unwrapping the data key out of `vault.json.bak` would make changing a
+    /// passphrase meaningless.
+    #[test]
+    fn manifest_backup_holds_the_current_wrap() {
+        let root = scratch("manifest-current");
+        let vault = Vault::new(root.clone());
+        vault.create("a long test passphrase", false).unwrap();
+        let id = vault.put(b"still readable", an_item("a.png")).unwrap();
+        vault
+            .change_passphrase("a long test passphrase", "a longer new one")
+            .unwrap();
+
+        std::fs::remove_file(vault.manifest_path()).unwrap();
+        vault.lock();
+        assert!(
+            vault
+                .unlock_with_passphrase("a long test passphrase")
+                .is_err(),
+            "the replaced passphrase still opens the backup"
+        );
+        vault.unlock_with_passphrase("a longer new one").unwrap();
+        assert_eq!(vault.get(&id).unwrap(), b"still readable");
         let _ = std::fs::remove_dir_all(root);
     }
 }
