@@ -54,6 +54,20 @@ else
   bad "example probes"
 fi
 
+# The Rust host and the Python engine both implement the vault format, and a
+# disagreement between them is the only defect in this codebase that cannot be
+# fixed forward -- the bytes are already sealed on disk. CI has checked this
+# all along; the check lived as a heredoc inside the workflow, so the script
+# that claims on its first line to run everything CI runs did not run it.
+step "vault format interop (Python must seal and open what Rust wrote)"
+if out=$("$VENV" scripts/verify_vectors.py); then
+  echo "$out" | sed 's/^/   /'
+  ok
+else
+  echo "$out" | sed 's/^/   /'
+  bad "vault format interop"
+fi
+
 step "tsc --noEmit"
 npx tsc --noEmit -p tsconfig.json && ok || bad "typescript"
 

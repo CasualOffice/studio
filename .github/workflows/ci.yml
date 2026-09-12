@@ -8,6 +8,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Nothing in this workflow publishes anything, and with no block here every job
+# ran on whatever the repository default happened to be. Where that default is
+# write, it handed a write-scoped token to a pull request's own code. Declaring
+# the scope here settles it regardless of the setting.
+permissions:
+  contents: read
+
 jobs:
   rust:
     name: Rust
@@ -102,22 +109,9 @@ jobs:
 
       # The Rust and Python implementations of the vault format must stay
       # byte-identical. Nothing else in the suite would catch them drifting.
-      - name: Generate vectors from Rust
-        working-directory: src-tauri
-        run: cargo run --quiet --example vault_vectors > ../vectors.json
-
-      - name: Verify Python produces the same bytes
-        run: |
-          python - <<'PY'
-          import json, sys, os
-          sys.path.insert(0, "engine")
-          import vaultcrypto as vc
-          d = json.load(open("vectors.json"))
-          fk = bytes.fromhex(d["file_key_hex"])
-          fid = bytes.fromhex(d["file_id_hex"])
-          for v in d["vectors"]:
-              pt = bytes((i % 251) for i in range(v["len"]))
-              assert vc.seal_with_file_key(fk, fid, pt) == bytes.fromhex(v["sealed_hex"]), \
-                  f"mismatch at {v['len']} bytes"
-          print(f"{len(d['vectors'])} vectors byte-identical")
-          PY
+      #
+      # The comparison used to live here as a heredoc, which is why neither
+      # preflight nor the release workflow ran it: there was nothing to call.
+      # It is a script now, and all three run the same one.
+      - name: Verify the Rust and Python vault formats match
+        run: python scripts/verify_vectors.py

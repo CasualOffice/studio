@@ -24,6 +24,28 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # Three manifests carry the version and nothing compared them with the
+      # tag, so a tag pushed before the bump landed -- or with only two of the
+      # three bumped -- built and published happily: the file name came from
+      # the tag while the about box and the updater read tauri.conf.json.
+      # Checked before anything is built, because nothing later in the run can
+      # change the answer and the build takes twenty minutes to reach it.
+      - name: Versions agree with the tag
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          want="${TAG#v}"
+          pkg=$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' package.json | head -1)
+          conf=$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' src-tauri/tauri.conf.json | head -1)
+          crate=$(grep -m1 '^version = ' src-tauri/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          printf 'tag             %s\npackage.json    %s\ntauri.conf.json %s\nCargo.toml      %s\n' \
+            "$want" "$pkg" "$conf" "$crate"
+          if [ -z "$want" ] || [ "$pkg" != "$want" ] ||
+             [ "$conf" != "$want" ] || [ "$crate" != "$want" ]; then
+            echo "these must all agree before a release can be built"
+            exit 1
+          fi
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -56,10 +78,21 @@ jobs:
           npx vitest run
           cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --lib
 
+      # Pinned to the same versions as CI and engine/requirements.lock. They
+      # were unpinned here alone, which meant a tag push could go red for a
+      # pillow or cryptography release that had nothing to do with the tagged
+      # commit, on a commit CI had already passed against the pinned set.
       - name: Engine tests
         run: |
-          python -m pip install --quiet pillow pillow-heif cryptography
+          python -m pip install --quiet pillow==12.3.0 pillow-heif==1.7.0 cryptography==50.0.1
           python engine/test_worker.py
+
+      # The vault format check, the same script CI and preflight run. A release
+      # that ships a host which seals differently than the engine opens makes
+      # every file it writes unopenable, and that cannot be fixed by a later
+      # release -- the bytes are already on disk.
+      - name: Vault format interop
+        run: python scripts/verify_vectors.py
 
       - name: Build
         run: npm run tauri build -- --bundles app,dmg
@@ -69,9 +102,16 @@ jobs:
       # helps people find the right one.
       - name: Name the artifacts
         id: pack
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
-          VERSION="${VERSION#v}"
+          # The same expression the version guard checked, so the name and the
+          # guard cannot disagree. This used to read GITHUB_REF_NAME first and
+          # fall back to the dispatch input, but GITHUB_REF_NAME is always set
+          # -- on a manual run it is the branch -- so the fallback never fired
+          # and a workflow_dispatch build named its download after the branch,
+          # ModelStudio-main-AppleSilicon.dmg.
+          VERSION="${TAG#v}"
           OUT=src-tauri/target/release/bundle
           mkdir -p dist-release
           cp "$OUT"/dmg/*.dmg "dist-release/ModelStudio-${VERSION}-AppleSilicon.dmg"
