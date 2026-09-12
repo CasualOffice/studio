@@ -2025,10 +2025,65 @@ def _shotlist_beats(raw: str) -> list[Any]:
     if start < 0 or end <= start:
         raise ValueError("the writer did not return a panel list")
 
-    panels = json.loads(body[start:end + 1])
+    try:
+        panels = json.loads(body[start:end + 1])
+    except json.JSONDecodeError:
+        # The reply ran out of tokens partway through a panel.
+        #
+        # `rfind("]")` then lands on the closing bracket of the last panel's
+        # own `dialogue` array rather than the end of the outer one, so the
+        # slice is a list with a half-written object on the end and the parse
+        # fails -- throwing away every complete panel in front of it. Measured
+        # on a 310-word story: the writer returned fourteen whole panels and
+        # was cut off inside the fifteenth, and all fourteen were discarded
+        # after minutes of waiting. Salvaging them is the difference between a
+        # division the user can correct and an error that names nothing.
+        panels = _salvage_objects(body[start:])
+        if not panels:
+            raise
     if not isinstance(panels, list) or not panels:
         raise ValueError("the writer returned no panels")
     return panels
+
+
+def _salvage_objects(text: str) -> list[Any]:
+    """Every complete top-level object in a possibly truncated JSON array.
+
+    Depth-counted rather than pattern-matched, because a panel contains nested
+    objects (its dialogue) and braces inside strings (rare, but a caption is
+    free text). Anything still open when the text runs out is dropped.
+    """
+    out: list[Any] = []
+    depth = 0
+    start = -1
+    in_string = False
+    escaped = False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                try:
+                    out.append(json.loads(text[start:i + 1]))
+                except json.JSONDecodeError:
+                    pass
+                start = -1
+            elif depth < 0:
+                break
+    return out
 
 
 def _clean_shotlist(beats: list[Any], story: str) -> list[dict[str, Any]]:
@@ -2754,9 +2809,13 @@ PLACE_SYSTEM = (
     "3. Name materials and colours. 'A room' is drawn differently every time; "
     "'dark green wallpaper with a repeating leaf pattern, bare oak boards' is "
     "not.\n"
-    "4. Decide anything the scene leaves open -- that is the job -- but never "
+    "4. If you are given what the story says about the place, every word of it "
+    "is fixed. Those are the author\'s own words and they outrank anything you "
+    "would otherwise choose: a story that says the kitchen is green does not "
+    "have a yellow kitchen.\n"
+    "5. Decide anything the story leaves open -- that is the job -- but never "
     "contradict what it does say.\n"
-    "5. Never write 'beautiful', 'cinematic' or 'atmospheric'.\n\n"
+    "6. Never write 'beautiful', 'cinematic' or 'atmospheric'.\n\n"
     "One paragraph, at most fifty words, no preamble.\n"
 )
 
@@ -2768,7 +2827,45 @@ _PLACE_NOISE = frozenset({
 })
 
 
-def _place_key(panel: dict[str, Any]) -> str:
+def _place_words(text: str) -> list[str]:
+    """The words that name a place, with the ones that do not dropped."""
+    flat = re.sub(r"[^a-z0-9 ]+", " ", " ".join(str(text).lower().split()))
+    return [w for w in flat.split() if w not in _PLACE_NOISE]
+
+
+def _snap_place(key: str, known: list[dict[str, Any]]) -> str:
+    """Fold a panel's setting onto one of the story's own places.
+
+    The writer names the same room differently from panel to panel -- one
+    reading gave "kitchen", "table in kitchen" and "kitchen table" for the one
+    kitchen, which is three rooms drawn, three chances to contradict each
+    other, and two and a half minutes of drawing spent disagreeing with
+    itself. `op_cast` has already read the places out of the prose and verified
+    them, so they are the list of rooms the story actually has, and a setting
+    that names one of them is that one.
+
+    Longest match wins, so "the station platform" prefers "the station
+    platform" over "the station" when the story names both.
+    """
+    words = set(_place_words(key))
+    if not words:
+        return key
+    best, best_len = key, 0
+    for place in known:
+        name = _place_words(place.get("name", ""))
+        if not name:
+            continue
+        # Every word of the story's name is in the setting, or the other way
+        # round: "kitchen table" names the kitchen; so does "table in kitchen".
+        named = set(name)
+        if named <= words or words <= named:
+            if len(named) > best_len:
+                best, best_len = " ".join(name), len(named)
+    return best
+
+
+def _place_key(panel: dict[str, Any],
+               known: list[dict[str, Any]] | None = None) -> str:
     """Which place a panel is in, by identity rather than by scene number.
 
     Rooms were keyed on the scene number the writer assigned, and that fails in
@@ -2784,11 +2881,9 @@ def _place_key(panel: dict[str, Any]) -> str:
     platform gets its own whatever scene it is in. Articles and possessives are
     dropped so "the kitchen", "kitchen" and "her kitchen" are one place.
     """
-    setting = re.sub(r"[^a-z0-9 ]+", " ",
-                     " ".join(str(panel.get("setting", "")).lower().split()))
-    words = [w for w in setting.split() if w not in _PLACE_NOISE]
+    words = _place_words(panel.get("setting", ""))
     if words:
-        return " ".join(words)
+        return _snap_place(" ".join(words), known or [])
     title = " ".join(str(panel.get("scene_title", "")).lower().split())
     if title:
         return title
@@ -2797,8 +2892,28 @@ def _place_key(panel: dict[str, Any]) -> str:
     return f"scene {_as_scene(panel.get('scene', 1))}"
 
 
+def _place_described(key: str, known: list[dict[str, Any]]) -> str:
+    """What the story says about this place, if it says anything.
+
+    Matched on the same normalisation the key uses, so "the kitchen" from the
+    cast reader finds the panel whose setting was "Kitchen".
+    """
+    for place in known:
+        name = str(place.get("name", ""))
+        words = [w for w in re.sub(r"[^a-z0-9 ]+", " ", name.lower()).split()
+                 if w not in _PLACE_NOISE]
+        if not words:
+            continue
+        flat = " ".join(words)
+        if flat == key or flat in key or key in flat:
+            return str(place.get("description", "")).strip()
+    return ""
+
+
 def _establish_places(req_id: str, panels: list[dict[str, Any]],
-                      style: str, writer: str | None) -> dict[str, str]:
+                      style: str, writer: str | None,
+                      known: list[dict[str, Any]] | None = None) -> dict[str, str]:
+    known = known or []
     """Describe each scene's location once, for every panel in it to share.
 
     Panels were described one at a time, so the same room came back as floral
@@ -2808,7 +2923,7 @@ def _establish_places(req_id: str, panels: list[dict[str, Any]],
     """
     by_place: dict[str, list[dict[str, Any]]] = {}
     for p in panels:
-        by_place.setdefault(_place_key(p), []).append(p)
+        by_place.setdefault(_place_key(p, known), []).append(p)
 
     places: dict[str, str] = {}
     for n, (key, group) in enumerate(by_place.items()):
@@ -2824,8 +2939,12 @@ def _establish_places(req_id: str, panels: list[dict[str, Any]],
         )
         title = next((p.get("scene_title") for p in group if p.get("scene_title")), "")
         try:
+            said = _place_described(key, known or [])
             raw = _write(req_id, PLACE_SYSTEM,
-                         f"Style: {style}\nScene: {title}\nWhat happens here: {beats}",
+                         f"Style: {style}\nScene: {title}\n"
+                         + (f"What the story says about this place, which is "
+                            f"fixed: {said}\n" if said else "")
+                         + f"What happens here: {beats}",
                          max_tokens=150, temperature=0.4, repo=writer, label="Describing the place")
             places[key] = " ".join(raw.strip().splitlines()[0].split())[:400]
         except Cancelled:
@@ -2866,19 +2985,24 @@ ENRICH_SYSTEM = (
     "7. Never write 'beautiful', 'cinematic', 'dramatic', 'high quality' or "
     "'masterpiece'. They describe nothing.\n\n"
     "One paragraph, at most forty words, no preamble.\n\n"
-    "The same place at three distances. Notice how much of the room is in each.\n\n"
+    "The same place at three distances. Notice how much of the room is in "
+    "each.\n\n"
+    "No name appears in these examples on purpose. Use the names you are "
+    "given for the panel and never a name from here: an example name gets "
+    "copied into the reply, and a panel about a letter came back describing "
+    "the face of a person who is not in the story at all.\n\n"
     "Place: a narrow kitchen, dark green walls, bare oak boards, one window "
     "over the sink.\n\n"
-    "Panel: wide shot. Anna comes into the kitchen. kitchen.\n"
+    "Panel: wide shot. The sister comes into the kitchen. kitchen.\n"
     "The narrow kitchen from the doorway, dark green walls, bare oak boards "
     "running away to the sink, one window above it. Grey afternoon light "
-    "across the floor, no lamp lit. Anna small in the doorway.\n\n"
-    "Panel: medium shot. Anna stands at the kitchen window. kitchen.\n"
-    "Anna at the window over the sink, rain running down the glass, grey "
-    "light on her face and shoulders. The dark green wall directly behind "
-    "her, a cup steaming on the draining board.\n\n"
-    "Panel: close-up. Anna watches the rain. kitchen.\n"
-    "Anna's face turned to the glass, grey light along her cheek, her eyes "
+    "across the floor, no lamp lit. A figure small in the doorway.\n\n"
+    "Panel: medium shot. The sister stands at the kitchen window. kitchen.\n"
+    "She stands at the window over the sink, rain running down the glass, "
+    "grey light on her face and shoulders. The dark green wall directly "
+    "behind her, a cup steaming on the draining board.\n\n"
+    "Panel: close-up. The sister watches the rain. kitchen.\n"
+    "Her face turned to the glass, grey light along her cheek, her eyes "
     "following one drop down. Rain-blurred brightness behind her, nothing "
     "else in frame.\n"
 )
@@ -2902,7 +3026,13 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     writer = req.get("writer")
     # The place first, then the panels within it. Order matters: a panel
     # described before its room has nothing to be consistent with.
-    places = _establish_places(req_id, panels, style, writer)
+    # What the story itself says about each place, read and verified by
+    # `op_cast`. It was extracted, checked against the prose, and then never
+    # used: the place writer invented a room from the panel actions alone, so a
+    # kitchen the story calls green came back "pale yellow walls, fluorescent
+    # light" and every panel of the scene was drawn that way.
+    known = req.get("places") or []
+    places = _establish_places(req_id, panels, style, writer, known)
     out: list[dict[str, Any]] = []
 
     for i, p in enumerate(panels):
@@ -2918,7 +3048,7 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             str(p.get("action", "")).strip(),
             str(p.get("setting", "")).strip(),
         ) if x)
-        place = places.get(_place_key(p), "")
+        place = places.get(_place_key(p, known), "")
         user = (f"Style: {style}\n"
                 + (f"Place, already settled: {place}\n" if place else "")
                 + f"Panel: {moment}.")
@@ -2930,11 +3060,15 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             log(req_id, f"panel {i + 1} not enriched: {exc}", "warn")
             out.append({**p, "description": "",
-                        "place": places.get(_place_key(p), ""),
-                        "place_key": _place_key(p)})
+                        "place": places.get(_place_key(p, known), ""),
+                        "place_key": _place_key(p, known)})
             continue
 
         text = " ".join(raw.strip().splitlines()[0].split())
+        # It repeats the shot back at us -- "Wide shot: Mira stands..." -- and
+        # the prompt already says the shot, so it arrives twice.
+        text = re.sub(r"^(wide|medium|close[- ]?up)(\s+shot)?\s*[:.,-]\s*",
+                      "", text, flags=re.I)
         # An enrichment that dropped the moment is worse than none: the panel
         # would be drawn as something the story does not contain.
         #
@@ -2958,10 +3092,10 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             log(req_id, f"panel {i + 1} brief lost the subject; restoring it", "warn")
             text = f"{subject}. {text}"
         out.append({**p, "description": text[:400],
-                    "place": places.get(_place_key(p), ""),
+                    "place": places.get(_place_key(p, known), ""),
                     # The board draws one room per key and hands the same
                     # picture to every panel that shares it.
-                    "place_key": _place_key(p)})
+                    "place_key": _place_key(p, known)})
 
     return {"panels": out}
 
@@ -2997,9 +3131,16 @@ CAST_SYSTEM = (
     "1. Only name people the story actually names or clearly describes. If a "
     "person is never named, use the phrase the story itself uses for them "
     "(\"the conductor\", \"her sister\"). Never invent a name.\n"
-    "2. Describe each person only from what the story says about them. If it "
-    "never says what they look like, say so with an empty description rather "
-    "than filling the gap. A face invented here is drawn into every panel.\n"
+    "2. A description is what someone LOOKS LIKE, and nothing else. Hair, "
+    "build, age, face, what they are wearing. Not what they do, not what they "
+    "want, not how they feel, not their part in the story. If the story never "
+    "says what they look like, return an empty description rather than filling "
+    "the gap -- that is the correct answer and the interface will ask.\n"
+    "   Wrong: \"She is the one who finds the letter and speaks to her "
+    "brother.\" That is her part in the plot. It goes into every panel as "
+    "drawing instructions, where it means nothing.\n"
+    "   Right: \"Tall, cropped dark hair, grey coat too big for her.\"\n"
+    "   Also right: \"\" -- when the story simply never says.\n"
     "3. A place is somewhere a scene happens, not every noun. A room, a "
     "street, a station platform. Not \"the armchair\".\n"
     "4. List people in the order they first appear.\n"
@@ -3104,7 +3245,15 @@ def _tier(count: int, top: int) -> int:
 # writer produces when asked to divide by beat rather than to a target: it
 # lands near seventy words a panel across short fiction. Used only to bound
 # the answer and to size the token budget, never to force a count.
-_WORDS_PER_PANEL = 70
+# Words of prose a panel is worth.
+#
+# 70 was a paragraph, not a beat. A comic panel holds one moment -- roughly a
+# sentence or two -- and the writer agrees: asked to divide a 310-word story it
+# returned fifteen beats, about twenty words each, and the bound built from 70
+# told it the story was worth two to eight. So the division was cut in half and
+# the second half of the story never reached the board at all, which reads
+# exactly like the tool picking a few scenes and drawing those.
+_WORDS_PER_PANEL = 30
 
 
 # As many panels as one board is worth reading in a sitting, and as many as
@@ -3201,16 +3350,25 @@ def _is_pronoun_name(name: str) -> bool:
 
 
 def _is_first_person(story: str) -> bool:
-    """Whether the story is told by someone it never names.
+    """Whether the story is *narrated* by someone it never names.
 
     A first-person story has no name for its own narrator, so the cast reader
     has nothing to return for the person the whole story is about -- and the
     board then draws its lead from nothing at all. Worth detecting so the
     interface can ask for a name once, rather than the user discovering it from
     the pictures.
+
+    Speech is removed before looking. Almost every story in the third person
+    contains "I" somewhere, because its characters talk to each other -- a
+    two-line exchange containing "I did tell you" is not a first-person story,
+    and asking its author to name the narrator is a question about a person who
+    does not exist. Checked against a third-person fixture with dialogue, which
+    is what caught this.
     """
-    low = story.lower()
-    return any(_whole_word_count(low, w) > 0 for w in ("i", "me", "my", "mine"))
+    narration = re.sub(r"[\"“”‘’'].*?[\"“”‘’']",
+                       " ", story, flags=re.S).lower()
+    return any(_whole_word_count(narration, w) > 0
+               for w in ("i", "me", "my", "mine"))
 
 
 def op_cast(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
@@ -3315,7 +3473,7 @@ def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
               "progress": None, "message": "Dividing the story into beats"})
         raw = _write(req_id, SHOTLIST_SYSTEM,
                      _shotlist_instruction_derived(story, low, high),
-                     max_tokens=min(6000, 180 * high), temperature=0.3,
+                     max_tokens=min(6000, 240 * high + 600), temperature=0.3,
                      repo=req.get("writer"), label="Dividing the story")
         # Counted before it is bounded, so an overshoot can be reported rather
         # than quietly becoming a shorter board.
@@ -3344,7 +3502,7 @@ def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
           "progress": None, "message": f"Breaking the story into {count} panels"})
 
     raw = _write(req_id, SHOTLIST_SYSTEM, _shotlist_instruction(story, count),
-                 max_tokens=min(6000, 180 * count), temperature=0.3,
+                 max_tokens=min(6000, 240 * count + 600), temperature=0.3,
                  repo=req.get("writer"), label="Dividing the story")
     panels = _parse_shotlist(raw, count, story)
     if len(panels) < count:

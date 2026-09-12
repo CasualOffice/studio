@@ -2122,3 +2122,108 @@ class ModuleIntegrity(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TruncatedReplySalvage(unittest.TestCase):
+    """A reply cut off mid-panel must not cost every panel in front of it.
+
+    Found by running a real 310-word story through the real writer. It returned
+    fifteen whole panels and was cut off inside the sixteenth; `rfind("]")`
+    then landed on the closing bracket of the last panel's own `dialogue`
+    array, so the slice was a list with half an object on the end, the parse
+    raised, and all fifteen were discarded after minutes of waiting.
+    """
+
+    def _truncated(self):
+        whole = [{"shot": "wide", "subject": f"beat {i}", "action": "a",
+                  "setting": "kitchen", "scene": 1,
+                  "dialogue": [{"speaker": "Mira", "text": "hello"}]}
+                 for i in range(5)]
+        body = json.dumps(whole)[:-1]  # drop the closing "]"
+        return body + ', {"shot": "medium", "subject": "half", "caption": "'
+
+    def test_complete_panels_are_salvaged(self):
+        beats = worker._shotlist_beats(self._truncated())
+        self.assertEqual(len(beats), 5)
+        self.assertEqual(beats[0]["subject"], "beat 0")
+
+    def test_the_half_written_panel_is_dropped(self):
+        for beat in worker._shotlist_beats(self._truncated()):
+            self.assertNotEqual(beat.get("subject"), "half")
+
+    def test_nested_objects_do_not_end_a_panel_early(self):
+        beats = worker._shotlist_beats(self._truncated())
+        self.assertEqual(beats[0]["dialogue"][0]["speaker"], "Mira")
+
+    def test_a_reply_with_nothing_complete_still_raises(self):
+        with self.assertRaises(ValueError):
+            worker._shotlist_beats('[{"shot": "wide", "subject": "half')
+
+    def test_a_whole_reply_is_untouched(self):
+        good = json.dumps([{"shot": "wide", "subject": "a"}] * 3)
+        self.assertEqual(len(worker._shotlist_beats(good)), 3)
+
+
+class NarrationVoice(unittest.TestCase):
+    """Dialogue is not narration.
+
+    Almost every third-person story contains "I", because its characters talk
+    to each other. Asking the author of one to name its narrator is a question
+    about somebody who does not exist -- caught by running a third-person
+    fixture with two lines of dialogue in it.
+    """
+
+    def test_dialogue_does_not_make_a_story_first_person(self):
+        for story in (
+            'Jonas did not look up. "I did tell you. In writing."',
+            '"I am going where the work is," he said. She put the letter down.',
+            'She asked if he had told her. "I did," he said. "In writing."',
+            'He said, “I will write properly.” Mira did not wave.',
+        ):
+            self.assertFalse(worker._is_first_person(story), story)
+
+    def test_a_first_person_narrator_is_still_found(self):
+        for story in (
+            "I opened the door and she was already there.",
+            "My sister was on the platform before me.",
+            'I watched the rain. "You could have told me," she said.',
+        ):
+            self.assertTrue(worker._is_first_person(story), story)
+
+
+class PlaceIdentity(unittest.TestCase):
+    """One room per place, folded onto the places the story actually has.
+
+    The writer names the same room differently from panel to panel. A real run
+    gave "kitchen", "table in kitchen" and "kitchen table" for one kitchen:
+    three rooms drawn, three chances to contradict each other, and two and a
+    half minutes of drawing spent disagreeing with itself.
+    """
+
+    KNOWN = [{"name": "the kitchen", "description": "Narrow and green"},
+             {"name": "the station", "description": "Iron roof"},
+             {"name": "the platform", "description": ""}]
+
+    def _key(self, setting, scene=1):
+        return worker._place_key({"setting": setting, "scene": scene}, self.KNOWN)
+
+    def test_the_writers_variants_fold_onto_one_room(self):
+        for setting in ("kitchen", "the kitchen", "Kitchen", "her kitchen",
+                        "table in kitchen", "kitchen table"):
+            self.assertEqual(self._key(setting), "kitchen", setting)
+
+    def test_a_revisited_place_is_the_same_room_across_scenes(self):
+        self.assertEqual(self._key("kitchen", scene=1), self._key("kitchen", scene=6))
+
+    def test_different_places_stay_different_inside_one_scene(self):
+        # A writer that files the whole story under scene 1 still changes room.
+        self.assertNotEqual(self._key("kitchen", scene=1),
+                            self._key("station platform", scene=1))
+
+    def test_a_place_the_story_does_not_name_keeps_its_own_words(self):
+        self.assertEqual(self._key("damp streets"), "damp streets")
+
+    def test_the_story_words_for_a_place_are_found(self):
+        self.assertEqual(
+            worker._place_described("kitchen", self.KNOWN), "Narrow and green")
+        self.assertEqual(worker._place_described("attic", self.KNOWN), "")

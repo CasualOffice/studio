@@ -200,6 +200,8 @@ export default function Storyboard({
   /** A name for a narrator the story never names. */
   const [narratorName, setNarratorName] = useState("");
   const [narratorLook, setNarratorLook] = useState("");
+  /** Which cast member's appearance is open for correcting. */
+  const [editingPerson, setEditingPerson] = useState<string | null>(null);
 
   /**
    * Put someone into the cast by hand.
@@ -215,6 +217,31 @@ export default function Storyboard({
    * the full sheet: they are the one the story is about, which is precisely
    * why the prose never stopped to name them.
    */
+  /**
+   * Correct what someone looks like.
+   *
+   * The cast reader is asked for appearance and told to leave it empty when
+   * the story never says. It does neither: for a story that does not describe
+   * its people it returns their part in the plot -- "She is the one who finds
+   * the letter" -- and that goes into every panel as drawing instructions,
+   * where it means nothing. A 4B model will not reliably tell appearance from
+   * narration, and no code-side test can either: a correct description is
+   * drawn from the prose too, so anything that rejects narration for
+   * overlapping with the story would reject the right answer just as often.
+   *
+   * So it is editable. The read stays a proposal, which is what it was always
+   * meant to be, and the one judgement a person can make instantly -- is this
+   * what they look like? -- is the one the tool stops guessing at.
+   */
+  const describePerson = (name: string, look: string) => {
+    setCast((c) => c && ({
+      ...c,
+      people: c.people.map((p) => p.name === name
+        ? { ...p, description: look } : p),
+    }));
+    setSheet(null); setPages([]);
+  };
+
   const addPerson = (name: string, look: string, lead = false) => {
     const clean = name.trim();
     if (!clean) return;
@@ -867,7 +894,7 @@ export default function Storyboard({
     setStage("enriching"); setJobId(id);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
     try {
-      const r = await api.enrichPanels(id, panels, style.words);
+      const r = await api.enrichPanels(id, panels, style.words, cast?.places ?? []);
       setPanels(r.panels);
       const filled = r.panels.filter((p) => (p.description ?? "").trim()).length;
       notify(filled === r.panels.length
@@ -1464,12 +1491,44 @@ export default function Storyboard({
           </span>
           {cast.people.map((p) => (
             <span key={p.name} className="pill" style={{
-                     opacity: p.tier === 1 ? 1 : p.tier === 2 ? 0.8 : 0.62 }}
+                     opacity: p.tier === 1 ? 1 : p.tier === 2 ? 0.8 : 0.62,
+                     cursor: "pointer" }}
                     title={(p.description || "The story never says what they look like.")
-                           + ` · ${p.mentions} mentions`}>
+                           + ` · ${p.mentions} mentions · click to describe`}
+                    onClick={() => setEditingPerson(
+                      editingPerson === p.name ? null : p.name)}>
               {p.name}
             </span>
           ))}
+          {editingPerson && (() => {
+            const p = cast.people.find((q) => q.name === editingPerson);
+            if (!p) return null;
+            return (
+              <span style={{ display: "flex", gap: 6, alignItems: "center",
+                             flexBasis: "100%", marginTop: 6 }}>
+                <input
+                  autoFocus defaultValue={p.description} disabled={busy}
+                  style={{ flex: 1, minWidth: 200 }}
+                  placeholder={`What does ${p.name} look like? The story does not say.`}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      describePerson(p.name, (e.target as HTMLInputElement).value);
+                      setEditingPerson(null);
+                    }
+                    if (e.key === "Escape") setEditingPerson(null);
+                  }}
+                  onBlur={(e) => {
+                    if (e.target.value !== p.description) {
+                      describePerson(p.name, e.target.value);
+                    }
+                    setEditingPerson(null);
+                  }} />
+                <span style={{ fontSize: 10, color: "var(--text-faint)" }}>
+                  appearance only &mdash; it leads every panel she is in
+                </span>
+              </span>
+            );
+          })()}
           {cast.places.length > 0 && <span className="divider" />}
           {cast.places.map((pl) => (
             <span key={pl.name} className="pill" style={{ opacity: 0.62 }}

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AssistResult, EngineProgress, GenerateArgs, HostInfo, Lora, ModelStatus, Orphans, Panel, RepairReport, ResolvedLora, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus } from "./types";
+import type { AssistResult, CastPlace, EngineProgress, GenerateArgs, HostInfo, Lora, ModelStatus, Orphans, Panel, RepairReport, ResolvedLora, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus } from "./types";
 
 /** Tauri rejects with our structured error; normalise it to a message. */
 export function errText(e: unknown): string {
@@ -89,8 +89,12 @@ export const api = {
         missing: string[]; missing_total?: number;
       };
     }>("shot_list", { jobId, story, panels }),
-  enrichPanels: (jobId: string, panels: Panel[], style: string) =>
-    invoke<{ panels: Panel[] }>("enrich_panels", { jobId, panels, style }),
+  /** `places` is what the story said about each place, from the cast read.
+   *  Without it the place writer invents a room from the panel actions alone,
+   *  and a kitchen the story calls green comes back yellow. */
+  enrichPanels: (jobId: string, panels: Panel[], style: string,
+                 places: CastPlace[] = []) =>
+    invoke<{ panels: Panel[] }>("enrich_panels", { jobId, panels, style, places }),
   composeBoard: (
     jobId: string, panels: string[], captions: string[], shots: string[],
     dialogue: { speaker: string; text: string }[][], scenes: number[],

@@ -1637,6 +1637,11 @@ pub async fn enrich_panels(
     job_id: String,
     panels: serde_json::Value,
     style: String,
+    // What the story says about each place, from the cast read. The place
+    // writer invents a room from the panel actions without it, so a kitchen
+    // the story calls green comes back yellow. Optional so a caller that has
+    // not read the cast still works.
+    places: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
     let _job = state.job_gate.read().await;
     state.require_unlocked()?;
@@ -1657,7 +1662,12 @@ pub async fn enrich_panels(
         .request(
             &job_id,
             "enrich_panels",
-            json!({ "panels": panels, "style": style, "writer": writer.repo }),
+            json!({
+                "panels": panels,
+                "style": style,
+                "places": places.unwrap_or_else(|| json!([])),
+                "writer": writer.repo,
+            }),
         )
         .await
 }
