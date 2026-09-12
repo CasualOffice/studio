@@ -27,6 +27,23 @@ Wan 2.2 TI2V-5B q8, `AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit`, on this
 one reached step 10 of 12 while paging heavily and was stopped; it is not known
 whether it completes.
 
+**Text to video is broken too, not just image to video.** At the model's own
+recommended 50 steps, with no image involved at all, 838 seconds of denoising
+produced the same coloured noise. Two different models -- Wan TI2V-5B and
+Bernini-R -- fail identically, and both go through `op_video`.
+
+That eliminates the two obvious explanations. It is not the first-frame
+conditioning, because one run used no image. It is not the step count, because
+50 is what the model asks for. What remains is the engine's own call -- three
+low-RAM flags passed on every video run -- or the q8 checkpoint, which logs
+`Normalizing Wan q8 runtime-sensitive paths to BF16 at load` and silently
+rewrites attention weights. The controlled test between those two has not been
+run: it needs about 10 GiB, and the machine has not been free.
+
+Every technical check passes on the broken output: valid MP4, correct
+dimensions, correct frame count, correct fps, sealed to the vault without
+complaint. That is exactly why it was reported as working.
+
 **The output was not usable.** Every frame of the completed clip came back as
 coloured noise with no resemblance to the source picture. Memory, timing and
 the seal were all verified and all fine, and the clip was reported as working

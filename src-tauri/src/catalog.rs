@@ -503,8 +503,7 @@ pub const CATALOG: &[ModelEntry] = &[
         video_from_image: false,
         guidance_default: 4.0,
         guidance_max: 10.0,
-        notes: "The smallest Wan that can run here. Text-to-video and latent \
-                video. Keep clips short: attention cost is quadratic in frames.",
+        notes: "Text to video only -- it transforms existing footage and takes no still. Not tested since video generation started failing here: the two models that were tested, Wan TI2V-5B and Bernini-R, both return coloured noise, so this one should not be assumed to work either.",
         broken: None,
         backend: None,
     },
@@ -528,11 +527,8 @@ pub const CATALOG: &[ModelEntry] = &[
         video_from_image: true,
         guidance_default: 4.5,
         guidance_max: 10.0,
-        notes: "The only model here that animates a still picture. Fetches \
-                the whole repository, not a weight subset: 26.9 GiB on disk, \
-                far more than its 1.3B suggests. Measured at 9.12-9.45 GiB of \
-                memory for 17 frames at 320x192.",
-        broken: None,
+        notes: "Reference-guided video: the picture influences appearance, it is not the first frame. Tried on a 16 GB M4 and the clip came back as coloured noise, the same failure as Wan -- which points at something shared rather than at either model.",
+        broken: Some("Produces coloured noise on this machine, as every video model tested here does. The cause is not yet identified."),
         backend: None,
     },
     // ---- Documented but out of reach on 16 GB ---------------------------
@@ -652,7 +648,7 @@ pub const CATALOG: &[ModelEntry] = &[
         video_from_image: false,
         guidance_default: 4.0,
         guidance_max: 12.0,
-        notes: "33 GiB peak for a 384x224, 33-frame clip. 64 GB is the first sane tier.",
+        notes: "33 GiB peak for a 384x224, 33-frame clip. 64 GB is the first sane tier. Untested here, and video generation is currently broken on 16 GB machines whatever the model.",
         broken: None,
         backend: None,
     },

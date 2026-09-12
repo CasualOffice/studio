@@ -69,8 +69,8 @@ drives [MLX-Gen](https://github.com/lpalbou/mlx-gen) and
   difference between a finished picture and a dead engine.
 
   <img src="docs/img/upscale.webp" alt="The same panel enlarged naively on the left and by the model on the right." width="620">
-- **Video** — text to video. Animating a still does not work yet;
-  see [the limits](#video).
+- **Video** — **not working.** Both text to video and animating a still produce
+  noise on this machine; see [the limits](#video).
 - **Prompt help** — makes a request precise without inventing a scene, and can
   read the picture you are editing to say *which* jacket you meant.
 - **Vault** — everything produced is encrypted at rest, unlocked by passphrase
@@ -270,20 +270,29 @@ data key and releases model weights.
 
 ## Video
 
-<a name="video"></a>Text to video works. **Animating a still does not**, and
-it is worth being plain about why, because the reason changed.
+<a name="video"></a>**Video does not work on this machine, in either
+direction.** That is a correction: text to video was listed here as working,
+and it is not.
 
-It was believed not to fit. It does: Wan 2.2 TI2V-5B was measured at **9.72
-GiB** for a complete 320x192 nine-frame run in 34 seconds, well inside the
-budget, and the 103.7 GiB this table used to quote was taken at the model's
-recommended 1280x704x81 and had never been measured here.
+Measured: Wan TI2V-5B at its own recommended 50 steps, with no image involved,
+produced coloured noise after 838 seconds of denoising. Bernini-R fails the
+same way. Wan VACE has not been retested since, and should not be assumed to
+differ. The output is a valid MP4 every time -- correct dimensions, frame
+count and fps, sealed without complaint -- which is why it was believed to
+work, and why nothing caught it.
 
-The problem is the picture, not the memory. Every frame of that clip came
-back as coloured noise with no resemblance to the source. It was run at 8
-steps against a model that asks for 50, and at a quarter of the width it was
-trained on. Whether any setting is both watchable and worth waiting for on
-this class of machine is an open question, and until it is answered this is
-not a feature. The catalog entry says so.
+Memory was never the problem. Wan 2.2 TI2V-5B was measured at **9.72 GiB** for
+a complete run, well inside the budget, and the 103.7 GiB this table used to
+quote was taken at the model's recommended 1280x704x81 and had never been
+measured here.
+
+The problem is the picture. Raising the step count to the model's own 50 did
+not help, and neither did removing the image: the failure is in generation
+itself, not in how a still is fed to it. The cause is narrowed to two
+candidates -- three low-RAM flags this engine passes on every video call, or
+the q8 checkpoint's silent conversion of attention weights to BF16 at load --
+and the test between them has not been run yet. Until it is, video is not a
+feature and the catalog says so.
 
 Wan 2.5 and 2.6 have no public weights — Alibaba released them as a cloud API
 only. Of the open ones:
