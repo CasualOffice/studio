@@ -38,10 +38,23 @@ export const STYLES: { id: string; label: string; words: string }[] = [
  * reference material, drawn flat and neutral on purpose, and framing them as
  * panels would put a border and a dramatic crop on the very thing every panel
  * is supposed to match against.
+ *
+ * Purely compositional, and deliberately free of format words. Measured at a
+ * fixed seed: "a single comic book panel, sequential art" drew a heavy black
+ * frame into the picture -- inside the frame the compositor then drew around
+ * it -- and removing the negations did not stop it, because the words "panel"
+ * and "comic book" imply the frame on their own. Saying nothing about panels
+ * and asking only for the crop leaves the border to the compositor, which is
+ * the only thing that knows how wide the gutters are.
+ *
+ * Style-neutral on purpose. "manga artwork" produced a slightly crisper result
+ * but would fight the Photographic style, and the framing has to hold for all
+ * four. Against no framing at all the difference is visible: flatter colour,
+ * harder shadow shapes, cleaner edges. The compositional words are what make
+ * the chosen style land.
  */
 const PANEL_FRAMING =
-  "a single comic book panel, sequential art, cropped composition, no border, "
-  + "no text, no speech bubbles, no caption";
+  "cropped composition, full bleed artwork, edge to edge";
 
 export function styleWords(id: string): string {
   return STYLES.find((s) => s.id === id)?.words ?? "";

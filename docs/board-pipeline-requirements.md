@@ -3,7 +3,26 @@
 Written from defects found by using it, not from a plan. Each line below was
 confirmed in the code before it was written down.
 
-## Confirmed defects in the current build
+## Status
+
+Four of the five defects below are fixed. Each line is marked, because a
+requirements document that still describes solved problems is worse than none:
+it sends the next person to fix something twice and hides the one thing left.
+
+- **Length is guessed** — fixed. The slider is gone; the count is derived from
+  beats and reported, with the expected range for that much prose alongside it.
+- **Characters are not extracted** — fixed. `op_cast` reads the cast out of the
+  prose and verifies every name against the text before it is kept.
+- **Only one character exists** — **still true.** The board holds one character
+  sheet. A scene with two people draws the second one fresh each time.
+- **Coverage is not verifiable** — partly fixed. The division reports how many
+  panels it produced against the range that much prose usually needs, and says
+  so when it falls outside. Which sentences went unused is still not shown.
+- **Correction is re-rolling** — fixed. A note written about a frame is
+  appended to that frame's brief and kept with it, so a redraw is a correction
+  rather than another roll of the dice.
+
+## The defects as originally found
 
 **Length is guessed, not derived.** The panel count is a slider, defaulting to
 six, capped at twelve. It is chosen before the story has been read. A long

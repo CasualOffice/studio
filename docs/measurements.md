@@ -61,6 +61,29 @@ fit. `release_text_encoder`, which the engine passes, is not a parameter this
 route accepts and is dropped with a warning; the default already does the right
 thing.
 
+## Panels have to be asked to be panels
+
+FLUX.2 Klein 4B q4, 768×576, 4 steps, same seed, same style words:
+
+| Prompt | Result |
+|---|---|
+| style + shot + subject + action + setting | a standalone illustration: centred, resolved, softly rendered |
+| the same, plus "a single comic book panel, sequential art, cropped composition" | flat colour, hard shadow shapes, clean linework, screentone — reads as a panel |
+
+![Without panel framing on the left, with it on the right](img/panel-framing.webp)
+
+Adding the framing is what makes the style land. Before it, "cel-shaded anime"
+produced a nicely rendered picture that was not a comic panel, and the finished
+pages only looked like comics because the compositor drew the borders and set
+the captions afterwards.
+
+The same test found a trap. The first version of the framing ended with "no
+border, no text, no speech bubbles, no caption", and the model **drew a heavy
+black border** — inside the border the compositor then drew around it. Klein
+runs at a guidance of 1 and has no negative conditioning, so "no border" is
+read as the word "border". The way not to get one is never to mention it;
+"full bleed artwork" asks for the same thing positively.
+
 ## Upscale memory, and why it crashed the engine
 
 SeedVR2 3B q4, MLX cache limit 1 GiB, one pass, on this 16 GB machine:
@@ -145,14 +168,16 @@ Two traps found on the way, in case anyone retries this:
 
 ## What a video model costs
 
-No image-to-video model both fits this machine and works:
+No image-to-video model both fits this machine and produces a usable clip:
 
 - Wan 2.1 VACE 1.3B — fits, but transforms existing footage and takes no still
   image at all. Verified: it raises on `image_path`.
-- Wan 2.2 TI2V-5B — takes a still, 103.7 GiB peak.
+- Wan 2.2 TI2V-5B — takes a still and **does fit**: 9.72 GiB measured for a
+  complete run. The clip came back as noise. See the section above.
 - MiniMax-H3 — has proper first-frame animation, 464 GiB repo.
-- Bernini-R 1.3B — fits and takes a still, 16.4 GiB download, untested here.
+- Bernini-R 1.3B — fits and takes a still. Tried; the result was poor.
 
-Video models also want more canvas than fits. VACE is trained at 832×480 and
-Bernini outputs 480p, while 9.5 GiB peak was measured at 320×192 with 17
-frames. Running well below native resolution is its own quality problem.
+Video models also want more canvas than fits. VACE is trained at 832×480,
+Bernini outputs 480p, and TI2V-5B asks for 1280×704 — while the runs that fit
+were measured at 320×192. Running at a quarter of the trained width is its own
+quality problem, and the TI2V result suggests it is the dominant one.

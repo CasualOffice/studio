@@ -1,3 +1,54 @@
+## What changed since 0.1.0
+
+**The board is a workspace, not a form.** Your prose on the left, the panels in
+the middle, and on the right the exact words that produced the selected panel.
+Clicking a panel lights the prose it came from and clicking the prose selects
+its panel, so the comparison you actually make costs nothing.
+
+**It reads the story.** Paste prose and the cast comes out of it — people and
+places, ranked by how often each appears. Every name is checked against your
+text, so a character the model invented is dropped rather than drawn into a
+story it was never in.
+
+**The panel count is derived, not chosen.** The slider is gone. The story is
+divided by beat and the number is reported, along with the range that much
+prose usually needs, and it says so when the division falls outside it.
+
+**Panels are drawn a few at a time.** The button prices itself — "Draw 4 of 14",
+then "Draw next 4" — and skips panels that already have a picture. A style you
+do not like costs three minutes to discover instead of half an hour.
+
+**A wrong frame is fixed by saying what is wrong with it.** Write "older, grey
+at the temples" on a panel and redraw only that one. The note stays with the
+frame through every later redraw.
+
+**A board is one thing in the library.** One entry, with a count, that opens as
+the comic in reading order with its reference sheets. Export or delete the whole
+of it in one action. Panels, sheets and rooms are no longer seventeen loose
+pictures sharing a timestamp.
+
+**Upscaling finishes instead of failing.** A 1024 px output needs 16.57 GiB,
+which a 16 GB machine does not have, and going over used to abort the engine
+outright rather than raise an error. Anything too large for one pass is now done
+in overlapping pieces — 1024 px at 10.11 GiB — with the picture filling in as it
+goes.
+
+**Live previews** while upscaling and generating video, multi-select in the
+library with export and delete across a whole selection, and errors that stay on
+screen with a Copy button, because an error you cannot copy is an error you
+cannot report.
+
+## What does not work
+
+**Animating a still.** Wan 2.2 TI2V-5B fits — 9.72 GiB measured for a complete
+run — but every clip so far has come back as coloured noise. It was run far
+below the resolution and step count the model asks for, and whether any setting
+on a 16 GB machine is both watchable and worth the wait is an open question.
+Text to video works. The catalog says which is which.
+
+**Two people in one panel.** The board casts one character sheet. A scene with a
+second person draws them fresh each time.
+
 ## Installing
 
 Download the `.dmg`, open it, and drag **Model Studio** to Applications.

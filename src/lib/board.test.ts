@@ -87,7 +87,7 @@ describe("panelPrompt", () => {
     // panel is a panel whatever style it is drawn in.
     expect(styleWords("no-such-style")).toBe("");
     const out = panelPrompt(panel(), "no-such-style", CHAR);
-    expect(out.startsWith("a single comic book panel")).toBe(true);
+    expect(out.startsWith("cropped composition")).toBe(true);
     expect(out).not.toContain("..");
     expect(out).not.toMatch(/^[.,;\s]/);
   });
@@ -98,20 +98,27 @@ describe("panelPrompt", () => {
     // panel does. Pages looked like comics only because the compositor drew
     // the borders afterwards.
     const out = panelPrompt(panel(), "anime", CHAR);
-    expect(out).toContain("comic book panel");
-    expect(out).toContain("sequential art");
-    // The compositor sets the words. Asking the model for them as well gets
-    // gibberish lettering burned into the picture underneath the real caption.
-    expect(out).toContain("no text");
-    expect(out).toContain("no speech bubbles");
+    expect(out).toContain("cropped composition");
+    expect(out).toContain("full bleed");
+    // Measured: naming the format draws the frame. "a single comic book panel,
+    // sequential art" put a heavy black border inside the one the compositor
+    // draws, and removing the negations did not stop it.
+    expect(out).not.toContain("comic book panel");
+    expect(out).not.toContain("sequential art");
+    // Klein has no negative conditioning at guidance 1, so "no border" reads
+    // as "border" and draws one -- inside the border the compositor then draws.
+    // The way to not get a border is to never mention one.
+    expect(out).not.toContain("no border");
+    expect(out).not.toContain("no text");
+    expect(out).not.toContain("no speech");
   });
 
   it("does not frame the reference sheets as panels", () => {
     // The sheet and the room are what every panel matches against. Framing
     // them as panels would crop and dramatise the one thing that has to stay
     // flat and neutral.
-    expect(sheetPrompt("anime", CHAR)).not.toContain("comic book panel");
-    expect(placePrompt("anime", "a parlour at dusk")).not.toContain("comic book panel");
+    expect(sheetPrompt("anime", CHAR)).not.toContain("cropped composition");
+    expect(placePrompt("anime", "a parlour at dusk")).not.toContain("cropped composition");
   });
 });
 

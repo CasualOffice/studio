@@ -12,8 +12,16 @@
   <p>
     <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Apple%20Silicon-black">
     <img alt="licence" src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue">
-    <img alt="tests" src="https://img.shields.io/badge/tests-117-green">
+    <img alt="tests" src="https://img.shields.io/badge/tests-173-green">
   </p>
+</div>
+
+---
+
+<div align="center">
+  <img src="docs/img/page-one.webp" alt="A finished comic page: three panels of the same woman in the same room, with typeset captions." width="560">
+  <p><sub>A page the app made, from Kate Chopin&rsquo;s <i>The Story of an Hour</i> pasted in whole.<br>
+  Six panels, sixteen minutes on an M4. Captions are typeset into the page, not drawn into the picture.</sub></p>
 </div>
 
 ---
@@ -35,12 +43,34 @@ drives [MLX-Gen](https://github.com/lpalbou/mlx-gen) and
 - **Generate** — text to image, with live previews as the picture forms.
 - **Edit** — instruction editing, inpainting with a painted mask, outpainting,
   latent image-to-image, and reference-guided edits.
-- **Board** — write a story in prose and get an illustrated page: the story is
-  divided into panels, one character is cast once, and every panel is drawn
-  against that sheet so the same person appears throughout. Captions optional,
-  composed into a single vertical page.
-- **Upscale** — SeedVR2 restoration, roughly six seconds for a 2x.
-- **Video** — text to video. See [the limits](#video) before expecting much.
+- **Board** — paste prose and get an illustrated comic. It reads the story
+  first: who is in it, where it happens, and how many panels the story needs —
+  there is no panel count to choose, because a number picked before the story
+  is read is a guess. Every name it returns is checked against your text, so a
+  character it invented is dropped rather than drawn. One character sheet and
+  one room per scene are cast once, and every panel references both, so the
+  same person appears in the same place throughout. Panels are drawn a few at a
+  time, and a frame that comes out wrong is repaired by writing what is wrong
+  with it rather than rolling a new seed. The result is one comic in the
+  library, not a pile of loose pictures.
+
+  <table>
+  <tr>
+  <td width="50%"><img src="docs/img/character-sheet.webp" alt="A character reference sheet: the same woman from three angles."></td>
+  <td width="50%"><img src="docs/img/room-panel.webp" alt="A panel of the same character standing at a window in the room drawn for that scene."></td>
+  </tr>
+  <tr>
+  <td><sub>The sheet, cast once from the description or from a photograph.</sub></td>
+  <td><sub>A panel referencing both the sheet and that scene&rsquo;s room, which is what keeps the same person in the same place.</sub></td>
+  </tr>
+  </table>
+- **Upscale** — SeedVR2 restoration. About 27 seconds to 512 px and 64 to 768;
+  anything too large for one pass is done in overlapping pieces, which is the
+  difference between a finished picture and a dead engine.
+
+  <img src="docs/img/upscale.webp" alt="The same panel enlarged naively on the left and by the model on the right." width="620">
+- **Video** — text to video. Animating a still does not work yet;
+  see [the limits](#video).
 - **Prompt help** — makes a request precise without inventing a scene, and can
   read the picture you are editing to say *which* jacket you meant.
 - **Vault** — everything produced is encrypted at rest, unlocked by passphrase
@@ -240,8 +270,20 @@ data key and releases model weights.
 
 ## Video
 
-<a name="video"></a>Text to video works. **Animating a still does not, on a
-16 GB machine**, and it is worth being plain about why.
+<a name="video"></a>Text to video works. **Animating a still does not**, and
+it is worth being plain about why, because the reason changed.
+
+It was believed not to fit. It does: Wan 2.2 TI2V-5B was measured at **9.72
+GiB** for a complete 320x192 nine-frame run in 34 seconds, well inside the
+budget, and the 103.7 GiB this table used to quote was taken at the model's
+recommended 1280x704x81 and had never been measured here.
+
+The problem is the picture, not the memory. Every frame of that clip came
+back as coloured noise with no resemblance to the source. It was run at 8
+steps against a model that asks for 50, and at a quarter of the width it was
+trained on. Whether any setting is both watchable and worth waiting for on
+this class of machine is an open question, and until it is answered this is
+not a feature. The catalog entry says so.
 
 Wan 2.5 and 2.6 have no public weights — Alibaba released them as a cloud API
 only. Of the open ones:
@@ -249,10 +291,10 @@ only. Of the open ones:
 | Model | Fits 16 GB | Takes a still |
 |---|---|---|
 | Wan 2.1 VACE 1.3B | yes | **no** — transforms existing footage, raises on `image_path` |
-| Wan 2.2 TI2V-5B | no (103.7 GiB peak) | yes |
+| Wan 2.2 TI2V-5B | yes (9.72 GiB measured) | yes, but the clip is noise |
 | Wan 2.2 T2V-A14B | no (33 GiB peak) | no |
 | MiniMax-H3 | no (464 GiB repo) | yes |
-| Bernini-R 1.3B | yes | yes, untested here |
+| Bernini-R 1.3B | yes | yes, and the result was poor |
 
 Video models also want more canvas than fits: VACE is trained at 832x480 and
 Bernini outputs 480p, while 9.5 GiB peak was measured at 320x192 with 17
@@ -333,7 +375,7 @@ which looked exactly like a successful zero-byte download.
 | --- | --- |
 | **Generate** | Text to image. |
 | **Edit** | Five modes: instruction edit, masked inpaint, outpaint, latent restyle, and crop/rotate. |
-| **Video** | Text or image to video, with frame count as the control that matters. |
+| **Video** | Text to video, with frame count as the control that matters. Image to video is not usable yet. |
 | **Enlarge** | SeedVR2 super-resolution, currently blocked by a version conflict (below). |
 | **Models** | Curated catalog plus any Hugging Face repo, judged against this machine before download. |
 | **Vault** | Everything made or imported, encrypted, searchable, with the chain that produced each item. |
