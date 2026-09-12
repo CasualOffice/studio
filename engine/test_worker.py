@@ -796,8 +796,9 @@ class TileGeometry(unittest.TestCase):
         return out_w, out_h, cells
 
     def test_every_output_pixel_is_covered(self):
-        import numpy as np
-
+        # Deliberately plain Python. The engine's own runtime has numpy, but
+        # the interpreter that runs these tests in CI does not, and a test that
+        # only runs on one machine is not a test.
         cases = [
             (512, 512, 2.0), (1024, 1024, 2.0), (1000, 667, 2.0),
             (513, 397, 2.0), (640, 480, 4.0), (777, 1013, 3.0),
@@ -807,14 +808,22 @@ class TileGeometry(unittest.TestCase):
             tile_src = max(64, int(744 / factor))
             out_w, out_h, cells = self._cells(
                 in_w, in_h, factor, tile_src, int(64 / factor))
-            cover = np.zeros((out_h, out_w), dtype=np.int32)
+            # Rows and columns are covered independently, so checking each
+            # axis is equivalent to checking the grid and is far cheaper than
+            # materialising one.
+            cols = [False] * out_w
+            rows = [False] * out_h
             for (px0, py0, px1, py1) in cells:
-                cover[py0:py1, px0:px1] += 1
-            missing = int((cover == 0).sum())
+                for x in range(px0, px1):
+                    cols[x] = True
+                for y in range(py0, py1):
+                    rows[y] = True
+            missing = cols.count(False) + rows.count(False)
             self.assertEqual(
                 missing, 0,
-                f"{in_w}x{in_h} @{factor}x leaves {missing} pixels uncovered "
-                f"-- those become a black seam")
+                f"{in_w}x{in_h} @{factor}x leaves {cols.count(False)} columns "
+                f"and {rows.count(False)} rows uncovered -- those become a "
+                f"black seam")
 
     def test_neighbouring_cells_overlap_so_the_blend_has_room(self):
         out_w, out_h, cells = self._cells(1000, 667, 2.0, 372, 32)

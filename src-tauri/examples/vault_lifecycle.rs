@@ -48,6 +48,9 @@ fn main() {
         inputs: vec![],
         created_at: "now".into(),
         duration_ms: 0,
+        project: None,
+        project_name: None,
+        project_index: None,
     };
 
     let first = vault.put(b"identical bytes", item("a.png")).unwrap();
