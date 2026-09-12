@@ -28,13 +28,19 @@ export default function Activity({ notify }: { notify: (m: string, bad?: boolean
   const stderr = useRef<string[]>([]);
 
   useEffect(() => {
+    // Subscribing is async, so the component can unmount before either
+    // listener is registered. Without the flag the cleanup runs against an
+    // empty list, the listener attaches afterwards, and nothing ever removes
+    // it -- one leaked listener per visit to this tab.
+    let live = true;
     const uns: (() => void)[] = [];
-    onEngineLog((l) => setLogs((prev) => [...prev.slice(-199), l])).then((u) => uns.push(u));
-    onEngineStderr((line) => {
+    const keep = (u: () => void) => { live ? uns.push(u) : u(); };
+    void onEngineLog((l) => setLogs((prev) => [...prev.slice(-199), l])).then(keep);
+    void onEngineStderr((line) => {
       // Keep a bounded tail: PyTorch and tokenizers are extremely chatty.
       stderr.current = [...stderr.current.slice(-299), line];
-    }).then((u) => uns.push(u));
-    return () => uns.forEach((u) => u());
+    }).then(keep);
+    return () => { live = false; uns.forEach((u) => u()); };
   }, []);
 
   const refresh = async () => {

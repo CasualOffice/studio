@@ -213,9 +213,14 @@ export default function Studio({
     setOutputs([]);
     setSelected(0);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
-    const unPrev = await onEnginePreview((f) => {
-      if (f.jobId === id) setPreview(f.src);
-    });
+    // If this throws, the progress listener above would never be released.
+    // Failing to get a preview is not worth leaking one.
+    let unPrev: (() => void) | undefined;
+    try {
+      unPrev = await onEnginePreview((f) => {
+        if (f.jobId === id) setPreview(f.src);
+      });
+    } catch { unPrev = undefined; }
     const t0 = performance.now();
     try {
       // A painted mask is stored like any other content, then referenced by id.
@@ -268,7 +273,7 @@ export default function Studio({
       if (detail) console.error("engine:", detail);
       notify(msg.includes("ancelled") ? "Cancelled." : msg, !msg.includes("ancelled"));
     } finally {
-      un(); unPrev();
+      un(); unPrev?.();
       setRunning(false); setJobId(null); setProg(null);
       setPreview(null);
     }

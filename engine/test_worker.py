@@ -863,6 +863,39 @@ class TiledUpscaleCancels(unittest.TestCase):
                 f"{fn.name} loops over model calls with no way to stop it")
 
 
+class MemoryHeadroom(unittest.TestCase):
+    """The guard must not refuse work that would have succeeded.
+
+    Free-plus-inactive badly understates what macOS can reclaim: a measured
+    9.72 GiB image-to-video run completed on this machine with 5.2 GiB
+    reported free. A guard that compared need against that figure would block
+    almost every real run, which is a worse failure than the one it prevents.
+    """
+
+    def test_it_reads_the_machine_without_blowing_up(self):
+        free = worker._free_ram_gib()
+        self.assertTrue(free == -1.0 or 0.0 <= free < 1024.0,
+                        f"implausible free memory: {free}")
+
+    def test_a_run_that_fits_is_not_refused(self):
+        # The measured case: 9.72 GiB needed, 5.2 GiB reported free, succeeded.
+        self.assertLess(worker._MIN_FREE_GIB, 5.2,
+                        "the threshold would have refused a run that worked")
+
+    def test_the_threshold_is_where_aborts_actually_happened(self):
+        # Every observed engine abort had free memory near zero.
+        self.assertGreater(worker._MIN_FREE_GIB, 0.5)
+        self.assertLessEqual(worker._MIN_FREE_GIB, 2.0)
+
+    def test_a_need_of_zero_never_refuses_on_its_own(self):
+        # Callers that do not know their peak must not be blocked by that.
+        try:
+            worker._check_headroom("t", 0.0)
+        except ValueError as e:
+            # Only acceptable if the machine really is out of memory now.
+            self.assertLess(worker._free_ram_gib(), worker._MIN_FREE_GIB, str(e))
+
+
 class RepairDroppedWords(unittest.TestCase):
     """A paraphrase is repaired; a deletion is not.
 

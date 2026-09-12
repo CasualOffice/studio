@@ -534,6 +534,13 @@ def _looks_like_adapter(info: Any) -> bool:
     )
 
 
+# Below this, starting a model run is close to certain to abort the engine.
+# Above it, macOS reclaims enough that the reported figure means very little:
+# a 9.72 GiB run completed here with 5.2 GiB reported free. Set from that
+# evidence, not from the size of the model.
+_MIN_FREE_GIB = 1.5
+
+
 def _free_ram_gib() -> float:
     """Memory actually available right now, in GiB.
 
@@ -582,20 +589,31 @@ def _check_headroom(req_id: str, need_gib: float) -> None:
     browser, or a second copy of this one -- and contention is what actually
     kills these runs. So this asks the machine.
     """
-    if need_gib <= 0:
-        return
     free = _free_ram_gib()
     if free < 0:
         return
-    if free >= need_gib:
-        log(req_id, f"{free:.1f} GiB available, this run needs about "
+    if need_gib > 0:
+        log(req_id, f"{free:.1f} GiB reported free, this run needs about "
                     f"{need_gib:.1f} GiB")
+
+    # Deliberately not "free < need". Free-plus-inactive badly understates what
+    # macOS can reclaim: a 9.72 GiB image-to-video run completed on this
+    # machine with 5.2 GiB reported free, because the rest was compressed or
+    # evicted as it went. Refusing on that comparison would block almost every
+    # real run.
+    #
+    # What actually killed the engine was a second process holding the memory,
+    # and in every one of those cases the figure here was near zero. So this
+    # only refuses when the machine is genuinely out, where an abort is close
+    # to certain, and says nothing otherwise.
+    if free >= _MIN_FREE_GIB:
         return
     raise ValueError(
-        f"This run needs about {need_gib:.0f} GiB and only {free:.1f} GiB is "
-        f"free right now, so nothing was started. Something else on this Mac "
-        f"is holding the memory \u2014 closing it, or waiting for it to "
-        f"finish, will let this run."
+        f"Only {free:.1f} GiB of memory is free, which is not enough to start "
+        f"anything. Something else on this Mac is holding it \u2014 closing "
+        f"that, or waiting for it to finish, will let this run. Nothing was "
+        f"started, because running out part-way stops the engine rather than "
+        f"failing cleanly."
     )
 
 

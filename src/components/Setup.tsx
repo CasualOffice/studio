@@ -24,7 +24,11 @@ export default function Setup({
 
   useEffect(() => {
     let un: (() => void) | undefined;
-    onSetupProgress((p) => {
+    // Subscribing is async. Unmounting before it resolves would run the
+    // cleanup against nothing, and the listener would attach afterwards with
+    // nothing left to remove it.
+    let live = true;
+    void onSetupProgress((p) => {
       setProg(p);
       if (p.detail) {
         logRef.current = [...logRef.current.slice(-40), p.detail];
@@ -34,8 +38,8 @@ export default function Setup({
         if (p.error) setErr(p.error);
         else onDone();
       }
-    }).then((u) => { un = u; });
-    return () => un?.();
+    }).then((u) => { if (live) un = u; else u(); });
+    return () => { live = false; un?.(); };
   }, [onDone]);
 
   const start = async (force = false) => {
