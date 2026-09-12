@@ -123,11 +123,21 @@ pub async fn run_setup(app: AppHandle, state: State<'_, AppState>, force: bool) 
         AppError::msg("Wait for the current local job before repairing the runtime.")
     })?;
     let paths = state.paths();
-    let running = state.setup_running.clone();
+    // Cleared on drop rather than by a statement after the await. A panic in
+    // the setup task skipped that statement, leaving the flag set for the rest
+    // of the process -- and every later attempt then answered "Runtime setup
+    // is already running", permanently, with the only fix being a restart.
+    struct ClearOnDrop(Arc<AtomicBool>);
+    impl Drop for ClearOnDrop {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let running = ClearOnDrop(state.setup_running.clone());
     tauri::async_runtime::spawn(async move {
         let _exclusive = exclusive;
+        let _running = running;
         let _ = setup::run(app, paths, force).await;
-        running.store(false, Ordering::Release);
     });
     Ok(())
 }

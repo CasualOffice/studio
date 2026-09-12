@@ -1013,9 +1013,23 @@ def _load_writer(req_id: str, repo: str | None = None) -> tuple[Any, Any]:
 
 
 def _write(req_id: str, system: str, user: str, max_tokens: int = 160,
-           temperature: float = 0.3, repo: str | None = None) -> str:
-    """One turn with the writer."""
-    from mlx_lm import generate as lm_generate
+           temperature: float = 0.3, repo: str | None = None,
+           label: str = "Writing") -> str:
+    """One turn with the writer.
+
+    Streamed rather than taken in one call, for two reasons.
+
+    Cancel did nothing. `generate` returns only when the whole answer is
+    finished -- up to six thousand tokens for a story division, which is
+    minutes -- and there was no point in that window where the request could
+    be stopped. Every text step in the app had a Cancel button that was inert:
+    dividing a story, working panels up, reading the cast, improving a prompt.
+
+    And the wait had no face. A step that emits nothing for two minutes is
+    indistinguishable from one that has hung, which is the complaint that
+    started all of this.
+    """
+    from mlx_lm import stream_generate
     from mlx_lm.sample_utils import make_sampler
 
     model, tokenizer = _load_writer(req_id, repo)
@@ -1024,9 +1038,25 @@ def _write(req_id: str, system: str, user: str, max_tokens: int = 160,
          {"role": "user", "content": user}],
         add_generation_prompt=True,
     )
-    out = lm_generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens,
-                      sampler=make_sampler(temp=temperature), verbose=False)
-    return out if isinstance(out, str) else str(out)
+    pieces: list[str] = []
+    last = 0.0
+    written = 0
+    for response in stream_generate(model, tokenizer, prompt=prompt,
+                                    max_tokens=max_tokens,
+                                    sampler=make_sampler(temp=temperature)):
+        if is_cancelled(req_id):
+            raise Cancelled()
+        pieces.append(response.text)
+        written += 1
+        now = time.time()
+        # Throttled: a token arrives every few milliseconds and the channel is
+        # shared with everything else.
+        if now - last >= 0.2:
+            last = now
+            emit({"id": req_id, "type": "progress", "phase": "denoise",
+                  "progress": None, "step": written,
+                  "total_steps": max_tokens, "message": label})
+    return "".join(pieces)
 
 
 def _unload_writer() -> None:
@@ -2296,7 +2326,7 @@ def _establish_places(req_id: str, panels: list[dict[str, Any]],
         try:
             raw = _write(req_id, PLACE_SYSTEM,
                          f"Style: {style}\nScene: {title}\nWhat happens here: {beats}",
-                         max_tokens=150, temperature=0.4, repo=writer)
+                         max_tokens=150, temperature=0.4, repo=writer, label="Describing the place")
             places[scene] = " ".join(raw.strip().splitlines()[0].split())[:400]
         except Cancelled:
             raise
@@ -2377,7 +2407,7 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                 + f"Panel: {moment}.")
         try:
             raw = _write(req_id, ENRICH_SYSTEM, user, max_tokens=140,
-                         temperature=0.4, repo=writer)
+                         temperature=0.4, repo=writer, label="Working the panel up")
         except Cancelled:
             raise
         except Exception as exc:
@@ -2600,7 +2630,7 @@ def op_cast(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     emit({"id": req_id, "type": "progress", "phase": "denoise",
           "progress": None, "message": "Reading the cast"})
     raw = _write(req_id, CAST_SYSTEM, _cast_instruction(story),
-                 max_tokens=900, temperature=0.2, repo=req.get("writer"))
+                 max_tokens=900, temperature=0.2, repo=req.get("writer"), label="Reading the cast")
     try:
         found = _json_block(raw, "{", "}")
     except Exception as exc:
@@ -2668,7 +2698,7 @@ def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         raw = _write(req_id, SHOTLIST_SYSTEM,
                      _shotlist_instruction_derived(story, low, high),
                      max_tokens=min(6000, 180 * high), temperature=0.3,
-                     repo=req.get("writer"))
+                     repo=req.get("writer"), label="Dividing the story")
         panels = _parse_shotlist(raw, high, story)
         log(req_id, f"{words} words divided into {len(panels)} panels "
                     f"(expected {low}-{high})")
@@ -2688,7 +2718,7 @@ def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
 
     raw = _write(req_id, SHOTLIST_SYSTEM, _shotlist_instruction(story, count),
                  max_tokens=min(6000, 180 * count), temperature=0.3,
-                 repo=req.get("writer"))
+                 repo=req.get("writer"), label="Dividing the story")
     panels = _parse_shotlist(raw, count, story)
     if len(panels) < count:
         log(req_id, f"asked for {count} panels, got {len(panels)}", "warn")
@@ -2788,7 +2818,7 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             raw = _write(req_id, system,
                          (f"The picture shows: {seen}\n" if seen else "")
                          + f"Request: {user_prompt}",
-                         repo=req.get("writer"))
+                         repo=req.get("writer"), label="Improving the prompt")
             improved, why = _clarified_with_reason(user_prompt, raw)
             if improved is None and why == "dropped":
                 # A paraphrase, most likely. Put the missing words back rather
@@ -2810,7 +2840,8 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                 raw = _write(req_id, system,
                              (f"The picture shows: {seen}\n" if seen else "")
                              + f"Request: {user_prompt}",
-                             temperature=0.15, repo=req.get("writer"))
+                             temperature=0.15, repo=req.get("writer"),
+                             label="Improving the prompt")
                 improved, why = _clarified_with_reason(user_prompt, raw)
             if improved is None:
                 if why == "unclear":

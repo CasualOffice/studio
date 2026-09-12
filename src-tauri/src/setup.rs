@@ -254,10 +254,18 @@ async fn run_streaming(
 }
 
 pub async fn run(app: AppHandle, paths: AppPaths, force: bool) -> Result<()> {
-    paths.ensure_dirs()?;
-
     let reporter = tauri_reporter(&app);
-    let result = bootstrap(&reporter, &paths, force).await;
+    // Inside the reported section on purpose. Creating the directories ran
+    // before the reporter existed, so a failure here -- a full disk, a
+    // permissions problem, a storage location that has gone away -- returned
+    // without ever emitting the `done` event the setup screen waits on. The
+    // screen then span "Installing..." for ever with its only button disabled
+    // and no message, which is the one state this app must never reach again.
+    let result = async {
+        paths.ensure_dirs()?;
+        bootstrap(&reporter, &paths, force).await
+    }
+    .await;
     match &result {
         Ok(()) => {
             let _ = app.emit(
