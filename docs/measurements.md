@@ -27,6 +27,26 @@ Wan 2.2 TI2V-5B q8, `AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit`, on this
 one reached step 10 of 12 while paging heavily and was stopped; it is not known
 whether it completes.
 
+**The output was not usable.** Every frame of the completed clip came back as
+coloured noise with no resemblance to the source picture. Memory, timing and
+the seal were all verified and all fine, and the clip was reported as working
+on that basis without anyone looking at the frames -- which is the same mistake
+as the 103.7 GiB figure: a number that was true about the wrong thing.
+
+The settings are the likely cause and were far outside what the model asks for:
+
+| | asked for | run at |
+|---|---|---|
+| width x height | 1280x704 | 320x192 |
+| frames | 81 | 9 |
+| steps | 50 | 8 |
+
+Eight steps cannot finish denoising, and 320x192 leaves a latent grid of about
+20x12, which is very small for a model trained at sixty times that area. Both
+need testing before this is called working. Fifty steps at a usable size is
+minutes per clip on this machine, so the open question is whether any setting
+is both good enough to watch and fast enough to wait for.
+
 The catalog previously claimed **103.7 GiB** for this model with
 `peak_estimated: false`, which marked it hopeless and hid the only working
 image-to-video model on this machine. That figure was for the model's

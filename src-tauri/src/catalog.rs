@@ -632,8 +632,8 @@ pub const CATALOG: &[ModelEntry] = &[
         video_from_image: true,
         guidance_default: 4.0,
         guidance_max: 12.0,
-        notes: "Measured 9.72 GiB peak for a complete 320x192, 9-frame run on a 16 GB M4: 3.1s to load, 24.2s to generate, 34s wall. Takes a starting picture. The 103.7 GiB this entry used to claim was for 1280x704x81 and was never measured here -- at board sizes the attention cost largely vanishes, and it fits with room to spare.",
-        broken: None,
+        notes: "Fits: measured 9.72 GiB peak for a complete 320x192, 9-frame, 8-step run in 34s on a 16 GB M4. But the output at that size was unusable -- coloured noise, nothing like the source picture. The model wants 1280x704 and 50 steps, and 8 steps is far too few to finish denoising. Takes a starting picture, and the memory is there; usable settings on this class of machine have not been found yet.",
+        broken: Some("Runs and fits in memory, but every clip so far has come back as noise. The model needs far more steps than this machine has time for at its native size."),
         backend: None,
     },
     ModelEntry {

@@ -186,6 +186,15 @@ h1 {
 .caps { padding: 92px 0; border-bottom: 1px solid var(--line-soft); }
 h2 { font-size: clamp(1.6rem, 2.6vw, 2.1rem); line-height: 1.18; letter-spacing: -0.03em; font-weight: 620; margin: 0 0 14px; }
 .section-lede { color: var(--ink-dim); max-width: 58ch; margin: 0 0 44px; }
+.flow-result { margin: 42px auto 0; max-width: 620px; }
+.flow-result img {
+  width: 100%; height: auto; display: block; border-radius: var(--radius);
+  border: 1px solid var(--line); background: var(--bg-raise);
+}
+.flow-result figcaption {
+  margin-top: 12px; font-size: .88rem; line-height: 1.6; color: var(--ink-dim);
+  text-align: center;
+}
 .cap-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 18px; }
 .cap {
   border: 1px solid var(--line); border-radius: var(--radius);
@@ -415,7 +424,7 @@ footer { border-top: 1px solid var(--line-soft); padding: 40px 0 56px; color: va
     <div><span class="n">0</span><span class="l">bytes uploaded</span></div>
     <div><span class="n">51s</span><span class="l">a picture, on an M4</span></div>
     <div><span class="n">27</span><span class="l">models, sized for your Mac</span></div>
-    <div><span class="n">16&nbsp;min</span><span class="l">prose to a finished comic</span></div>
+    <div><span class="n">16&nbsp;min</span><span class="l">prose to a six-panel comic</span></div>
   </div>
 </section>
 
@@ -454,7 +463,7 @@ footer { border-top: 1px solid var(--line-soft); padding: 40px 0 56px; color: va
         <figure><img src="img/upscale.webp" width="760" height="380" alt="The same panel at 256 pixels blown up on the left, and enlarged by the model on the right." loading="lazy"></figure>
         <div class="cap-body">
           <h3>Upscale</h3>
-          <p>SeedVR2 restoration. Naive enlargement on the left, the model on the right. About ten seconds for a 2x.</p>
+          <p>SeedVR2 restoration. Naive enlargement on the left, the model on the right. A 2x to 1024&nbsp;px takes about a minute and a half, and anything too large for one pass is done in overlapping pieces so it finishes rather than failing.</p>
         </div>
       </article>
       <article class="cap cap-half">
@@ -471,12 +480,12 @@ footer { border-top: 1px solid var(--line-soft); padding: 40px 0 56px; color: va
   <img class="ink ink-b" src="img/ink-chair.webp" alt="" aria-hidden="true" loading="lazy">
   <div class="shell">
     <h2>Write a story. Get a comic.</h2>
-    <p class="section-lede">Paste prose. It is divided into scenes, one character is cast, each room is drawn once, and every panel is set against both so the same person appears in the same place throughout.</p>
+    <p class="section-lede">Paste prose and it reads it: who is in it, where it happens, and how many panels the story actually needs. Nothing is invented &mdash; a name your text never uses is dropped rather than drawn. Then it is drawn a few panels at a time, so a look you do not like costs three minutes to discover instead of half an hour.</p>
     <div class="flow-track">
       <div class="step">
         <figure><img src="img/character-sheet.webp" width="640" height="640" alt="A character reference sheet: the same woman drawn from three angles in ink and wash." loading="lazy"></figure>
-        <h3>Cast the character</h3>
-        <p>Drawn once from your description, or bring a photograph of your own.</p>
+        <h3>Read the story</h3>
+        <p>The cast comes out of your own prose, ranked by how often each person appears. Or describe them yourself, or bring a photograph.</p>
       </div>
       <div class="step">
         <figure><img src="img/room-sheet.webp" width="560" height="560" alt="An ink-wash drawing of an empty room with a bay window and an armchair." loading="lazy"></figure>
@@ -485,9 +494,14 @@ footer { border-top: 1px solid var(--line-soft); padding: 40px 0 56px; color: va
       </div>
       <div class="step">
         <figure><img src="img/room-panel.webp" width="560" height="560" alt="The same room, now with the character standing at the window." loading="lazy"></figure>
-        <h3>Draw the panels</h3>
-        <p>Every frame references both. Captions and speech are set into the page for you.</p>
+        <h3>Draw, then correct</h3>
+        <p>Every frame references both, and captions and speech are set into the page. A frame that comes out wrong is fixed by writing what is wrong with it &mdash; &ldquo;older, grey at the temples&rdquo; &mdash; and redrawing only that one. The result is one comic in your library, not a pile of loose pictures.</p>
       </div>
+
+      <figure class="flow-result">
+        <img src="img/page-one.webp" width="900" height="960" alt="A finished comic page: three panels of the same woman in the same room, with typeset captions." loading="lazy">
+        <figcaption>A page the app made, from Kate Chopin&rsquo;s <em>The Story of an Hour</em> pasted in whole. Six panels took sixteen minutes on an M4. Captions are typeset into the page rather than drawn into the picture, so they stay readable.</figcaption>
+      </figure>
     </div>
   </div>
 </section>
