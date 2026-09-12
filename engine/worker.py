@@ -32,6 +32,7 @@ import os
 import queue
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -838,32 +839,107 @@ def _remove_stage_root() -> None:
         _STAGE_ROOT = None
 
 
-def _scavenge_stale_stage_dirs(max_age_seconds: int = 24 * 60 * 60) -> None:
-    """Remove private staging left by a worker that crashed.
+def _stage_owner_pid(name: str) -> int | None:
+    """The worker a staging directory belonged to, from its name."""
+    parts = name.split("-")
+    if len(parts) >= 3 and parts[0] == "msvault" and parts[1].isdigit():
+        return int(parts[1])
+    return None
 
-    Only directories owned by this uid and older than a day are considered, so
-    a second running app instance is never disturbed.
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Alive, and owned by somebody else. Not ours to remove.
+        return True
+    except OSError:
+        return True
+    return True
+
+
+def _scavenge_stale_stage_dirs(max_age_seconds: int = 24 * 60 * 60) -> None:
+    """Remove private staging left by a worker that is gone.
+
+    This holds briefly-decrypted copies of vault images, so how long it may
+    outlive the process that made it is a security question, not housekeeping.
+
+    It used to keep everything for a day: only directories older than
+    `max_age_seconds` were removed, on the reasoning that a second running app
+    instance must never be disturbed. But a day is precisely the window that
+    matters -- a worker killed mid-edit left decrypted pictures in /tmp and the
+    next start walked past them -- and SECURITY.md says the opposite in as many
+    words: "stale remnants from a process crash are scavenged at the next
+    engine start". That was not true, and the gap was the whole exposure.
+
+    The directory carries the pid that made it, so ownership is a fact rather
+    than a guess: a directory whose worker is no longer running is removed at
+    once, whatever its age, and one whose worker is alive is left alone however
+    old it is. The age rule stays only for names from before this change, which
+    carry no pid.
     """
     now = time.time()
     root = Path(tempfile.gettempdir())
+    mine = os.getpid()
     for candidate in root.glob("msvault-*"):
         try:
-            stat = candidate.stat()
-            if stat.st_uid == os.getuid() and now - stat.st_mtime >= max_age_seconds:
+            if candidate.stat().st_uid != os.getuid():
+                continue
+            owner = _stage_owner_pid(candidate.name)
+            if owner == mine:
+                continue
+            if owner is not None:
+                if not _process_alive(owner):
+                    shutil.rmtree(candidate, ignore_errors=True)
+                continue
+            # No pid in the name: an older build made it. Fall back to age.
+            if now - candidate.stat().st_mtime >= max_age_seconds:
                 shutil.rmtree(candidate, ignore_errors=True)
         except OSError:
             continue
 
 
+def _install_exit_handlers() -> None:
+    """Remove the staging directory on the signals that actually arrive.
+
+    `atexit` alone was not enough. It runs when the interpreter exits of its
+    own accord and is skipped entirely by SIGTERM, whose default disposition
+    terminates the process without unwinding -- and SIGTERM is exactly what the
+    host sends when the app quits. So quitting during an edit left decrypted
+    vault images on disk, and the scavenger above then declined to remove them
+    for a day.
+
+    The handlers re-raise through the default disposition after cleaning up, so
+    the exit status still says what happened and the host is not left waiting.
+    """
+    def handler(signum: int, _frame: Any) -> None:
+        _remove_stage_root()
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):
+            # Not the main thread, or the platform will not take it. `atexit`
+            # still covers the ordinary exit.
+            continue
+
+
 _scavenge_stale_stage_dirs()
 atexit.register(_remove_stage_root)
+_install_exit_handlers()
 
 
 def _stage_dir() -> str:
     """A private directory for briefly-decrypted source images."""
     global _STAGE_ROOT
     if _STAGE_ROOT is None or not os.path.isdir(_STAGE_ROOT):
-        _STAGE_ROOT = tempfile.mkdtemp(prefix="msvault-")
+        # The pid is in the name so a later start can tell a directory
+        # whose worker is gone from one that is still in use.
+        _STAGE_ROOT = tempfile.mkdtemp(prefix=f"msvault-{os.getpid()}-")
         os.chmod(_STAGE_ROOT, 0o700)
     return _STAGE_ROOT
 

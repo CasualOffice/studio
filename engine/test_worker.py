@@ -18,7 +18,9 @@ import secrets
 import struct
 import sys
 import tempfile
+import time
 import unittest
+import unittest.mock
 import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -2852,6 +2854,108 @@ class CellTextStaysInItsCell(unittest.TestCase):
                     colours, {worker.PAGE_GROUND},
                     f"something was drawn in the gutter at row {row}")
             y += cell_h + style["gutter"]
+
+
+
+class StagingIsNotLeftBehind(unittest.TestCase):
+    """Briefly-decrypted vault images must not outlive the worker that made them.
+
+    `atexit` alone did not cover it: SIGTERM's default disposition terminates
+    without unwinding, and SIGTERM is what the host sends when the app quits.
+    The scavenger then declined to remove the leftovers for a day, while
+    SECURITY.md promised they were "scavenged at the next engine start".
+    """
+
+    def _stage(self, tmp, pid, age_seconds=0):
+        d = os.path.join(tmp, f"msvault-{pid}-abc" if pid else "msvault-legacy")
+        os.makedirs(d)
+        open(os.path.join(d, "secret.png"), "wb").write(b"decrypted")
+        if age_seconds:
+            old = time.time() - age_seconds
+            os.utime(d, (old, old))
+        return d
+
+    def test_a_directory_whose_worker_is_gone_goes_at_once(self):
+        # A dead pid: nothing owns these pictures any more.
+        dead = 999999
+        self.assertFalse(worker._process_alive(dead))
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self._stage(tmp, dead)
+            with unittest.mock.patch.object(tempfile, "gettempdir", lambda: tmp):
+                worker._scavenge_stale_stage_dirs()
+            self.assertFalse(os.path.exists(d),
+                             "a fresh directory from a dead worker must still go")
+
+    def test_a_live_workers_directory_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self._stage(tmp, os.getpid(), age_seconds=48 * 60 * 60)
+            with unittest.mock.patch.object(tempfile, "gettempdir", lambda: tmp):
+                worker._scavenge_stale_stage_dirs()
+            self.assertTrue(os.path.exists(d),
+                            "a running worker's staging must survive, however old")
+
+    def test_a_name_without_a_pid_still_falls_back_to_age(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fresh = self._stage(tmp, None)
+            with unittest.mock.patch.object(tempfile, "gettempdir", lambda: tmp):
+                worker._scavenge_stale_stage_dirs()
+            self.assertTrue(os.path.exists(fresh))
+            old = time.time() - 48 * 60 * 60
+            os.utime(fresh, (old, old))
+            with unittest.mock.patch.object(tempfile, "gettempdir", lambda: tmp):
+                worker._scavenge_stale_stage_dirs()
+            self.assertFalse(os.path.exists(fresh))
+
+    def test_the_pid_is_readable_from_the_name(self):
+        self.assertEqual(worker._stage_owner_pid("msvault-4321-xyz"), 4321)
+        self.assertIsNone(worker._stage_owner_pid("msvault-legacy"))
+        self.assertIsNone(worker._stage_owner_pid("something-else"))
+
+    def test_a_terminated_worker_removes_its_own_staging(self):
+        """The end to end case: SIGTERM, and nothing decrypted is left behind."""
+        import subprocess
+        import sys as _sys
+        import textwrap
+
+        engine_dir = os.path.dirname(os.path.abspath(worker.__file__))
+        with tempfile.TemporaryDirectory() as tmp:
+            script = textwrap.dedent(f"""
+                import os, sys, time
+                sys.path.insert(0, {engine_dir!r})
+                import worker
+                d = worker._stage_dir()
+                with open(os.path.join(d, "secret.png"), "wb") as fh:
+                    fh.write(b"decrypted")
+                # Marked, because importing the engine can print before this.
+                # It goes to stderr on purpose: worker.py sets
+                # `sys.stdout = sys.stderr` so a stray print can never corrupt
+                # the JSON protocol on fd 1.
+                print("STAGED " + d, flush=True)
+                time.sleep(30)
+            """)
+            proc = subprocess.Popen(
+                [_sys.executable, "-c", script],
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                env={**os.environ, "TMPDIR": tmp})
+            self.addCleanup(proc.kill)
+            staged = ""
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                line = proc.stderr.readline()
+                if not line:
+                    break
+                if line.startswith("STAGED "):
+                    staged = line[len("STAGED "):].strip()
+                    break
+            self.assertTrue(staged and os.path.isdir(staged),
+                            f"the child should have staged; got {staged!r}")
+            self.assertTrue(os.path.exists(os.path.join(staged, "secret.png")))
+
+            proc.terminate()
+            proc.wait(timeout=20)
+            self.assertFalse(
+                os.path.exists(staged),
+                "SIGTERM must remove the decrypted staging, not leave it for a day")
 
 
 if __name__ == "__main__":
