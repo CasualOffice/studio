@@ -294,6 +294,24 @@ CACHE = ModelCache()
 # The policy is applied once per process, at the first load.
 _POLICY_APPLIED = False
 
+
+def _apply_policy_once(req_id: str) -> None:
+    """Bound the process before any weights are allocated.
+
+    A function rather than the same four lines in each loader, because the
+    upscale route had neither: both `_load_model` and `_load_mflux_model` set
+    the flag themselves and SeedVR2 is constructed directly, so the one
+    operation heavy enough to abort the engine -- a 1024x1024 restore peaks at
+    16.5 GiB on a 16 GB machine -- was the one running with no MLX cache
+    ceiling at all.
+    """
+    global _POLICY_APPLIED
+    if _POLICY_APPLIED:
+        return
+    _POLICY_APPLIED = True
+    log(req_id, f"resource policy: {apply_resource_policy()}")
+
+
 # Drop resident weights after this long with no work. A model held for hours
 # while the user does something else is several gigabytes the rest of the
 # machine could be using. Reloading costs about ten seconds.
@@ -682,11 +700,7 @@ def _load_model(req_id: str, model: str, quantize: int | None,
         log(req_id, f"reusing resident model ({CACHE.label})")
         return cached, 0.0
 
-    # Bound the process before any weights are allocated.
-    global _POLICY_APPLIED
-    if not _POLICY_APPLIED:
-        _POLICY_APPLIED = True
-        log(req_id, f"resource policy: {apply_resource_policy()}")
+    _apply_policy_once(req_id)
 
     # Free whatever is resident *before* pulling the new one into memory --
     # including the assistant, which competes for the same budget.
@@ -1754,16 +1768,22 @@ EDIT_CLARIFY_SYSTEM = (
 
 
 def _clarify_edit(req_id: str, user_prompt: str, facts: dict[str, str],
-                  writer: str | None = None) -> str:
+                  writer: str | None = None) -> tuple[str, str, str]:
     """Rewrite an edit request using what the picture shows.
 
     The picture is there to settle *which* thing is meant, and nothing more.
     The previous version pasted every observation into a template, so "make the
     jacket red" came back carrying the wall, the floor and the fabric weave --
     detail the editor never needed and, worse, was now being told to preserve.
+
+    Returns the instruction to use, why the rewrite was or was not taken, and
+    the line the writer actually produced. The reason used to be dropped here:
+    a rejected rewrite came back indistinguishable from a request that needed
+    no work, so `op_assist` answered "Nothing to add." after having tried one
+    and thrown it away.
     """
     if not facts:
-        return _enrich_edit_instruction(user_prompt, facts)
+        return _enrich_edit_instruction(user_prompt, facts), "composed", ""
 
     observed = "; ".join(f"{k.lower()}: {v}" for k, v in facts.items())
     try:
@@ -1774,12 +1794,14 @@ def _clarify_edit(req_id: str, user_prompt: str, facts: dict[str, str],
         )
     except Exception as exc:
         log(req_id, f"writer unavailable, composing directly: {exc}", "warn")
-        return _enrich_edit_instruction(user_prompt, facts)
+        return _enrich_edit_instruction(user_prompt, facts), "composed", ""
 
-    line = _clarified(user_prompt, raw)
+    line, why = _clarified_with_reason(user_prompt, raw)
     # A rewrite that lost the request, or that the writer refused, is worse
     # than the plain request: the user's own words already say what they want.
-    return line or user_prompt
+    # The reason travels out with it so the caller can report a rejection as
+    # one rather than as a request that was already good enough.
+    return (line or user_prompt), why, _first_line(raw)
 
 
 def _enrich_edit_instruction(user_prompt: str, facts: dict[str, str]) -> str:
@@ -2098,6 +2120,42 @@ def _salvage_objects(text: str) -> list[Any]:
     return out
 
 
+def _array_body(text: str, start: int) -> str:
+    """What is inside an array whose opening bracket sits just before `start`.
+
+    Runs to the matching close bracket, or to the end of the text when the
+    reply was cut off before it arrived -- which is the case this exists for.
+    Bounding the slice matters because the caller salvages objects out of it,
+    and an unbounded scan would collect the objects of the *next* array as
+    well: a cast reply holds "people" and "places" one after the other, and
+    reading past the end of the first put every place into the cast.
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == "]":
+            if depth == 0:
+                return text[start:i]
+            depth -= 1
+    return text[start:]
+
+
 def _clean_shotlist(beats: list[Any], story: str) -> list[dict[str, Any]]:
     """Every beat pulled into the shape the board expects."""
     cleaned: list[dict[str, Any]] = []
@@ -2312,17 +2370,121 @@ _CAPTION_FONTS = (
     "/Library/Fonts/Arial.ttf",
 )
 
+# Every face above is Latin-only, and a face with no glyph for a character
+# letters it as .notdef -- an empty box. So a Japanese, Chinese, Korean,
+# Arabic, Hebrew or Devanagari caption was drawn as rows of identical boxes,
+# with nothing in the pipeline to notice: the wrap measures those boxes and
+# they are the same width as real glyphs.
+#
+# The ranges are only what decides which file to open, not every block a
+# script can reach. Latin is absent on purpose -- it is the default -- and so
+# is anything the faces above already cover.
+_SCRIPT_RANGES: tuple[tuple[str, tuple[tuple[int, int], ...]], ...] = (
+    ("kana", ((0x3040, 0x30FF), (0x31F0, 0x31FF))),
+    ("han", ((0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF))),
+    ("hangul", ((0x1100, 0x11FF), (0x3130, 0x318F),
+                (0xA960, 0xA97F), (0xAC00, 0xD7AF))),
+    ("arabic", ((0x0600, 0x06FF), (0x0750, 0x077F), (0x08A0, 0x08FF),
+                (0xFB50, 0xFDFF), (0xFE70, 0xFEFF))),
+    ("hebrew", ((0x0590, 0x05FF), (0xFB1D, 0xFB4F))),
+    ("devanagari", ((0x0900, 0x097F), (0xA8E0, 0xA8FF))),
+)
+
+# Faces that ship with macOS and cover those scripts, most preferred first.
+# "Arial Unicode" is last in every list deliberately: it is the only one that
+# covers all of them, so a caption mixing two scripts finds it as the only
+# file the two lists share.
+#
+# Kana leads with the Japanese face and Han with the Chinese one, so a
+# Japanese sentence -- which is kana and han together -- keeps Japanese kanji
+# forms rather than being lettered in the Simplified shapes a reader would
+# notice. Hangul's list is kept clear of the CJK faces for the same reason:
+# Hiragino has no hangul at all.
+_SCRIPT_FONTS: dict[str, tuple[str, ...]] = {
+    "kana": ("/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc",
+             "/System/Library/Fonts/Hiragino Sans GB.ttc",
+             "/System/Library/Fonts/STHeiti Medium.ttc",
+             "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+             "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+    "han": ("/System/Library/Fonts/Hiragino Sans GB.ttc",
+            "/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc",
+            "/System/Library/Fonts/STHeiti Medium.ttc",
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+    "hangul": ("/System/Library/Fonts/AppleSDGothicNeo.ttc",
+               "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
+               "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+    "arabic": ("/System/Library/Fonts/SFArabic.ttf",
+               "/System/Library/Fonts/GeezaPro.ttc",
+               "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+    "hebrew": ("/System/Library/Fonts/SFHebrew.ttf",
+               "/System/Library/Fonts/Supplemental/NewPeninimMT.ttc",
+               "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+    "devanagari": ("/System/Library/Fonts/Kohinoor.ttc",
+                   "/System/Library/Fonts/Supplemental/DevanagariMT.ttc",
+                   "/System/Library/Fonts/Supplemental/ITFDevanagari.ttc",
+                   "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+}
+
+# Faces opened so far, keyed by file and size. A page asks for the same face
+# once per caption and once per balloon, and the wide-coverage fallbacks are
+# tens of megabytes each. Only the one compute thread composes a board, so
+# this is never shared between renders in flight.
+_FONT_CACHE: dict[tuple[str, int], Any] = {}
+
+
+def _open_font(path: str, size: int) -> Any | None:
+    """One face at one size, opened once per process. None if unusable."""
+    key = (path, size)
+    if key not in _FONT_CACHE:
+        from PIL import ImageFont
+
+        try:
+            _FONT_CACHE[key] = ImageFont.truetype(path, size)
+        except Exception:
+            _FONT_CACHE[key] = None
+    return _FONT_CACHE[key]
+
 
 def _caption_font(size: int) -> Any:
     from PIL import ImageFont
 
     for path in _CAPTION_FONTS:
-        if os.path.exists(path):
-            try:
-                return ImageFont.truetype(path, size)
-            except Exception:
-                continue
+        font = _open_font(path, size)
+        if font is not None:
+            return font
     return ImageFont.load_default()
+
+
+def _scripts(text: str) -> list[str]:
+    """Which scripts in this text the Latin caption faces cannot letter."""
+    found: list[str] = []
+    for name, ranges in _SCRIPT_RANGES:
+        if any(any(lo <= ord(ch) <= hi for lo, hi in ranges) for ch in text):
+            found.append(name)
+    return found
+
+
+def _lettering(text: str, size: int, default: Any) -> Any:
+    """The face to letter this text with: `default` unless it cannot.
+
+    Chosen per piece of lettering rather than per board, because one page can
+    carry a Japanese caption and a Latin balloon, and a face picked for the
+    page would letter one of them in boxes.
+    """
+    needed = _scripts(text)
+    if not needed:
+        return default
+    lists = [_SCRIPT_FONTS[name] for name in needed]
+    for path in lists[0]:
+        if not all(path in other for other in lists[1:]):
+            # A caption in two scripts needs one face that has both, and the
+            # shared entry is what finds it.
+            continue
+        font = _open_font(path, size)
+        if font is not None:
+            return font
+    # Boxes are bad; no caption at all would be worse.
+    return default
 
 
 def _wrap(draw: Any, text: str, font: Any, width: int) -> list[str]:
@@ -2500,8 +2662,38 @@ def _fit(im: Any, w: int, h: int, ground: tuple[int, int, int] = PAGE_GROUND) ->
     return cell
 
 
+def _caption_width(cell_w: int) -> int:
+    """How wide a narration box may be in a cell this wide.
+
+    A function rather than the expression repeated at each use, because the
+    pass that measures a text block and the pass that draws it have to agree
+    about it to the pixel.
+    """
+    return min(cell_w - 20, 430)
+
+
+def _bubble_width(cell_w: int) -> int:
+    """How wide a speech balloon may be in a cell this wide."""
+    return min(cell_w - 40, 380)
+
+
+def _caption_lines(draw: Any, text: str, font: Any, w: int, line_h: int,
+                   max_h: int = 0) -> list[str]:
+    """The caption as it will be drawn, clipped to `max_h` when one is given.
+
+    Shared by the measuring pass and the drawing pass so the two cannot
+    disagree: the cell has to know how tall the caption will be before it can
+    decide how many balloons fit beneath it. One line is always kept -- a
+    narration box with nothing in it is a grey rectangle over the picture.
+    """
+    lines = _wrap(draw, text, font, w - 18)
+    if max_h:
+        lines = lines[:max(1, (max_h - 12) // line_h)]
+    return lines
+
+
 def _caption_box(draw: Any, text: str, font: Any, box: tuple[int, int, int, int],
-                 line_h: int) -> int:
+                 line_h: int, max_h: int = 0) -> int:
     """A narration box in the corner of a panel, as a comic sets one.
 
     Returns the height it used, which the caller needs: the caption wraps by
@@ -2510,9 +2702,12 @@ def _caption_box(draw: Any, text: str, font: Any, box: tuple[int, int, int, int]
     wrapped to three lines -- from about thirteen words, which is an ordinary
     length for narration -- had the first speech balloon painted across it and
     both ended up unreadable.
+
+    `max_h` is the room the cell has. Unbounded, a long caption in a narrow
+    three-panel cell filled the cell and ran on into the tier below.
     """
     x, y, w, _ = box
-    lines = _wrap(draw, text, font, w - 18)
+    lines = _caption_lines(draw, text, font, w, line_h, max_h)
     bh = len(lines) * line_h + 12
     draw.rectangle([x, y, x + w, y + bh], fill=(250, 249, 245),
                    outline=(20, 20, 22), width=2)
@@ -2556,6 +2751,115 @@ def _bubble(draw: Any, text: str, speaker: str, font: Any, small: Any,
     return used
 
 
+def _bubble_height(draw: Any, text: str, speaker: str, font: Any,
+                   max_w: int, line_h: int) -> int:
+    """What `_bubble` will take, without drawing it.
+
+    The same arithmetic as above, deliberately: a balloon has to be measured
+    before the cell can decide whether there is room left for it, and the two
+    numbers being the same is the whole point of the check.
+    """
+    lines = _wrap(draw, text, font, max_w - 26)
+    used = len(lines) * line_h + 16 + 18
+    if speaker:
+        used += 24
+    return used
+
+
+# How much of a cell's height the caption and the balloons may take between
+# them. A comic letters over the picture, but past about half the cell there is
+# no picture left to letter over. In a three-panel tier the cell is only ~369px
+# wide, where the caption box (up to 430 wide, wrapping into as many lines as it
+# needs) plus two balloons came to more than the cell was tall: both spilled
+# into the tier below, and the second line of dialogue was drawn off the bottom
+# of the page and lost.
+_TEXT_COVER = 0.7
+# How much of the block the narration box may take when there is dialogue to
+# go under it. Without a share, a long caption filled the block on its own and
+# both balloons were dropped -- which is the same loss the other way round.
+_CAPTION_SHARE = 0.55
+# Sizes to try, as a fraction of the board's own, before giving up on a
+# balloon. Below `_MIN_TEXT_SIZE` nothing is readable at print size, so
+# shrinking further would trade one unreadable page for another.
+_TEXT_STEPS = (1.0, 0.85, 0.72, 0.6)
+_MIN_TEXT_SIZE = 11
+
+
+def _text_size(style: dict[str, Any]) -> int:
+    """The board's own lettering size.
+
+    Derived from `line_h` when a caller built the style without it, so the
+    smaller faces below are always relative to the size the board asked for.
+    """
+    size = int(style.get("size") or 0)
+    return size if size > 0 else max(8, int(style["line_h"] / 1.4))
+
+
+def _cell_text_plan(probe: Any, cap: str, dialogue: list[Any],
+                    style: dict[str, Any], cell_w: int,
+                    cell_h: int) -> tuple[int, int, int]:
+    """The face size, caption height and balloon count that fit in one cell.
+
+    Nothing may be drawn outside its own cell, and the only bound the lettering
+    had was on its width: `_caption_box` wrapped to as many lines as the words
+    needed and each balloon was placed under the last one, with nothing
+    comparing the total against the cell. In a three-panel tier that covered the
+    picture completely, ran into the tier below, and put the second line of
+    dialogue off the page.
+
+    So the block is measured before anything is drawn, and it is measured
+    twice: first against the share of the cell a comic letters over, and then,
+    only if everything will not go there, against the cell itself. The second
+    pass is what keeps the lettering whole -- it is better to set a crowded
+    panel a couple of sizes down than to lose the words, and either is better
+    than drawing them over the next tier.
+
+    Text is dropped only when neither pass has room for it at the smallest
+    readable face, and the caption is clipped before a balloon is: a reader can
+    follow a story whose narration was cut short far more easily than one whose
+    characters stop answering each other.
+    """
+    base = _text_size(style)
+    cap_w, bub_w = _caption_width(cell_w), _bubble_width(cell_w)
+    wanted = list(dialogue)[:2]
+    best: tuple[tuple[int, bool], int, int, int] | None = None
+    for cover in (max(0, int(cell_h * _TEXT_COVER)), max(0, cell_h - 20)):
+        cap_room = cover if not wanted else int(cover * _CAPTION_SHARE)
+        for step in _TEXT_STEPS:
+            size = max(_MIN_TEXT_SIZE, int(round(base * step)))
+            line_h = max(1, int(size * 1.4))
+            default = style["font"] if size == base else _caption_font(size)
+            cap_h, whole = 0, True
+            if cap:
+                font = _lettering(cap, size, default)
+                asked = len(_caption_lines(probe, cap, font, cap_w, line_h))
+                drawn = len(_caption_lines(probe, cap, font, cap_w, line_h,
+                                           cap_room))
+                cap_h, whole = drawn * line_h + 12, drawn >= asked
+            room = cover - (cap_h + 8 if cap else 0)
+            used = count = 0
+            for line in wanted:
+                text = str(line.get("text", ""))
+                height = _bubble_height(probe, text,
+                                        str(line.get("speaker", "")),
+                                        _lettering(text, size, default),
+                                        bub_w, line_h)
+                if used + height > room:
+                    break
+                used += height
+                count += 1
+            if count == len(wanted) and whole:
+                return size, cap_h, count
+            # More of the story drawn wins, then a caption that is not cut
+            # short, then the larger face -- which is why the largest is tried
+            # first and a tie never replaces what is already held.
+            score = (count, whole)
+            if best is None or score > best[0]:
+                best = (score, size, cap_h, count)
+    _score, size, cap_h, count = best or ((0, True), base, 0, 0)
+    return size, cap_h, count
+
+
 def _page_plan(shots: list[str], style: dict[str, Any]) -> tuple[list[Any], int]:
     """The cells one page needs, and the height they come to.
 
@@ -2590,7 +2894,7 @@ def _render_page(panels: list[Any], idx: list[int], meta: dict[str, list[Any]],
     from PIL import Image, ImageDraw
 
     page_w, margin, gutter = style["width"], style["margin"], style["gutter"]
-    font, small, line_h = style["font"], style["small"], style["line_h"]
+    font, small, base = style["font"], style["small"], _text_size(style)
     shots = [meta["shots"][i] for i in idx]
 
     probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
@@ -2621,18 +2925,29 @@ def _render_page(panels: list[Any], idx: list[int], meta: dict[str, list[Any]],
             draw.rectangle([x, y, x + cell_w, y + cell_h],
                            outline=(20, 20, 22), width=3)
             cap = meta["captions"][src].strip()
-            cap_h = 0
+            dialogue = list(meta["dialogue"][src])[:2]
+            # What this cell can actually hold: a smaller face, and fewer
+            # balloons, rather than lettering drawn over the tier below.
+            size, cap_h, bubbles = _cell_text_plan(probe, cap, dialogue, style,
+                                                   cell_w, cell_h)
+            line_h = max(1, int(size * 1.4))
+            body = font if size == base else _caption_font(size)
+            label = small if size == base else _caption_font(max(9, size - 6))
             if cap:
-                cap_h = _caption_box(draw, cap, font,
-                                     (x + 10, y + 10, min(cell_w - 20, 430), 0),
-                                     line_h)
+                _caption_box(draw, cap, _lettering(cap, size, body),
+                             (x + 10, y + 10, _caption_width(cell_w), 0),
+                             line_h, max_h=cap_h)
             # Below the caption that was actually drawn, rather than below a
             # guess at how tall it might be.
             by = y + (10 + cap_h + 8 if cap else 16)
-            for line in meta["dialogue"][src][:2]:
-                by += _bubble(draw, line.get("text", ""), line.get("speaker", ""),
-                              font, small, x + cell_w // 2, by,
-                              min(cell_w - 40, 380), line_h, tail_down=True)
+            for line in dialogue[:bubbles]:
+                text = str(line.get("text", ""))
+                speaker = str(line.get("speaker", ""))
+                by += _bubble(draw, text, speaker,
+                              _lettering(text, size, body),
+                              _lettering(speaker, max(9, size - 6), label),
+                              x + cell_w // 2, by, _bubble_width(cell_w),
+                              line_h, tail_down=True)
             x += cell_w + gutter
         y += cell_h + gutter
     return page
@@ -2651,6 +2966,7 @@ def _render_strip(panels: list[Any], meta: dict[str, list[Any]],
 
     width, margin = style["width"], style["margin"]
     font, small, line_h = style["font"], style["small"], style["line_h"]
+    base = _text_size(style)
     beat, breath = 46, 190
 
     sized, gaps = [], []
@@ -2661,7 +2977,14 @@ def _render_strip(panels: list[Any], meta: dict[str, list[Any]],
             gaps.append(beat if same else breath)
 
     probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
-    caps = [_wrap(probe, meta["captions"][i].strip(), font, width - margin * 2 - 40)
+    # The face per caption, kept so the pass that measures a caption and the
+    # pass that draws it use the same one. A face chosen for the scroll as a
+    # whole letters a Japanese caption in boxes, and a caption wrapped with one
+    # face and drawn with another is measured wrong everywhere it differs.
+    cap_fonts = [_lettering(meta["captions"][i].strip(), base, font)
+                 for i in range(len(panels))]
+    caps = [_wrap(probe, meta["captions"][i].strip(), cap_fonts[i],
+                  width - margin * 2 - 40)
             if meta["captions"][i].strip() else [] for i in range(len(panels))]
 
     total = margin + sum(im.height for im in sized) + sum(gaps)
@@ -2675,15 +2998,19 @@ def _render_strip(panels: list[Any], meta: dict[str, list[Any]],
         draw.rectangle([margin, y, margin + im.width, y + im.height],
                        outline=(20, 20, 22), width=3)
         by = y + 16
-        for line in meta["dialogue"][i][:2]:
-            by += _bubble(draw, line.get("text", ""), line.get("speaker", ""),
-                          font, small, margin + im.width // 2, by,
+        for line in list(meta["dialogue"][i])[:2]:
+            text = str(line.get("text", ""))
+            speaker = str(line.get("speaker", ""))
+            by += _bubble(draw, text, speaker,
+                          _lettering(text, base, font),
+                          _lettering(speaker, max(9, base - 6), small),
+                          margin + im.width // 2, by,
                           min(im.width - 40, 420), line_h, tail_down=True)
         y += im.height
         if caps[i]:
             for n, line in enumerate(caps[i]):
-                draw.text((margin + 2, y + 10 + n * line_h), line, font=font,
-                          fill=(30, 30, 33))
+                draw.text((margin + 2, y + 10 + n * line_h), line,
+                          font=cap_fonts[i], fill=(30, 30, 33))
             y += len(caps[i]) * line_h + 18
         if i < len(gaps):
             y += gaps[i]
@@ -2764,6 +3091,9 @@ def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             "font": _caption_font(size),
             "small": _caption_font(13),
             "line_h": int(size * 1.4),
+            # The size itself, because a cell that cannot hold its lettering
+            # needs to letter it smaller, and `line_h` only implies it.
+            "size": size,
         }
 
         pages = (_paginate(meta["scenes"]) if layout == "page"
@@ -3191,6 +3521,30 @@ def _json_block(raw: str, opener: str = "[", closer: str = "]") -> Any:
     return json.loads(body[start:end + 1])
 
 
+def _salvage_cast(raw: str) -> dict[str, list[Any]]:
+    """The complete entries of each cast array in a reply that was cut off.
+
+    The same salvage the division already does, for the shape the cast reader
+    asks for: an object with a "people" array and a "places" array rather than
+    a bare array. A story with a large cast overruns the token cap partway
+    through an entry, `rfind("}")` then lands on the last *complete* entry's
+    brace instead of the end of the object, and the parse fails on the
+    unbalanced slice -- throwing away every person in front of it and failing
+    the whole read, after minutes, with a raw JSON parser message. Each array
+    is bounded first and salvaged on its own, so a reply cut off inside
+    "places" still yields the people.
+    """
+    found: dict[str, list[Any]] = {}
+    for key in ("people", "places"):
+        opened = re.search(rf'"{key}"\s*:\s*\[', raw)
+        if opened is None:
+            continue
+        entries = _salvage_objects(_array_body(raw, opened.end()))
+        if entries:
+            found[key] = entries
+    return found
+
+
 def _whole_word_count(haystack: str, needle: str) -> int:
     """Occurrences of `needle` as whole words rather than as a substring.
 
@@ -3407,8 +3761,21 @@ def op_cast(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                  max_tokens=900, temperature=0.2, repo=req.get("writer"), label="Reading the cast")
     try:
         found = _json_block(raw, "{", "}")
+        if not isinstance(found, dict):
+            raise ValueError("the reply was not an object of people and places")
     except Exception as exc:
-        raise ValueError(f"could not read the cast from the story: {exc}")
+        # The reply ran out of tokens partway through an entry. Every entry in
+        # front of it is still good, and keeping them is the difference between
+        # a cast the user can correct and an error that names nothing after a
+        # couple of minutes of the writer.
+        found = _salvage_cast(raw)
+        if not found:
+            raise ValueError(f"could not read the cast from the story: {exc}")
+        log(req_id,
+            f"the cast reply was cut off; keeping the "
+            f"{len(found.get('people') or [])} people and "
+            f"{len(found.get('places') or [])} places that arrived whole",
+            "warn")
 
     def collect(key: str) -> list[dict[str, Any]]:
         out = []
@@ -3595,8 +3962,32 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             facts = _parse_scene(raw)
             description = " · ".join(f"{k.lower()}: {v}" for k, v in facts.items())
             log(req_id, f"scene: {description or 'nothing readable'}")
-            improved = _clarify_edit(req_id, user_prompt, facts,
-                                     req.get("writer"))
+            improved, why, attempt = _clarify_edit(req_id, user_prompt, facts,
+                                                   req.get("writer"))
+            if why not in ("ok", "composed"):
+                # The rewrite was tried and thrown away, which is a fact about
+                # the rewrite and not about the request. Said here because the
+                # reason used to stop at `_clarify_edit`: this path returned
+                # the untouched request with no `outcome` at all, the
+                # interface's fallback chain read that as "your words were
+                # already fine", and the answer to a failed rewrite was
+                # "Nothing to add."
+                log(req_id,
+                    f"edit rewrite rejected ({why}); keeping the request",
+                    "warn")
+                return {
+                    "prompt": original_prompt, "original": original_prompt,
+                    "saw_image": bool(staged) and not blind,
+                    "changed": False, "outcome": "rewrite_rejected",
+                    "description": description, "rejected_because": why,
+                    # What it wrote, so the choice is the user's. The edit
+                    # checks are the same literal ones as below, so the text
+                    # they refuse is often the text that was wanted.
+                    "attempt": attempt,
+                    "note": _WHY_REJECTED.get(
+                        why, "Your words were kept: the rewrite drifted from "
+                             "them. Try again, or add a detail yourself."),
+                }
         else:
             emit({"id": req_id, "type": "progress", "phase": "denoise",
                   "progress": None, "message": "Writing the prompt"})
@@ -4835,10 +5226,7 @@ def _load_mflux_model(req_id: str, backend: str, model_path: str | None,
         log(req_id, f"reusing resident model ({CACHE.label})")
         return cached, 0.0
 
-    global _POLICY_APPLIED
-    if not _POLICY_APPLIED:
-        _POLICY_APPLIED = True
-        log(req_id, f"resource policy: {apply_resource_policy()}")
+    _apply_policy_once(req_id)
 
     CACHE.unload()
     if _helpers_resident() is not None:
@@ -4979,6 +5367,20 @@ def _upscale_peak_gib(width: int, height: int) -> float:
     return _UPSCALE_BASE_GIB + _UPSCALE_GIB_PER_MPX * (width * height) / 1e6
 
 
+# What the tiled path holds beside the model, per pixel of the *output*: the
+# float32 accumulator at twelve bytes, the weight sum at four, and while a
+# preview is on the divided copy of the accumulator at another twelve plus the
+# 8-bit image handed to the preview at three. None of that is in
+# `_upscale_peak_gib`, which was fitted to one pass of the model and knows
+# nothing about the canvas the pieces are blended into.
+_TILE_CANVAS_BYTES_PER_PX = 32
+
+
+def _upscale_canvas_gib(width: int, height: int) -> float:
+    """What the tiled path holds outside the model, for an output this size."""
+    return width * height * _TILE_CANVAS_BYTES_PER_PX / (1024 ** 3)
+
+
 def _upscale_budget_gib() -> float:
     raw = os.environ.get("MODELSTUDIO_MEMORY_BUDGET_GIB")
     try:
@@ -4997,7 +5399,8 @@ def _largest_upscale_edge(width: int, height: int, budget_gib: float) -> int:
     return int(max(width, height) * scale)
 
 
-def _check_upscale_fits(req_id: str, src: str, resolution: Any) -> tuple[int, int]:
+def _check_upscale_fits(req_id: str, src: str,
+                        resolution: Any) -> tuple[int, int, int, int, float, bool]:
     """Refuse an upscale that cannot fit, before anything is dispatched.
 
     This has to happen up front. MLX reports a Metal out-of-memory from a
@@ -5061,6 +5464,111 @@ def _tile_spans(total: int, tile: int, overlap: int) -> list[tuple[int, int]]:
         start += step
 
 
+def _max_upscale_tiles() -> int:
+    """How many pieces one enlargement may be cut into.
+
+    Each piece is a separate pass of the upscaler at roughly fifteen seconds,
+    so sixty-four is already a quarter of an hour of work. An env var because
+    somebody who knows what they are waiting for should be able to wait.
+    """
+    raw = os.environ.get("MODELSTUDIO_MAX_UPSCALE_TILES")
+    try:
+        return max(1, int(raw)) if raw else 64
+    except ValueError:
+        return 64
+
+
+def _tile_plan(in_w: int, in_h: int, factor: float, budget_gib: float
+               ) -> tuple[int, int, list[tuple[int, int]], list[tuple[int, int]]]:
+    """The tile grid for one tiled enlargement, and the tile size it implies.
+
+    Empty spans mean there is no room at all: the two full-canvas accumulators
+    are counted here, and the tile size used to be worked out from the budget
+    as though they did not exist. At 5x on a 3024x4032 import they come to
+    about 10 GiB on their own, so every tile size the old arithmetic chose was
+    one the machine could not actually hold.
+    """
+    out_w, out_h = round(in_w * factor), round(in_h * factor)
+    room = (budget_gib * _UPSCALE_SAFETY - _UPSCALE_BASE_GIB
+            - _upscale_canvas_gib(out_w, out_h))
+    if room <= 0:
+        return 0, 0, [], []
+    tile_out = int(math.sqrt(room / _UPSCALE_GIB_PER_MPX * 1e6))
+    tile_src = max(64, int(tile_out / factor))
+    overlap = int(_TILE_OVERLAP / factor)
+    return (tile_src, tile_out,
+            _tile_spans(in_w, min(tile_src, in_w), overlap),
+            _tile_spans(in_h, min(tile_src, in_h), overlap))
+
+
+def _largest_tiled_factor(in_w: int, in_h: int, wanted: float,
+                          budget_gib: float) -> float:
+    """The largest enlargement of this image that is still worth starting.
+
+    Rounded down to a tenth, so the number in a refusal is one the user can
+    type back in and have accepted. Found by bisection rather than algebra:
+    the tile size depends on the canvas, the canvas depends on the factor, and
+    the tile count depends on both with two clamps in between. Zero means not
+    even 1x fits, which is a budget problem rather than a size problem.
+    """
+    limit = _max_upscale_tiles()
+
+    def fits(candidate: float) -> bool:
+        _src, _out, xs, ys = _tile_plan(in_w, in_h, candidate, budget_gib)
+        count = len(xs) * len(ys)
+        return bool(count) and count <= limit
+
+    lo, hi = 1.0, max(1.0, wanted)
+    if not fits(lo):
+        return 0.0
+    for _ in range(24):
+        mid = (lo + hi) / 2
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid
+    return math.floor(lo * 10) / 10
+
+
+def _refuse_tiled_upscale(in_w: int, in_h: int, factor: float,
+                          budget_gib: float, tiles: int) -> None:
+    """Refuse a tiled enlargement before the first piece is dispatched.
+
+    Each tile was bounded and nothing bounded the number of them, nor the two
+    full-canvas float32 accumulators the blend holds for the length of the run.
+    A 3024x4032 import at 5x asked for about 690 pieces -- hours of the
+    upscaler -- and 10 GiB of canvas before the model allocated anything, on
+    exactly the 16 GB machine the tiled path exists to protect. It is said here
+    because once the loop is running the only honest outcome left is a
+    cancelled job, and because a refusal with a workable size in it is a
+    setting the user can change rather than a wall.
+    """
+    out_w, out_h = round(in_w * factor), round(in_h * factor)
+    workable = _largest_tiled_factor(in_w, in_h, factor, budget_gib)
+    if workable > 1.0:
+        instead = (f"Enlarging to {round(in_w * workable)}x"
+                   f"{round(in_h * workable)} ({workable:g}x) would work.")
+    else:
+        instead = (f"Nothing larger than the picture itself fits in the "
+                   f"{budget_gib:.0f} GiB budget, so crop it first.")
+    if budget_gib * _UPSCALE_SAFETY <= _UPSCALE_BASE_GIB:
+        why = (f"the upscaler needs about {_UPSCALE_BASE_GIB:.0f} GiB before "
+               f"it has looked at the picture, and the budget is "
+               f"{budget_gib:.0f} GiB")
+    elif tiles:
+        why = (f"it would be cut into {tiles} pieces, each a separate pass of "
+               f"the upscaler")
+    else:
+        why = (f"holding the finished picture alone takes "
+               f"{_upscale_canvas_gib(out_w, out_h):.1f} GiB of the "
+               f"{budget_gib:.0f} GiB budget, which leaves the upscaler "
+               f"nothing to work in")
+    raise ValueError(
+        f"{out_w}x{out_h} is too large to enlarge in pieces: {why}. "
+        f"{instead} Nothing was started."
+    )
+
+
 def _upscale_tiled(req_id: str, model: Any, src: str, factor: float,
                    budget_gib: float, seed: int = 0,
                    preview: bool = True) -> Any:
@@ -5081,24 +5589,16 @@ def _upscale_tiled(req_id: str, model: Any, src: str, factor: float,
     in_w, in_h = source.size
     out_w, out_h = round(in_w * factor), round(in_h * factor)
 
-    # Largest tile whose *output* fits, expressed back in source pixels.
-    room = (budget_gib * _UPSCALE_SAFETY) - _UPSCALE_BASE_GIB
-    if room <= 0:
-        raise ValueError(
-            f"There is not enough memory to enlarge anything here: the "
-            f"upscaler needs about {_UPSCALE_BASE_GIB:.0f} GiB before it "
-            f"looks at the picture."
-        )
-    tile_out_px = room / _UPSCALE_GIB_PER_MPX * 1e6
-    tile_out = int(math.sqrt(tile_out_px))
-    tile_src = max(64, int(tile_out / factor))
-
-    xs = _tile_spans(in_w, min(tile_src, in_w), int(_TILE_OVERLAP / factor))
-    ys = _tile_spans(in_h, min(tile_src, in_h), int(_TILE_OVERLAP / factor))
+    # Largest tile whose *output* fits beside the canvases below, expressed
+    # back in source pixels, and how many of those the picture comes to.
+    tile_src, tile_out, xs, ys = _tile_plan(in_w, in_h, factor, budget_gib)
     total = len(xs) * len(ys)
+    if not total or total > _max_upscale_tiles():
+        _refuse_tiled_upscale(in_w, in_h, factor, budget_gib, total)
     log(req_id,
         f"tiling {in_w}x{in_h} -> {out_w}x{out_h} as {len(xs)}x{len(ys)} "
-        f"tiles of up to {tile_src}px source ({tile_out}px out)")
+        f"tiles of up to {tile_src}px source ({tile_out}px out), over "
+        f"{_upscale_canvas_gib(out_w, out_h):.1f} GiB of canvas")
 
     acc = np.zeros((out_h, out_w, 3), dtype=np.float32)
     wsum = np.zeros((out_h, out_w, 1), dtype=np.float32)
@@ -5217,6 +5717,11 @@ def op_upscale(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("upscale requires an input image")
 
     try:
+        # Before the explicit cache limit below, not after: the policy's own
+        # ceiling is a quarter of the budget and would otherwise *raise* a
+        # limit the request had deliberately lowered.
+        _apply_policy_once(req_id)
+
         cache_limit = req.get("cache_limit_gb")
         if cache_limit is None and req.get("low_ram"):
             cache_limit = 1.0

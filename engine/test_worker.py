@@ -2308,5 +2308,551 @@ class AdapterIsReallyAnAdapter(unittest.TestCase):
         self.assertTrue(worker._looks_like_adapter(
             Repo("someone/style", ["style_lora.safetensors"])))
 
+
+class TruncatedCastSalvage(unittest.TestCase):
+    """A cast reply cut off mid-entry must not cost the whole read.
+
+    The division already salvaged a truncated reply; the cast reader parsed
+    with `_json_block` and raised. A story with a large cast overruns the token
+    cap, `rfind("}")` lands on the last complete entry instead of the end of
+    the object, and the read failed with a raw JSON parser message after a
+    couple of minutes of the writer -- having had every complete person in
+    hand.
+    """
+
+    STORY = ("Mira opened the door. Jon was on the step. Ana had gone to the "
+             "harbour and Ruth had stayed in the kitchen. Mira said nothing. "
+             "Jon waited. Ana came back. Ruth poured the tea.")
+
+    def _people(self):
+        return [{"name": n, "description": "a coat"}
+                for n in ("Mira", "Jon", "Ana", "Ruth")]
+
+    def _cut_in_people(self):
+        body = '{"people": ' + json.dumps(self._people())[:-1]
+        return body + ', {"name": "Half", "description": "a scarf that'
+
+    def _cut_in_places(self):
+        places = [{"name": "the kitchen", "description": "wet wool"},
+                  {"name": "the harbour", "description": "grey water"}]
+        return ('{"people": ' + json.dumps(self._people())
+                + ', "places": ' + json.dumps(places)[:-1]
+                + ', {"name": "the sta')
+
+    def test_complete_people_are_salvaged(self):
+        found = worker._salvage_cast(self._cut_in_people())
+        self.assertEqual([p["name"] for p in found["people"]],
+                         ["Mira", "Jon", "Ana", "Ruth"])
+
+    def test_the_half_written_entry_is_dropped(self):
+        found = worker._salvage_cast(self._cut_in_people())
+        self.assertNotIn("Half", [p["name"] for p in found["people"]])
+
+    def test_a_cut_inside_places_still_yields_the_people(self):
+        found = worker._salvage_cast(self._cut_in_places())
+        self.assertEqual(len(found["people"]), 4)
+        self.assertEqual([p["name"] for p in found["places"]],
+                         ["the kitchen", "the harbour"])
+
+    def test_places_are_not_collected_into_the_cast(self):
+        """The two arrays run one after the other in the same object.
+
+        An unbounded scan from "people" would read straight through the close
+        bracket and file every place as a person.
+        """
+        found = worker._salvage_cast(self._cut_in_places())
+        self.assertEqual([p["name"] for p in found["people"]],
+                         ["Mira", "Jon", "Ana", "Ruth"])
+
+    def test_a_whole_reply_still_goes_through_the_parser(self):
+        whole = json.dumps({"people": self._people(), "places": []})
+        self.assertEqual(len(worker._json_block(whole, "{", "}")["people"]), 4)
+
+    def test_op_cast_keeps_what_arrived(self):
+        """End to end, with the writer replaced by a reply that was cut off."""
+        reply = self._cut_in_people()
+        saved = (worker._write, worker.emit, worker.log)
+        worker._write = lambda *a, **k: reply
+        worker.emit = lambda payload: None
+        worker.log = lambda *a, **k: None
+        try:
+            out = worker.op_cast("t", {"story": self.STORY})
+        finally:
+            worker._write, worker.emit, worker.log = saved
+        self.assertEqual([p["name"] for p in out["people"]],
+                         ["Mira", "Jon", "Ana", "Ruth"])
+
+    def test_a_reply_with_nothing_complete_still_says_so(self):
+        saved = (worker._write, worker.emit, worker.log)
+        worker._write = lambda *a, **k: '{"people": [{"name": "Mi'
+        worker.emit = lambda payload: None
+        worker.log = lambda *a, **k: None
+        try:
+            with self.assertRaises(ValueError) as caught:
+                worker.op_cast("t", {"story": self.STORY})
+        finally:
+            worker._write, worker.emit, worker.log = saved
+        self.assertIn("could not read the cast", str(caught.exception))
+
+
+class ResourcePolicyReachesEveryRoute(unittest.TestCase):
+    """The upscale route ran with no MLX cache ceiling at all.
+
+    Both loaders set `_POLICY_APPLIED` inline, and SeedVR2 is constructed
+    directly without passing through either -- so the one operation heavy
+    enough to abort the engine was the one operation with no bound on it.
+    """
+
+    def _source(self, name):
+        import ast
+
+        with open(os.path.join(HERE, "worker.py"), encoding="utf-8") as handle:
+            src = handle.read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == name)
+        return ast.get_source_segment(src, fn) or ""
+
+    def test_it_is_applied_once_per_process(self):
+        calls = []
+        saved = (worker.apply_resource_policy, worker.log, worker._POLICY_APPLIED)
+        worker.apply_resource_policy = lambda: calls.append(1) or {}
+        worker.log = lambda *a, **k: None
+        worker._POLICY_APPLIED = False
+        try:
+            worker._apply_policy_once("t")
+            worker._apply_policy_once("t")
+        finally:
+            (worker.apply_resource_policy, worker.log,
+             worker._POLICY_APPLIED) = saved
+        self.assertEqual(len(calls), 1)
+
+    def test_every_route_that_allocates_applies_it(self):
+        for name in ("_load_model", "_load_mflux_model", "op_upscale"):
+            self.assertIn("_apply_policy_once(", self._source(name),
+                          f"{name} allocates weights without bounding the "
+                          "process first")
+
+    def test_the_flag_is_set_in_exactly_one_place(self):
+        """Otherwise the next route to be added copies the block again."""
+        import ast
+
+        with open(os.path.join(HERE, "worker.py"), encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        setters = set()
+        for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Assign) and any(
+                        isinstance(t, ast.Name) and t.id == "_POLICY_APPLIED"
+                        for t in node.targets):
+                    setters.add(fn.name)
+        self.assertEqual(setters, {"_apply_policy_once"})
+
+    def test_the_policy_is_applied_before_the_requested_cache_limit(self):
+        """The policy's own ceiling is a quarter of the budget.
+
+        Applied afterwards it would *raise* a limit the request had lowered on
+        purpose, which is the opposite of what `low_ram` asks for.
+        """
+        body = self._source("op_upscale")
+        self.assertLess(body.index("_apply_policy_once("),
+                        body.index("set_cache_limit("))
+
+
+class TiledUpscaleIsBounded(unittest.TestCase):
+    """The tiled path had a bound on each tile and none on the run.
+
+    A 3024x4032 import at 5x came to about 690 pieces at roughly fifteen
+    seconds each, and two persistent float32 canvases the size of the finished
+    picture -- about 10 GiB -- which `_upscale_peak_gib` knows nothing about
+    because it was fitted to one pass of the model. So the tile size was chosen
+    from a budget that had already been spent, on the 16 GB machine this path
+    exists to protect.
+    """
+
+    BUDGET = 12.0
+
+    def _count(self, in_w, in_h, factor, budget=None):
+        _src, _out, xs, ys = worker._tile_plan(in_w, in_h, factor,
+                                               budget or self.BUDGET)
+        return len(xs) * len(ys)
+
+    def test_the_accumulators_are_counted_in_the_budget(self):
+        for in_w, in_h, factor in ((1024, 1024, 2.0), (1000, 667, 2.0),
+                                   (1600, 1200, 2.0), (768, 768, 3.0)):
+            _src, tile_out, xs, ys = worker._tile_plan(in_w, in_h, factor,
+                                                       self.BUDGET)
+            if not xs:
+                continue
+            out_w, out_h = round(in_w * factor), round(in_h * factor)
+            peak = (worker._upscale_peak_gib(tile_out, tile_out)
+                    + worker._upscale_canvas_gib(out_w, out_h))
+            self.assertLessEqual(
+                peak, self.BUDGET * worker._UPSCALE_SAFETY + 0.01,
+                f"{in_w}x{in_h} @{factor}x plans a tile that does not fit "
+                f"beside its own canvas")
+
+    def test_ignoring_the_canvas_used_to_overshoot(self):
+        """Otherwise the check above proves nothing."""
+        import math
+
+        room = self.BUDGET * worker._UPSCALE_SAFETY - worker._UPSCALE_BASE_GIB
+        old_tile = int(math.sqrt(room / worker._UPSCALE_GIB_PER_MPX * 1e6))
+        peak = (worker._upscale_peak_gib(old_tile, old_tile)
+                + worker._upscale_canvas_gib(3200, 2400))
+        self.assertGreater(peak, self.BUDGET * worker._UPSCALE_SAFETY)
+
+    def test_a_huge_enlargement_is_refused_before_the_loop(self):
+        with self.assertRaises(ValueError) as caught:
+            worker._refuse_tiled_upscale(3024, 4032, 5.0, self.BUDGET,
+                                         self._count(3024, 4032, 5.0))
+        message = str(caught.exception)
+        self.assertIn("15120x20160", message)
+        self.assertIn("Nothing was started", message)
+
+    def test_the_refusal_names_the_tile_count(self):
+        tiles = self._count(4032, 3024, 2.0)
+        self.assertGreater(tiles, worker._max_upscale_tiles(),
+                           "expected a photo at 2x to be over the cap")
+        with self.assertRaises(ValueError) as caught:
+            worker._refuse_tiled_upscale(4032, 3024, 2.0, self.BUDGET, tiles)
+        self.assertIn(f"{tiles} pieces", str(caught.exception))
+
+    def test_the_refusal_names_a_size_that_actually_works(self):
+        for in_w, in_h, factor in ((3024, 4032, 5.0), (4032, 3024, 2.0)):
+            workable = worker._largest_tiled_factor(in_w, in_h, factor,
+                                                    self.BUDGET)
+            self.assertGreater(workable, 1.0)
+            with self.assertRaises(ValueError) as caught:
+                worker._refuse_tiled_upscale(in_w, in_h, factor, self.BUDGET,
+                                             self._count(in_w, in_h, factor))
+            self.assertIn(f"{round(in_w * workable)}x{round(in_h * workable)}",
+                          str(caught.exception))
+            # And it has to be true, not merely printed.
+            tiles = self._count(in_w, in_h, workable)
+            self.assertTrue(tiles)
+            self.assertLessEqual(tiles, worker._max_upscale_tiles())
+
+    def test_the_sizes_that_worked_before_still_tile(self):
+        for in_w, in_h, factor in ((512, 512, 2.0), (1024, 1024, 2.0),
+                                   (1000, 667, 2.0), (768, 1024, 2.0)):
+            tiles = self._count(in_w, in_h, factor)
+            self.assertTrue(tiles, f"{in_w}x{in_h} @{factor}x tiles no more")
+            self.assertLessEqual(tiles, worker._max_upscale_tiles())
+
+    def test_the_cap_can_be_raised_deliberately(self):
+        os.environ["MODELSTUDIO_MAX_UPSCALE_TILES"] = "800"
+        try:
+            self.assertEqual(worker._max_upscale_tiles(), 800)
+        finally:
+            del os.environ["MODELSTUDIO_MAX_UPSCALE_TILES"]
+        self.assertEqual(worker._max_upscale_tiles(), 64)
+
+    def test_the_refusal_happens_before_the_first_tile(self):
+        """A refusal after the loop starts is a cancelled job, not a refusal."""
+        import ast
+
+        with open(os.path.join(HERE, "worker.py"), encoding="utf-8") as handle:
+            src = handle.read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_upscale_tiled")
+        body = ast.get_source_segment(src, fn) or ""
+        self.assertIn("_refuse_tiled_upscale", body)
+        self.assertLess(body.index("_refuse_tiled_upscale"),
+                        body.index("for (y0, y1) in ys"))
+
+
+class EditRewriteRejectionIsReported(unittest.TestCase):
+    """A rejected edit rewrite said "Nothing to add."
+
+    `_clarified_with_reason` returns the reason and `_clarify_edit` dropped it,
+    so the edit path returned the untouched request with no `outcome` at all.
+    The interface's fallback chain reads that as "your words were already
+    fine" -- reported after a rewrite had been written, checked and thrown
+    away.
+    """
+
+    def _clarify(self, reply, prompt="make the jacket red"):
+        saved = (worker._write, worker.log)
+        worker._write = lambda *a, **k: reply
+        worker.log = lambda *a, **k: None
+        try:
+            return worker._clarify_edit("t", prompt,
+                                        {"SUBJECT": "a green field jacket"})
+        finally:
+            worker._write, worker.log = saved
+
+    def test_a_rejected_rewrite_comes_back_with_its_reason(self):
+        line, why, attempt = self._clarify("a bicycle on a wet street at dawn")
+        self.assertEqual(line, "make the jacket red", "the request is kept")
+        self.assertEqual(why, "lost_intent")
+        self.assertIn("bicycle", attempt, "what it wrote has to survive too")
+
+    def test_an_accepted_rewrite_says_so(self):
+        good = "change the green field jacket to red, leave everything else unchanged."
+        line, why, _attempt = self._clarify(good)
+        self.assertEqual(line, good)
+        self.assertEqual(why, "ok")
+
+    def test_composing_directly_is_not_a_rejection(self):
+        """With no observations there is no rewrite to reject."""
+        line, why, _attempt = worker._clarify_edit("t", "make the jacket red", {})
+        self.assertEqual(why, "composed")
+        self.assertIn("jacket", line)
+
+    def test_op_assist_carries_the_reason_into_its_reply(self):
+        import ast
+
+        with open(os.path.join(HERE, "worker.py"), encoding="utf-8") as handle:
+            src = handle.read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "op_assist")
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Assign)
+                    and isinstance(node.value, ast.Call)
+                    and getattr(node.value.func, "id", "") == "_clarify_edit"):
+                target = node.targets[0]
+                self.assertIsInstance(
+                    target, ast.Tuple,
+                    "op_assist takes the rewrite and drops the reason again")
+                self.assertIn("why", [e.id for e in target.elts])
+                break
+        else:
+            self.fail("op_assist no longer calls _clarify_edit")
+        body = ast.get_source_segment(src, fn) or ""
+        edit_branch = body[:body.index("Writing the prompt")]
+        self.assertIn("rewrite_rejected", edit_branch)
+        self.assertIn("rejected_because", edit_branch)
+
+
+class CaptionScripts(unittest.TestCase):
+    """Captions that are not Latin were lettered as rows of empty boxes.
+
+    `_CAPTION_FONTS` holds four Latin faces, and a face with no glyph for a
+    character draws .notdef -- a box the wrap measures as though it were a
+    letter, so nothing downstream could notice. Every Japanese, Chinese,
+    Korean, Arabic, Hebrew and Devanagari caption came out unreadable.
+    """
+
+    SAMPLES = {
+        "Japanese": "ねこが日本語で話した",
+        "Chinese": "中文字体测试",
+        "Korean": "한국어입니다",
+        "Arabic": "مرحبا بالعالم",
+        "Hebrew": "שלום עולם",
+        "Devanagari": "नमस्ते दुनिया",
+    }
+
+    def _glyph(self, font, ch):
+        mask = font.getmask(ch, mode="L")
+        return mask.size, bytes(mask)
+
+    def _boxes(self, font, text):
+        """Characters this face draws as .notdef.
+
+        The reference is a private-use character no font on any Mac maps, so
+        its glyph *is* .notdef; anything that renders identically to it is a
+        box rather than a letter.
+        """
+        notdef = self._glyph(font, "\ue0ff")
+        return [ch for ch in text
+                if not ch.isspace() and self._glyph(font, ch) == notdef]
+
+    def test_the_latin_faces_really_cannot_letter_these(self):
+        """Otherwise the test below proves nothing."""
+        latin = worker._caption_font(19)
+        for name, text in self.SAMPLES.items():
+            self.assertTrue(self._boxes(latin, text),
+                            f"{name} needs no fallback after all")
+
+    def test_every_script_gets_a_face_that_can(self):
+        latin = worker._caption_font(19)
+        for name, text in self.SAMPLES.items():
+            font = worker._lettering(text, 19, latin)
+            self.assertEqual(
+                self._boxes(font, text), [],
+                f"{name} is still lettered as .notdef boxes")
+
+    def test_a_caption_in_two_scripts_finds_one_face_for_both(self):
+        latin = worker._caption_font(19)
+        mixed = "日本語 and 한국어 together"
+        font = worker._lettering(mixed, 19, latin)
+        self.assertEqual(self._boxes(font, mixed), [])
+
+    def test_latin_text_keeps_the_boards_own_face(self):
+        """The common path must not change at all."""
+        latin = worker._caption_font(19)
+        self.assertIs(worker._lettering("She opened the door.", 19, latin),
+                      latin)
+        self.assertIs(worker._lettering("", 19, latin), latin)
+
+    def test_every_listed_face_is_on_this_machine(self):
+        """A list of files that are not there is a list of boxes."""
+        for script, paths in worker._SCRIPT_FONTS.items():
+            self.assertTrue(any(os.path.exists(p) for p in paths),
+                            f"no face for {script} exists here")
+
+    def test_both_renderers_choose_the_face_per_piece_of_lettering(self):
+        import ast
+
+        with open(os.path.join(HERE, "worker.py"), encoding="utf-8") as handle:
+            src = handle.read()
+        tree = ast.parse(src)
+        for name in ("_render_page", "_render_strip"):
+            fn = next(n for n in ast.walk(tree)
+                      if isinstance(n, ast.FunctionDef) and n.name == name)
+            self.assertIn("_lettering", ast.get_source_segment(src, fn) or "",
+                          f"{name} letters everything in one face")
+
+    def test_a_japanese_board_composes(self):
+        from PIL import Image
+
+        panels = [Image.new("RGB", (768, 768), (120, 140, 160))]
+        style = {"width": 836, "margin": 34, "gutter": 18, "size": 19,
+                 "font": worker._caption_font(19),
+                 "small": worker._caption_font(13),
+                 "line_h": 26}
+        meta = {"shots": ["wide"], "captions": ["ねこが日本語で話した"],
+                "dialogue": [[{"text": "おはよう", "speaker": "ミラ"}]],
+                "scenes": [1]}
+        page = worker._render_page(panels, [0], meta, style)
+        self.assertEqual(page.width, 836)
+
+
+class CellTextStaysInItsCell(unittest.TestCase):
+    """Lettering was bounded in width and not in height.
+
+    In a three-panel tier the cell is about 369px wide while the caption box is
+    up to 430 and wraps to as many lines as the words need, and each balloon
+    was placed under the last one with nothing comparing the total to the cell.
+    The caption and balloons covered the whole picture, ran into the tier below,
+    and the second line of dialogue was drawn off the page and lost.
+    """
+
+    CAPTION = ("Marta had spent eleven years in that kitchen and had never "
+               "once, in all that time, thought of it as anything that "
+               "belonged to her, or to anyone she had ever known.")
+    DIALOGUE = [{"text": "Is that you at the door again?", "speaker": "Marta"},
+                {"text": "I have been waiting out here since the rain "
+                         "started, and the bus does not come after nine.",
+                 "speaker": "Jon"}]
+
+    def _style(self, width, size=19):
+        return {"width": width, "margin": 34, "gutter": 18, "size": size,
+                "font": worker._caption_font(size),
+                "small": worker._caption_font(13),
+                "line_h": int(size * 1.4)}
+
+    def _probe(self):
+        from PIL import Image, ImageDraw
+        return ImageDraw.Draw(Image.new("RGB", (8, 8)))
+
+    def _block_height(self, probe, style, cap, dialogue, cell_w, cell_h):
+        """Where the lettering ends, measured the way it is drawn."""
+        size, cap_h, bubbles = worker._cell_text_plan(
+            probe, cap, dialogue, style, cell_w, cell_h)
+        base = worker._text_size(style)
+        body = style["font"] if size == base else worker._caption_font(size)
+        line_h = max(1, int(size * 1.4))
+        bottom = 10 + cap_h + 8 if cap else 16
+        for line in dialogue[:bubbles]:
+            bottom += worker._bubble_height(
+                probe, line["text"], line["speaker"],
+                worker._lettering(line["text"], size, body),
+                worker._bubble_width(cell_w), line_h)
+        return bottom, bubbles
+
+    def test_nothing_is_drawn_below_its_cell(self):
+        probe = self._probe()
+        import itertools
+        captions = ["", "Short.", self.CAPTION]
+        dialogues = [[], self.DIALOGUE[:1], self.DIALOGUE]
+        for width in (700, 836, 1000, 1211, 1240, 1400):
+            style = self._style(width)
+            for shots in (["medium"] * 3, ["medium"] * 2, ["wide"]):
+                for _tier, cell_w, cell_h in worker._page_plan(shots, style)[0]:
+                    for cap, dialogue in itertools.product(captions, dialogues):
+                        bottom, _n = self._block_height(
+                            probe, style, cap, dialogue, cell_w, cell_h)
+                        self.assertLessEqual(
+                            bottom, cell_h,
+                            f"a {cell_w}x{cell_h} cell on a {width}px page "
+                            f"letters {bottom}px of text")
+
+    def test_the_unbounded_arithmetic_overflowed_the_cell(self):
+        """The numbers this replaces, so the test above is not vacuous."""
+        probe = self._probe()
+        reach = {}
+        for width, cell in ((1211, (369, 369)), (836, (244, 244))):
+            style = self._style(width)
+            _tier, cell_w, cell_h = worker._page_plan(["medium"] * 3, style)[0][0]
+            self.assertEqual((cell_w, cell_h), cell,
+                             "expected the three-panel cell this was reported on")
+            line_h = style["line_h"]
+            lines = len(worker._wrap(probe, self.CAPTION, style["font"],
+                                     worker._caption_width(cell_w) - 18))
+            bottom = 10 + lines * line_h + 12 + 8
+            for line in self.DIALOGUE:
+                bottom += worker._bubble_height(
+                    probe, line["text"], line["speaker"], style["font"],
+                    worker._bubble_width(cell_w), line_h)
+            self.assertGreater(bottom, cell_h,
+                               f"a {width}px page's three-panel cell used to "
+                               "letter past its own bottom edge; the case has "
+                               "stopped being one")
+            reach[width] = bottom - cell_h
+        self.assertGreater(reach[836], 18,
+                           "the narrow page used to letter past the gutter and "
+                           "into the tier below")
+
+    def test_the_lettering_keeps_inside_the_cell_sideways_too(self):
+        for cell_w in (198, 244, 369, 562, 1143):
+            self.assertLessEqual(10 + worker._caption_width(cell_w), cell_w)
+            self.assertLessEqual(worker._bubble_width(cell_w), cell_w)
+
+    def test_a_roomy_cell_keeps_the_boards_own_size_and_every_balloon(self):
+        """The common page must be drawn exactly as it was."""
+        probe = self._probe()
+        style = self._style(836)
+        _tier, cell_w, cell_h = worker._page_plan(["wide"], style)[0][0]
+        size, cap_h, bubbles = worker._cell_text_plan(
+            probe, "The rain had not stopped since Tuesday.", self.DIALOGUE,
+            style, cell_w, cell_h)
+        self.assertEqual(size, 19)
+        self.assertEqual(bubbles, 2)
+        self.assertGreater(cap_h, 0)
+
+    def test_a_crowded_cell_letters_smaller_before_it_drops_anything(self):
+        probe = self._probe()
+        style = self._style(1211)
+        _tier, cell_w, cell_h = worker._page_plan(["medium"] * 3, style)[0][0]
+        size, _cap_h, bubbles = worker._cell_text_plan(
+            probe, self.CAPTION, self.DIALOGUE, style, cell_w, cell_h)
+        self.assertLess(size, 19, "a smaller face is the first thing to try")
+        self.assertEqual(bubbles, 2, "both lines of dialogue still fit")
+
+    def test_the_gutter_between_tiers_is_left_as_paper(self):
+        """Rendered, not measured: what spilled was drawn, not computed."""
+        from PIL import Image
+
+        style = self._style(1211)
+        shots = ["medium"] * 6
+        panels = [Image.new("RGB", (768, 768), (120, 140 + i, 160))
+                  for i in range(6)]
+        meta = {"shots": shots,
+                "captions": [self.CAPTION] * 6,
+                "dialogue": [list(self.DIALOGUE)] * 6,
+                "scenes": [1] * 6}
+        page = worker._render_page(panels, list(range(6)), meta, style)
+        plan, _natural = worker._page_plan(shots, style)
+        y = style["margin"]
+        for _tier, _cell_w, cell_h in plan[:-1]:
+            for row in range(y + cell_h + 4, y + cell_h + style["gutter"]):
+                colours = {page.getpixel((x, row)) for x in range(page.width)}
+                self.assertEqual(
+                    colours, {worker.PAGE_GROUND},
+                    f"something was drawn in the gutter at row {row}")
+            y += cell_h + style["gutter"]
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
