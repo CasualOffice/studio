@@ -57,6 +57,13 @@ export default function Gallery({
   const all = items;
   items = items.filter((i) => i.kind !== "mask");
 
+  // What the library holds, before the kind filter and the search box narrow
+  // it down. "The vault is empty" and "nothing matches that" are different
+  // statements, and the empty-vault branch below was answering both: a search
+  // that matched nothing unmounted the grid *and* the search box with it, so
+  // the only way out of the query was to leave the tab and come back.
+  const libraryCount = items.length;
+
   const kinds = Array.from(new Set(items.map((i) => i.kind))).sort();
   if (kindFilter !== "all") items = items.filter((i) => i.kind === kindFilter);
   if (query.trim()) {
@@ -189,7 +196,7 @@ export default function Gallery({
     );
   };
 
-  if (items.length === 0) {
+  if (libraryCount === 0) {
     return (
       <div className="empty-state">
         <span className="big">▦</span>

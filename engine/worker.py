@@ -685,6 +685,26 @@ def _load_model(req_id: str, model: str, quantize: int | None,
     emit({"id": req_id, "type": "progress", "phase": "load", "progress": 0.0,
           "message": f"Loading {model}"})
 
+    # The adapters themselves, not just the fact that there are some.
+    #
+    # `has_lora` in `plan_kw` only tells the router to choose a route that can
+    # take an adapter; it is the loader that attaches one. Passing the first
+    # without the second is why picking a style adapter changed nothing on
+    # every unified-route model -- Qwen-Image, Z-Image, FLUX.2, Wan -- while
+    # the log said "adapters: ... @ 1.0" and the cache key change forced a
+    # multi-gigabyte reload to produce the identical image. Only the mflux
+    # route ever built these.
+    #
+    # Required rather than optional on purpose: `resolve_generation_runtime`
+    # has already refused the families that cannot take an adapter, so a route
+    # reaching this point and then rejecting the keyword is a real error. Let
+    # it fail loudly instead of dropping the user's adapter and drawing
+    # something that looks like it worked.
+    adapters: dict[str, Any] = {}
+    if loras:
+        adapters["lora_paths"] = [l["path"] for l in loras]
+        adapters["lora_scales"] = [float(l.get("scale", 1.0)) for l in loras]
+
     t0 = time.time()
     with _downloads_allowed(req_id):
         loaded = call_tolerant(
@@ -695,6 +715,7 @@ def _load_model(req_id: str, model: str, quantize: int | None,
                 "quantize": quantize,
                 "model_path": model_path,
                 "image_count": image_count,
+                **adapters,
                 **plan_kw,
             },
             # Release the text conditioner once the prompt is encoded. On routes
@@ -3233,7 +3254,37 @@ def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     env.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
 
     def run_download(cmd: list[str], environ: dict[str, str]) -> subprocess.CompletedProcess:
-        return subprocess.run(cmd, env=environ, capture_output=True, text=True)
+        """Run the downloader as a child this worker can actually stop.
+
+        This was a plain `subprocess.run`, which blocks until the transfer
+        finishes whatever else happens. The worker acknowledged `{"op":
+        "cancel"}` into `_CANCELLED` and then went on downloading -- on a large
+        model, for another twenty minutes -- and `op_download` returned success
+        at the end of it, so the Models list announced the model was ready
+        after the user had pressed Cancel and watched nothing happen.
+
+        Retrying `communicate` after a timeout is documented as safe and loses
+        no output, so polling costs nothing but the half-second granularity.
+        """
+        proc = subprocess.Popen(
+            cmd, env=environ,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        while True:
+            try:
+                out, err = proc.communicate(timeout=0.5)
+                return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+            except subprocess.TimeoutExpired:
+                if not is_cancelled(req_id):
+                    continue
+                log(req_id, "cancelled; stopping the download", "warn")
+                proc.terminate()
+                try:
+                    proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.communicate()
+                raise Cancelled() from None
 
     def failed_in_transfer(proc: subprocess.CompletedProcess) -> bool:
         """Did this fail in the chunked transfer layer rather than legitimately?
@@ -3313,6 +3364,14 @@ def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     finally:
         stop.set()
         poller.join(timeout=2)
+
+    # The in-process routes below (`snapshot_download` for mflux and hf) cannot
+    # be interrupted partway, so a cancel during one of those is only honoured
+    # here. Either way the answer must not be success: the partial cache stays
+    # on disk because Hugging Face resumes from it, but nothing writes
+    # `.melp-complete` and nothing tells the interface the model is ready.
+    if is_cancelled(req_id):
+        raise Cancelled()
 
     size = measured()
     # A downloader that reports success while fetching nothing must not be

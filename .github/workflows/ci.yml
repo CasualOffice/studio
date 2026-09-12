@@ -37,7 +37,24 @@ jobs:
 
       - name: Tests
         working-directory: src-tauri
-        run: cargo test --lib
+        # Not --lib. That skips every integration target, so the first test
+        # anyone adds under src-tauri/tests/ would never have run here.
+        run: cargo test
+
+      # The examples are compiled by clippy --all-targets and were executed by
+      # nothing, so vault_lifecycle sat broken at its third assertion -- a
+      # non-UUID id that `put` rejects -- with every gate green. That probe is
+      # the only coverage of dedup, orphan recovery, foreign-file
+      # preservation, export, lock/unlock survival and change_passphrase, and
+      # storage_move covers a relocation that deletes the originals once the
+      # copy lands. Both are hermetic: temp directories, no network, no
+      # Keychain. (keychain_probe and setup_probe are deliberately not here --
+      # one touches the real Keychain, the other downloads a Python runtime.)
+      - name: Probes
+        working-directory: src-tauri
+        run: |
+          cargo run --quiet --example vault_lifecycle
+          cargo run --quiet --example storage_move
 
   frontend:
     name: Frontend

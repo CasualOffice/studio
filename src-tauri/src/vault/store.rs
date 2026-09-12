@@ -753,8 +753,13 @@ impl Vault {
                 if known.contains(&name) || name.ends_with(".tmp") {
                     continue;
                 }
+                // Not a blob name at all, so not damaged vault data. `blobs/`
+                // is a directory Finder can reach, and counting a `.DS_Store`
+                // here raised "1 file could not be read" on the Security
+                // screen after every repair -- a data-loss alarm for a file
+                // this vault never wrote. Left on disk, as everything
+                // unrecognised here is, but not reported as ours.
                 if Self::validate_id(&name).is_err() {
-                    unreadable += 1;
                     continue;
                 }
                 let Ok(sealed) = std::fs::read(e.path()) else {

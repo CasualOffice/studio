@@ -66,8 +66,11 @@ fn main() {
         vault.get(&first).unwrap() == b"identical bytes"
     );
 
-    // Simulate a crash between writing a blob and saving the index.
-    let orphan = dir.join("blobs").join("orphaned-blob");
+    // Simulate a crash between writing a blob and saving the index. The name
+    // has to be a real id: `repair` classifies anything that is not a UUID as
+    // "not one of ours" and never tries to open it, so a blob called
+    // "orphaned-blob" could not be recovered no matter what it held.
+    let orphan = dir.join("blobs").join(uuid_like());
     let sealed = v::seal_for_test(&vault, b"\x89PNG\r\n\x1a\nrescued").unwrap();
     std::fs::write(&orphan, sealed).unwrap();
 
@@ -85,7 +88,10 @@ fn main() {
     );
 
     // A file this vault's key cannot open must be left alone, not deleted.
-    let foreign = dir.join("blobs").join("not-ours");
+    // Named like a real blob on purpose: that is what makes `repair` actually
+    // attempt to decrypt it and fail, which is the path under test. A
+    // non-UUID name is rejected before any decryption and tests nothing.
+    let foreign = dir.join("blobs").join(uuid_like());
     std::fs::write(&foreign, b"MSV1 but not really").unwrap();
     let report = vault.repair().unwrap();
     check!(
@@ -150,11 +156,15 @@ fn main() {
     }
 }
 
+/// A real UUID, because the vault requires one.
+///
+/// This used to return `item-<nanos>`, which `Vault::put` rejects outright:
+/// `validate_id` is the first thing it does, and it parses the id as a UUID so
+/// that no id can ever be a path. So this probe panicked on its third check and
+/// the seventeen after it -- dedup, orphan recovery, foreign-file preservation,
+/// export, lock/unlock survival and change_passphrase -- never ran at all.
+/// Nothing executes the examples, so every gate stayed green while the only
+/// coverage of the vault's data-destroying paths was dead.
 fn uuid_like() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let n = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("item-{n}")
+    uuid::Uuid::new_v4().to_string()
 }

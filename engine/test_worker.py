@@ -801,6 +801,47 @@ class Pagination(unittest.TestCase):
         pages = worker._paginate([1] * 17)
         self.assertTrue(all(len(p) <= worker.PAGE_MAX for p in pages), pages)
 
+    def test_never_more_pages_than_panels(self):
+        """The bound the Rust host reserves page slots against.
+
+        `compose_board` reserves one vault slot per panel and refuses to
+        compose if pagination wants more pages than it reserved. It used to
+        reserve `ceil(panels / 3)`, on the reasoning that three panels is the
+        smallest readable page -- but PAGE_MIN only applies when splitting one
+        long scene, and a scene boundary ends a page wherever it falls. Three
+        two-panel scenes make three pages out of six panels, so the reservation
+        came up short and the board was refused on its final step with "ask for
+        that many again", which names no control the interface has.
+
+        Exhaustive over every scene composition up to 12 panels, because the
+        shapes that break it are ordinary ones: prose that changes location
+        often produces short scenes, and nothing renumbers them.
+        """
+        def compositions(n):
+            """Every way to cut n panels into consecutive scene runs."""
+            if n == 0:
+                yield []
+                return
+            for first in range(1, n + 1):
+                for rest in compositions(n - first):
+                    yield [first] + rest
+
+        for n in range(1, 13):
+            for runs in compositions(n):
+                scenes = []
+                for scene, length in enumerate(runs, start=1):
+                    scenes.extend([scene] * length)
+                pages = worker._paginate(scenes)
+                self.assertLessEqual(
+                    len(pages), len(scenes),
+                    f"{len(pages)} pages from {len(scenes)} panels, scenes={scenes}",
+                )
+                # And still a partition: nothing dropped, nothing duplicated.
+                self.assertEqual(
+                    [i for page in pages for i in page], list(range(len(scenes))),
+                    f"pagination is not a partition for scenes={scenes}",
+                )
+
 
 class TileGeometry(unittest.TestCase):
     """Tiles must cover the output canvas exactly.
@@ -1310,6 +1351,98 @@ class VideoLoadArguments(unittest.TestCase):
                               "carry it; pop it from the dict first")
                 checked += 1
         self.assertGreater(checked, 0, "expected op_video's call to be covered")
+
+
+class AdapterLoadArguments(unittest.TestCase):
+    """A chosen style adapter has to reach the loader, not just the router.
+
+    `_load_model` used to take `loras` and spend it on two things: setting
+    `has_lora` for the router, and lengthening the model cache key. Neither
+    attaches an adapter. `lora_paths`/`lora_scales` were built in exactly one
+    place -- the mflux route -- so on every unified-route model (Qwen-Image,
+    Z-Image, FLUX.2, Wan) picking an adapter changed nothing about the picture,
+    while the log announced "adapters: owner/repo:file @ 1.0" and the altered
+    cache key forced a multi-gigabyte reload to produce the identical image.
+
+    Nothing caught it because the existing coverage tests adapter *detection*.
+    This tests what is handed to the loader, which is where the adapter is
+    either applied or lost.
+    """
+
+    def _stub_mlxgen(self, captured):
+        import types
+
+        mod = types.ModuleType("mlxgen")
+
+        class Runtime:
+            def cache_key(self, **_kw):
+                return "stub-cache-key"
+
+        def resolve_generation_runtime(**kw):
+            captured["resolve"] = kw
+            return Runtime()
+
+        def load_generation_model(**kw):
+            captured["load"] = kw
+            return object()
+
+        mod.resolve_generation_runtime = resolve_generation_runtime
+        mod.load_generation_model = load_generation_model
+        return mod
+
+    def _load(self, **extra):
+        import contextlib
+        from unittest import mock
+
+        captured = {}
+        # The real policy call reaches into MLX; the routing decision under
+        # test does not depend on it.
+        previous = worker._POLICY_APPLIED
+        worker._POLICY_APPLIED = True
+        self.addCleanup(setattr, worker, "_POLICY_APPLIED", previous)
+        self.addCleanup(worker.CACHE.unload)
+        # `_downloads_allowed` imports mflux, which imports mlx a second time
+        # into this freshly exec'd copy of the module -- and nanobind aborts the
+        # interpreter on the duplicate type registration. The download gate is
+        # not what is under test.
+        with mock.patch.dict(sys.modules, {"mlxgen": self._stub_mlxgen(captured)}), \
+             mock.patch.object(worker, "_downloads_allowed",
+                               lambda *_a, **_k: contextlib.nullcontext()), \
+             mock.patch.object(worker, "emit", lambda *_a, **_k: None), \
+             mock.patch.object(worker, "log", lambda *_a, **_k: None):
+            worker._load_model("req-adapters", "Qwen/Qwen-Image", 8, None, 0,
+                               family="qwen_image", **extra)
+        return captured
+
+    def test_adapters_are_handed_to_the_loader(self):
+        captured = self._load(
+            loras=[{"path": "owner/repo:style.safetensors", "scale": 0.8}],
+        )
+        self.assertEqual(captured["load"].get("lora_paths"),
+                         ["owner/repo:style.safetensors"])
+        self.assertEqual(captured["load"].get("lora_scales"), [0.8])
+        # Still announced to the router: that is what picks a route able to
+        # take an adapter at all. It is not a substitute for the adapter.
+        self.assertIs(captured["resolve"].get("has_lora"), True)
+
+    def test_several_adapters_keep_their_order_and_strengths(self):
+        captured = self._load(loras=[
+            {"path": "a/one:x.safetensors", "scale": 1.0},
+            {"path": "b/two:y.safetensors", "scale": 0.35},
+        ])
+        self.assertEqual(captured["load"]["lora_paths"],
+                         ["a/one:x.safetensors", "b/two:y.safetensors"])
+        self.assertEqual(captured["load"]["lora_scales"], [1.0, 0.35])
+
+    def test_a_missing_strength_defaults_to_full(self):
+        captured = self._load(loras=[{"path": "a/one:x.safetensors"}])
+        self.assertEqual(captured["load"]["lora_scales"], [1.0])
+
+    def test_no_adapter_keyword_when_none_were_chosen(self):
+        captured = self._load()
+        self.assertNotIn("lora_paths", captured["load"])
+        self.assertNotIn("lora_scales", captured["load"])
+        self.assertNotIn("has_lora", captured["resolve"])
 
 
 class ModuleIntegrity(unittest.TestCase):

@@ -41,6 +41,19 @@ step "cargo clippy --all-targets -- -D warnings   (examples included)"
 step "cargo test"
 (cd src-tauri && cargo test >/dev/null 2>&1) && ok || bad "rust tests"
 
+# The probes compile under clippy --all-targets and used to run nowhere, which
+# is how vault_lifecycle came to panic on its third assertion without anything
+# noticing. They are the only executing coverage of the operations that can
+# lose a user's media.
+step "example probes (vault lifecycle, storage move)"
+if (cd src-tauri \
+    && cargo run --quiet --example vault_lifecycle >/dev/null 2>&1 \
+    && cargo run --quiet --example storage_move >/dev/null 2>&1); then
+  ok
+else
+  bad "example probes"
+fi
+
 step "tsc --noEmit"
 npx tsc --noEmit -p tsconfig.json && ok || bad "typescript"
 

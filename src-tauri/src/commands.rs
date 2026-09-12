@@ -1727,10 +1727,19 @@ pub async fn compose_board(
     }
 
     // A board can run to several pages and the engine decides how many, so
-    // reserve the most it could need -- three panels is the smallest readable
-    // page -- and hand back whatever goes unused.
+    // reserve the most it could need and hand back whatever goes unused.
+    //
+    // One slot per panel. The bound used to be `panels.len() / 3`, on the
+    // reasoning that three panels is the smallest readable page -- but the
+    // engine paginates on scene boundaries, not on a fixed page size, and a
+    // short scene makes a short page. Scenes [1, 2, 2] make two pages from
+    // three panels, and the board was refused with "this board makes 2 pages
+    // but only 1 was reserved": a number the user cannot influence, on the
+    // last step of a job that had already cost them half an hour. Pages
+    // partition the panels and every page holds at least one, so the panel
+    // count is the only bound that cannot be wrong.
     let max_pages = if layout == "page" {
-        panels.len().div_ceil(3).max(1)
+        panels.len().max(1)
     } else {
         1
     };

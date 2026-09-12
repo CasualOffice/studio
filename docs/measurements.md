@@ -256,3 +256,31 @@ Video models also want more canvas than fits. VACE is trained at 832×480,
 Bernini outputs 480p, and TI2V-5B asks for 1280×704 — while the runs that fit
 were measured at 320×192. Running at a quarter of the trained width is its own
 quality problem, and the TI2V result suggests it is the dominant one.
+
+## Picture board panels
+
+FLUX.2 Klein 4-bit, the same prompt and seed, down the reference-conditioned
+edit route the board uses, on a 16 GB M4 with the MLX cache capped at 1 GiB:
+
+| panel | time | peak | result |
+|---|---|---|---|
+| 512x512 | 36s | ~4 GiB | the face came back as a blank shadow |
+| 768x768 | 77s | 9.11 GiB | the face came back as a face |
+| 1024x1024 | 164s | 13.22 GiB | past the 12 GiB budget |
+
+A wide shot of a person at 512 does not have the pixels to put a face in, so
+the panel that establishes who the story follows is the one that fails. The
+board drew at 512 from the beginning. It now offers 768 by default and keeps
+512 as the quick option, because 9.11 GiB is most of what this machine has
+and a run can be refused for want of memory with a browser open.
+
+**References cost time, not memory.** The same 768 panel drawn against both a
+character sheet and a room sheet peaked at the same 9.11 GiB and took 130
+seconds against 77. This is the same shape the video sizes turned out to
+have, and the second time an assumption that references or resolution were a
+memory problem has been wrong.
+
+The character holds. Drawn against a 512 sheet, a wide shot and a close-up
+both came back with the same black bob, red scarf and grey tee, in the same
+style, with the shot type respected -- which is the claim the board rests on
+and had not been checked end to end before.

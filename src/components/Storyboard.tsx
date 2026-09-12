@@ -17,9 +17,35 @@ import { STYLES, panelPrompt, panelReferences, panelSeed, placePrompt,
  * sheet references every panel, and the same style words lead every prompt.
  */
 
-/** Panels are small on purpose: a board is read at a glance, not printed. */
-const PANEL_W = 512;
-const PANEL_H = 512;
+/**
+ * How large each panel is drawn.
+ *
+ * 512 was chosen because a board is read at a glance, and it was wrong.
+ * Measured on FLUX.2 Klein 4-bit, the same prompt and seed down the same
+ * reference-conditioned route:
+ *
+ *     512x512     36s    ~4 GiB    the face came back as a blank shadow
+ *     768x768     77s    9.11 GiB  the face came back as a face
+ *    1024x1024   164s   13.22 GiB  past the 12 GiB budget
+ *
+ * A wide shot of a person at 512 does not have the pixels to put a face in,
+ * so the panel that establishes who we are following is the one that fails.
+ * Twice the time for a panel you can use is not a cost, and 1024 is not
+ * available on this machine at all.
+ *
+ * Memory does not move with the number of references: the same panel drawn
+ * against both a character sheet and a room sheet also peaked at 9.11 GiB,
+ * and took 130 seconds instead of 77. References cost time, not memory --
+ * the same shape the video sizes turned out to have.
+ *
+ * 512 stays on offer because 9.11 GiB is most of what this Mac has: with a
+ * browser open the run can be refused for want of memory, and a smaller panel
+ * you can finish beats a larger one you cannot start.
+ */
+const PANEL_SIZES: [string, number][] = [
+  ["Detailed (768px)", 768],
+  ["Quick (512px)", 512],
+];
 
 type Stage = "idle" | "dividing" | "enriching" | "casting" | "building" | "drawing";
 
@@ -60,6 +86,11 @@ export default function Storyboard({
    * commitment: draw four, look, fix what is wrong, draw four more.
    */
   const [batch, setBatch] = useState(() => loadPref("boardBatch", 4));
+  /** Panel size, remembered. See PANEL_SIZES for what the choice costs. */
+  const [panelPx, setPanelPx] = useState(() => {
+    const saved = loadPref("boardPanelPx", 768);
+    return PANEL_SIZES.some(([, px]) => px === saved) ? saved : 768;
+  });
   /**
    * The id every panel of this board is stamped with.
    *
@@ -180,24 +211,43 @@ export default function Storyboard({
     void (async () => {
       try {
         const draft: Partial<BoardDraft> | null = await loadBoardDraft();
-        if (!live || !draft) return;
-        setStory(typeof draft.story === "string" ? draft.story : "");
-        setCast(draft.cast ?? null);
-        setProjectId(draft.projectId ?? null);
-        setCharacter(typeof draft.character === "string" ? draft.character : "");
-        setPanels(Array.isArray(draft.panels) ? draft.panels : null);
-        setSheet(typeof draft.sheet === "string" ? draft.sheet : null);
-        setDrawn(Array.isArray(draft.drawn) ? draft.drawn : []);
-        setRedraws(Array.isArray(draft.redraws) ? draft.redraws : []);
-        setNotes(draft.notes ?? {});
-        setPages(Array.isArray(draft.pages) ? draft.pages : []);
-        setOwnSheet(Array.isArray(draft.ownSheet) ? draft.ownSheet : []);
-        setPlaceSheets(draft.placeSheets ?? {});
-        setCoverage(draft.coverage ?? null);
+        if (!live) return;
+        if (draft) {
+          setStory(typeof draft.story === "string" ? draft.story : "");
+          setCast(draft.cast ?? null);
+          setProjectId(draft.projectId ?? null);
+          setCharacter(typeof draft.character === "string" ? draft.character : "");
+          setPanels(Array.isArray(draft.panels) ? draft.panels : null);
+          setSheet(typeof draft.sheet === "string" ? draft.sheet : null);
+          setDrawn(Array.isArray(draft.drawn) ? draft.drawn : []);
+          setRedraws(Array.isArray(draft.redraws) ? draft.redraws : []);
+          setNotes(draft.notes ?? {});
+          setPages(Array.isArray(draft.pages) ? draft.pages : []);
+          setOwnSheet(Array.isArray(draft.ownSheet) ? draft.ownSheet : []);
+          setPlaceSheets(draft.placeSheets ?? {});
+          setCoverage(draft.coverage ?? null);
+        }
+        // Arm the autosave only once the restore has actually succeeded. A
+        // draft of `null` counts: that is a good read of a board nobody has
+        // started yet, and a first-time user still needs saving to work.
+        setDraftLoaded(true);
       } catch (e) {
-        if (live) notify(`Could not restore the encrypted Board draft: ${errText(e)}`, true);
-      } finally {
-        if (live) setDraftLoaded(true);
+        // Deliberately leaves the autosave disarmed, and says so.
+        //
+        // This used to be a `finally`, so a failed restore armed the save
+        // effect below with every piece of state at its default -- and 350 ms
+        // later wrote `{story: "", panels: null, notes: {}}` over the stored
+        // draft. A transient read error was enough to destroy the manuscript
+        // and every hand-typed note, and the legacy migration then cleared the
+        // plaintext copies too, so there was nowhere left to recover from.
+        // Losing the session is recoverable; overwriting the only copy is not.
+        if (live) {
+          notify(
+            `Could not restore the encrypted Board draft: ${errText(e)}. `
+            + "Nothing will be saved over it -- reopen the app to try again.",
+            true,
+          );
+        }
       }
     })();
     return () => { live = false; };
@@ -232,6 +282,7 @@ export default function Storyboard({
 
   // These are interface choices, not project content, so they remain prefs.
   useEffect(() => { savePref("boardBatch", batch); }, [batch]);
+  useEffect(() => { savePref("boardPanelPx", panelPx); }, [panelPx]);
   useEffect(() => { savePref("boardStyle", style); }, [style]);
   useEffect(() => { savePref("boardLayout", layout); }, [layout]);
 
@@ -327,6 +378,21 @@ export default function Storyboard({
   const drawnCount = useMemo(
     () => drawn.filter(Boolean).length, [drawn]);
   const remaining = Math.max(0, (panels?.length ?? 0) - drawnCount);
+  /**
+   * How long the next press will take.
+   *
+   * Measured warm on this machine: 36 seconds a panel at 512, 77 at 768. The
+   * first panel of a run also loads the model, which is most of the spread.
+   * The old figure was a flat 0.6-2 minutes regardless of size, written when
+   * every panel was 512.
+   */
+  const estimate = useMemo(() => {
+    const pieces = Math.min(batch, Math.max(1, remaining)) + (ownSheet.length ? 0 : 1);
+    const per = panelPx >= 768 ? 77 : 36;
+    return { low: Math.ceil(pieces * per / 60),
+             high: Math.ceil(pieces * per * 2 / 60) };
+  }, [batch, remaining, ownSheet.length, panelPx]);
+
   /** What a reset would throw away, named so the question can be answered. */
   const atRisk = useMemo(() => {
     const bits: string[] = [];
@@ -421,7 +487,7 @@ export default function Storyboard({
         job_id: castId, model_id: model.id,
         prompt: sheetPrompt(style, castForSheet),
         negative_prompt: null,
-        width: PANEL_W, height: PANEL_H,
+        width: panelPx, height: panelPx,
         steps: model.steps_default || 4,
         guidance: Math.min(1.0, model.guidance_max),
         seed: 7, count: 1, images: [], image_strength: null, i2i_mode: null,
@@ -484,7 +550,7 @@ export default function Storyboard({
           job_id: id, model_id: model.id,
           prompt: placePrompt(style, place),
           negative_prompt: null,
-          width: PANEL_W, height: PANEL_H,
+          width: panelPx, height: panelPx,
           steps: model.steps_default || 4,
           guidance: Math.min(1.0, model.guidance_max),
           seed: 21 + scene, count: 1, images: [], image_strength: null,
@@ -525,7 +591,7 @@ export default function Storyboard({
         job_id: id, model_id: model.id,
         prompt: panelPrompt(panels[i], style, panelWho(panels[i]), notes[i]),
         negative_prompt: null,
-        width: PANEL_W, height: PANEL_H,
+        width: panelPx, height: panelPx,
         steps: model.steps_default || 4,
         guidance: Math.min(1.0, model.guidance_max),
         // Redrawing the same panel with the same seed reproduces the picture
@@ -1096,6 +1162,18 @@ export default function Storyboard({
                 </button>
               </span>
             )}
+            {remaining > 0 && !busy && (
+              <select
+                value={panelPx}
+                onChange={(e) => setPanelPx(Number(e.target.value))}
+                title="How large each panel is drawn"
+                style={{ width: "auto", fontSize: 11, padding: "3px 6px" }}
+              >
+                {PANEL_SIZES.map(([label, px]) => (
+                  <option key={px} value={px}>{label}</option>
+                ))}
+              </select>
+            )}
             {preparedCount === 0 && (
               <button className="btn primary small" disabled={busy}
                       onClick={() => void enrich()}>
@@ -1108,7 +1186,7 @@ export default function Storyboard({
                   : stage === "building" ? "Building the rooms…"
                   : stage === "casting" ? "Casting…"
                   : drawnCount === 0
-                    ? `Draw ${Math.min(batch, remaining)} of ${panels.length} · about ${Math.ceil((Math.min(batch, remaining) + (ownSheet.length ? 0 : 1)) * 0.6)}–${Math.ceil((Math.min(batch, remaining) + (ownSheet.length ? 0 : 1)) * 2)} min`
+                    ? `Draw ${Math.min(batch, remaining)} of ${panels.length} · about ${estimate.low}–${estimate.high} min`
                     : `Draw next ${Math.min(batch, remaining)}`}
               </button>
             )}
