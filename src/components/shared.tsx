@@ -98,17 +98,31 @@ export function ImageDrop({
 
   const add = useCallback(async (paths: string[]) => {
     const next = [...images];
+    let over = 0;
+    const failed: string[] = [];
     for (const p of paths) {
-      if (next.length >= max) break;
+      // Say so rather than dropping them. Five files into a three-image slot
+      // took three and discarded two in silence, which reads as the drop
+      // having half worked for no reason.
+      if (next.length >= max) { over++; continue; }
       try {
         // Importing seals a copy into the vault and returns its id. The file
         // the user picked is left exactly where it was.
         next.push(await api.vaultImport(p, "image"));
       } catch (e) {
-        onError(errText(e));
+        failed.push(errText(e));
       }
     }
     onChange(next);
+    if (failed.length) {
+      // One message, not one per file: a toast per failure shows you the last
+      // one and hides how many there were.
+      onError(failed.length === 1 ? failed[0]
+        : `${failed.length} of ${paths.length} could not be read.`);
+    } else if (over) {
+      onError(`This takes ${max} image${max === 1 ? "" : "s"}; ` +
+              `${over} ${over === 1 ? "was" : "were"} not added.`);
+    }
   }, [images, max, onChange, onError]);
 
   useEffect(() => {
@@ -120,6 +134,12 @@ export function ImageDrop({
       const remove = await getCurrentWebview().onDragDropEvent((event) => {
         const el = ref.current;
         if (!el) return;
+        // Every tab stays mounted, so every drop zone in the app is listening
+        // at once. A hidden one measures as a zero-sized rect at the origin,
+        // which contains the point (0, 0) -- so a drop in the very corner of
+        // the window landed in all of them at the same time.
+        const box = el.getBoundingClientRect();
+        if (box.width === 0 || box.height === 0) return;
         if (event.payload.type === "over") {
           const { x, y } = event.payload.position;
           const r = el.getBoundingClientRect();
@@ -181,7 +201,10 @@ export function ImageDrop({
       <div
         ref={ref}
         className={"dropzone" + (over ? " over" : "")}
-        onClick={pick}
+        // Full means full. It said "Maximum of 3 images" and still opened the
+        // file picker when clicked, so choosing a file there did nothing.
+        onClick={images.length >= max ? undefined : pick}
+        style={images.length >= max ? { cursor: "default" } : undefined}
       >
         {images.length >= max
           ? `Maximum of ${max} image${max === 1 ? "" : "s"}`
