@@ -181,6 +181,38 @@ export default function App() {
 
   const ready = setup?.ready && vault?.unlocked;
 
+  /**
+   * Notice when the runtime becomes usable without being told.
+   *
+   * The setup state is read once when the window opens. A window opened while
+   * the runtime was broken therefore holds "not ready" forever, and the only
+   * way out is to run the install again -- even when the runtime has since
+   * been repaired, or was repaired by hand, or finished in another window.
+   * That is how someone ends up installing the runtime three times and being
+   * shown the same screen after each one.
+   *
+   * So while it is not ready, ask again: on a timer, and whenever the window
+   * comes back to the front. The check is a few filesystem stats, and it stops
+   * the moment the answer changes.
+   */
+  useEffect(() => {
+    if (setup?.ready) return;
+    let live = true;
+    const recheck = async () => {
+      try {
+        const next = await api.setupState();
+        if (live && next.ready) setSetup(next);
+      } catch { /* the host is busy; the next tick will ask again */ }
+    };
+    const t = window.setInterval(recheck, 3000);
+    window.addEventListener("focus", recheck);
+    return () => {
+      live = false;
+      window.clearInterval(t);
+      window.removeEventListener("focus", recheck);
+    };
+  }, [setup?.ready]);
+
   useEffect(() => {
     if (!ready) return;
     void migrateBoardDraft().catch((e) =>
