@@ -134,5 +134,11 @@ export function panelReferences(
   const refs: string[] = [];
   if (panel.character_in_frame && sheet) refs.push(sheet);
   if (place) refs.push(place);
-  return refs.length ? refs : (sheet ? [sheet] : []);
+  // Nothing, when there is nothing that belongs. This used to fall back to the
+  // character sheet so the drawer always had an image to work from, which put
+  // her in every panel she is not in whenever the room failed to draw -- the
+  // one failure this function exists to prevent. A panel with no reference is
+  // drawn from its prompt instead; the style words are in the prompt, so the
+  // board still holds together.
+  return refs;
 }

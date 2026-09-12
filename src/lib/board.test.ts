@@ -191,12 +191,14 @@ describe("panelReferences", () => {
     expect(panelReferences(panel(), "sheet", null)).toEqual(["sheet"]);
   });
 
-  it("never returns nothing when a sheet exists", () => {
-    // A panel with no references is drawn from the prompt alone, which is
-    // exactly the inconsistency this is here to prevent.
+  it("hands nothing to a panel the character is not in", () => {
+    // It used to fall back to the character sheet so the drawer always had an
+    // image. A panel about a running tap, handed her sheet, draws her running
+    // -- and that happens to every such panel as soon as the room fails to
+    // draw. The panel is drawn from its prompt instead.
     const out = panelReferences(
       panel({ character_in_frame: false }), "sheet", null);
-    expect(out).toEqual(["sheet"]);
+    expect(out).toEqual([]);
   });
 });
 

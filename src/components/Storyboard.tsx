@@ -484,8 +484,10 @@ export default function Storyboard({
     const id = newJobId();
     setJobId(id);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
+    const refs = panelReferences(panels[i], sheetId,
+                                 places[panels[i].scene ?? 1] ?? null);
     try {
-      const res = await api.editImage({
+      const params = {
         job_id: id, model_id: model.id,
         prompt: panelPrompt(panels[i], style, panelWho(panels[i]), notes[i]),
         negative_prompt: null,
@@ -496,12 +498,11 @@ export default function Storyboard({
         // that was already rejected, so a redraw moves the seed on.
         seed: panelSeed(i, redrawCount),
         count: 1,
-        images: panelReferences(panels[i], sheetId,
-                                places[panels[i].scene ?? 1] ?? null),
+        images: refs,
         // "edit" is the reference-conditioned route -- the model is handed
         // the sheet and the panel description together. "latent" would
         // instead redraw the sheet itself, which is not what a panel is.
-        image_strength: null, i2i_mode: "edit",
+        image_strength: null, i2i_mode: refs.length ? "edit" : null,
         low_ram: true, preview: false, cache_limit_gb: null,
         allow_over_budget: false, loras: [], mask: null,
         outpaint_padding: null, outpaint_fill: null,
@@ -509,7 +510,14 @@ export default function Storyboard({
         // shows one comic instead of a pile of pictures that happen to share
         // a timestamp. The index keeps them in reading order.
         project: projectId, project_name: projectName, project_index: i,
-      });
+      };
+      // A panel with no reference is a plain drawing. Sending it down the edit
+      // route fails outright -- an edit needs an input image -- which is what
+      // would happen to every panel in a board whose character is not in them
+      // and whose rooms did not draw.
+      const res = refs.length
+        ? await api.editImage(params)
+        : await api.generate(params);
       setDrawn((d) => { const n = [...d]; n[i] = res[0] ?? null; return n; });
       setDone((v) => Math.max(v, i + 1));
       onProduced();
