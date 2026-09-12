@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { api, errText, newJobId, onEngineProgress, vaultUrl } from "../lib/api";
 import type { Cast, EngineProgress, ModelStatus, Panel } from "../lib/types";
 import { ImageDrop, JobProgress } from "./shared";
@@ -110,6 +110,9 @@ export default function Storyboard({
     return first ? (story.trim().length > first.length ? first + "\u2026" : first)
                  : "Picture board";
   }, [story]);
+
+  /** Which panel the notes rail is showing. The board owns the selection. */
+  const [selected, setSelected] = useState(0);
 
   const [stage, setStage] = useState<Stage>("idle");
   const [prog, setProg] = useState<EngineProgress | null>(null);
@@ -532,221 +535,329 @@ export default function Storyboard({
     );
   }
 
+  const sel = panels?.[selected] ?? null;
+
   return (
-    <div className="content split" style={{ padding: 0 }}>
-      <div>
-        <div className="panel">
-          <h2>Picture board</h2>
+    <div style={{ padding: 14 }}>
+      <div className="board-work">
 
-          <div className="field">
-            <label>The story</label>
-            <textarea
-              value={story}
-              rows={7}
-              onChange={(e) => setStory(e.target.value)}
-              placeholder={"Mira comes home and finds the door already open. "
-                + "Nothing is taken, but every photograph has been turned to "
-                + "face the wall."}
-            />
-            <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5 }}>
-              Prose, not prompts. It is divided into panels for you, and nothing
-              is invented that the story does not contain.
-            </div>
-            {/* Reading costs a little of the text model and no picture time,
-                so it is offered the moment there is a story -- rather than the
-                tab sitting inert until you type a character in yourself. */}
-            {story.trim() && !cast && (
-              <button
-                className="btn small"
-                style={{ marginTop: 8 }}
-                disabled={reading || busy}
-                onClick={read}
-              >
-                {reading ? "Reading the story\u2026" : "Read the story"}
-              </button>
-            )}
+        {/* ---- the manuscript: your prose, never rewritten ---- */}
+        <div className="board-pane">
+          <div className="board-pane-head">
+            Manuscript
+            <span className="n">
+              {story.trim() ? `${story.trim().split(/\s+/).length} words` : "empty"}
+            </span>
           </div>
-
-          {cast && (
-            <div className="field">
-              <label>
-                The cast <em>read from your story</em>
-              </label>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {cast.people.map((p) => (
-                  <button
-                    key={p.name}
-                    className="pill"
-                    title={
-                      (p.description || "The story never says what they look like.")
-                      + `  \u00b7 ${p.mentions} mentions`
-                    }
-                    style={{
-                      cursor: "pointer",
-                      opacity: p.tier === 1 ? 1 : p.tier === 2 ? 0.8 : 0.6,
-                    }}
-                    onClick={() => setCharacter(p.description || p.name)}
-                  >
-                    {p.name}
-                  </button>
-                ))}
-                {cast.people.length === 0 && (
-                  <span style={{ fontSize: 11, color: "var(--text-faint)" }}>
-                    No one the story names could be verified in the text.
-                  </span>
-                )}
-              </div>
-              {cast.places.length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-                  {cast.places.map((pl) => (
-                    <span key={pl.name} className="pill" style={{ opacity: 0.7 }}
-                          title={pl.description || "The story never describes it."}>
-                      {pl.name}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 6 }}>
-                Click a name to cast them as the one we follow. Names the story
-                never actually uses are dropped rather than drawn.
-              </div>
-            </div>
-          )}
-
-          <div className="field">
-            <label>Who we follow <em>every panel holds this</em></label>
-            <textarea
-              value={character}
-              rows={3}
-              onChange={(e) => setCharacter(e.target.value)}
-              placeholder="a young woman with short black hair and a red scarf, worn green field jacket"
-            />
-          </div>
-
-          <div className="field">
-            <label>
-              Or bring your own <em>optional</em>
-            </label>
-            <ImageDrop
-              images={ownSheet}
-              onChange={setOwnSheet}
-              max={1}
-              onError={(m) => notify(m, true)}
-            />
-            <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5,
-                          lineHeight: 1.55 }}>
-              {ownSheet.length > 0
-                ? "Every panel is drawn against this picture. No character sheet "
-                  + "is generated, so the board starts a minute sooner."
-                : "A picture of the character — a photo, a drawing, a sheet from "
-                  + "an earlier board. It anchors them better than words can."}
-            </div>
-          </div>
-
-          <div className="field">
-            <label>Style</label>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {STYLES.map(({ id, label }) => (
-                <button
-                  key={id}
-                  className={"btn small" + (id === style ? " primary" : "")}
-                  disabled={busy}
-                  onClick={() => setStyle(id)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* No slider. The number of panels is whatever the story turns out
-              to need, worked out by dividing it into beats, and reported after
-              the fact. A count chosen before the story is read is a guess --
-              and a slider capped at twelve is why a whole chapter came back as
-              twelve panels no matter what was in it. */}
-          {panels && (
-            <div className="field">
-              <label>Panels</label>
-              <div style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.6 }}>
-                <b style={{ color: "var(--text)" }}>{panels.length}</b>
-                {" panels, from "}
-                <b style={{ color: "var(--text)" }}>{scenes.length}</b>
-                {scenes.length === 1 ? " scene" : " scenes"}
-              </div>
-            </div>
-          )}
-
-          <div className="field">
-            <label>Model</label>
-            <select value={model?.id ?? ""} disabled={busy}
-                    onChange={(e) => setModelId(e.target.value)}>
-              {usable.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-            </select>
-          </div>
-
-          {!writerReady && (
-            <div className="notice warn" style={{ marginBottom: 12 }}>
-              <strong>Needs the prompt writer</strong>
-              Dividing a story into panels runs on it — a 2.1 GB download in the
-              Models tab. It runs on this Mac; nothing is sent anywhere.
-            </div>
-          )}
-
-          <div style={{ display: "flex", gap: 7 }}>
-            <button
-              className="btn primary small"
-              disabled={busy || !writerReady || !story.trim()}
-              onClick={divide}
-            >
-              {stage === "dividing" ? "Dividing…" : "Break into panels"}
-            </button>
-            {panels && (
-              <button className="btn small" disabled={busy} onClick={() => void enrich()}>
-                {stage === "enriching" ? "Working up…" : "Add detail"}
-              </button>
-            )}
-            {panels && remaining > 0 && (
+          <div className="inner">
+            {!panels ? (
               <>
-                {/* How much you are committing to, before you commit. The
-                    button carries its own cost, so a wrong style costs one
-                    batch to discover instead of the whole board. */}
-                {!busy && (
-                  <span className="stepper" title="Panels per press">
-                    <button type="button"
-                            onClick={() => setBatch((n) => Math.max(1, n - 1))}>
-                      &minus;
-                    </button>
-                    <span>{Math.min(batch, remaining)} at a time</span>
-                    <button type="button"
-                            onClick={() => setBatch((n) => Math.min(24, n + 1))}>
-                      +
-                    </button>
+                <textarea
+                  value={story}
+                  rows={14}
+                  disabled={busy}
+                  onChange={(e) => setStory(e.target.value)}
+                  placeholder={"Mira comes home and finds the door already open. "
+                    + "Nothing is taken, but every photograph has been turned to "
+                    + "face the wall."}
+                />
+                <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 6,
+                              lineHeight: 1.55 }}>
+                  Prose, not prompts. It is divided into panels for you, and
+                  nothing is invented that the story does not contain.
+                </div>
+              </>
+            ) : (
+              <div className="ms-prose">
+                {/* Divided: the prose stays on screen, and the sentences behind
+                    the selected panel are lit. Clicking one selects its panel,
+                    so the story and the board point at each other. */}
+                {panels.map((p, i) => (
+                  <span
+                    key={i}
+                    className={"ms-beat" + (i === selected ? " lit" : "")}
+                    onClick={() => setSelected(i)}
+                  >
+                    {[p.subject, p.action].filter(Boolean).join(", ")
+                      || p.caption || `Panel ${i + 1}`}
                   </span>
-                )}
-                <button className="btn primary small" disabled={busy} onClick={draw}>
-                  {stage === "drawing"
-                    ? `Drawing ${done}/${panels.length}\u2026`
-                    : stage === "building" ? "Building the rooms\u2026"
-                    : stage === "casting" ? "Casting\u2026"
-                    : drawnCount === 0
-                      ? `Draw ${Math.min(batch, remaining)} of ${panels.length}`
-                      : `Draw next ${Math.min(batch, remaining)}`}
+                ))}
+                <button className="btn small" style={{ marginTop: 8 }} disabled={busy}
+                        onClick={() => { setPanels(null); setDrawn([]); }}>
+                  Back to the prose
                 </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ---- the board: the only place panels exist ---- */}
+        <div className="board-pane">
+          <div className="board-pane-head">
+            Board
+            <span className="n">
+              {panels ? `${drawnCount}/${panels.length} drawn · ${scenes.length} scenes`
+                      : "nothing yet"}
+            </span>
+          </div>
+          <div className="inner">
+            {!panels ? (
+              <div style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.7 }}>
+                Paste a story on the left, then divide it. The number of panels
+                is worked out from the story's own beats — there is no number to
+                choose, because a number chosen before the story is read is a
+                guess.
+              </div>
+            ) : (
+              <div className="board-cards">
+                {panels.map((p, i) => (
+                  <Fragment key={i}>
+                    {(i === 0 || panels[i - 1].scene !== p.scene) && (
+                      <div className="board-scene">
+                        {p.scene_title || `Scene ${p.scene ?? 1}`}
+                      </div>
+                    )}
+                    <button
+                      className="board-card"
+                      aria-current={i === selected ? "true" : "false"}
+                      onClick={() => setSelected(i)}
+                    >
+                      <span className="shot">
+                        {drawn[i]
+                          ? <img src={vaultUrl(drawn[i]!)} alt={`Panel ${i + 1}`} />
+                          : stage === "drawing" && done === i ? "drawing…" : "—"}
+                        <span className="n">{String(i + 1).padStart(2, "0")}</span>
+                      </span>
+                      <span className="cap">
+                        <b>{p.shot}</b>
+                        {(p.caption || p.action || p.subject || "").slice(0, 54)}
+                      </span>
+                    </button>
+                  </Fragment>
+                ))}
+              </div>
+            )}
+
+            {pages.length > 0 && (
+              <div style={{ marginTop: 18 }}>
+                <div className="sub-head">
+                  {pages.length === 1 ? "The page" : `${pages.length} pages`}
+                </div>
+                {pages.map((id, i) => (
+                  <img key={id} src={vaultUrl(id)} alt={`Page ${i + 1}`}
+                       style={{ width: "100%", borderRadius: 6, marginBottom: 10 }} />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ---- notes: what produced the selected panel, and how to correct it ---- */}
+        <div className="board-pane">
+          <div className="board-pane-head">
+            Notes
+            <span className="n">{panels ? `Panel ${selected + 1}` : "settings"}</span>
+          </div>
+          <div className="inner">
+            {!panels || !sel ? (
+              <>
+                <div className="field">
+                  <label>Who we follow <em>every panel holds this</em></label>
+                  <textarea
+                    value={character}
+                    rows={3}
+                    disabled={busy}
+                    onChange={(e) => setCharacter(e.target.value)}
+                    placeholder="a young woman with short black hair and a red scarf"
+                  />
+                </div>
+                <div className="field">
+                  <label>Or bring a picture of them</label>
+                  <ImageDrop images={ownSheet} onChange={setOwnSheet} max={1}
+                             onError={(m) => notify(m, true)} />
+                </div>
+                <div className="field">
+                  <label>Style</label>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                    {STYLES.map(({ id, label }) => (
+                      <button key={id} className={"pill" + (style === id ? " installed" : "")}
+                              style={{ cursor: "pointer" }}
+                              onClick={() => setStyle(id)}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="field">
+                  <label>Model</label>
+                  <select value={model?.id ?? ""} disabled={busy}
+                          onChange={(e) => setModelId(e.target.value)}>
+                    {usable.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="field">
+                  <label>Shot</label>
+                  <select value={sel.shot} disabled={busy}
+                          onChange={(e) => edit(selected, { shot: e.target.value as Panel["shot"] })}>
+                    <option value="wide">wide</option>
+                    <option value="medium">medium</option>
+                    <option value="close-up">close-up</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label style={{ display: "flex", alignItems: "center", gap: 6,
+                                  cursor: "pointer" }}>
+                    <input type="checkbox" checked={sel.character_in_frame} disabled={busy}
+                           style={{ width: "auto", margin: 0 }}
+                           onChange={(e) => edit(selected, { character_in_frame: e.target.checked })} />
+                    the one we follow is in this frame
+                  </label>
+                </div>
+                <div className="field">
+                  <label>Subject</label>
+                  <input type="text" value={sel.subject} disabled={busy}
+                         onChange={(e) => edit(selected, { subject: e.target.value })} />
+                </div>
+                <div className="field">
+                  <label>Action</label>
+                  <input type="text" value={sel.action} disabled={busy}
+                         onChange={(e) => edit(selected, { action: e.target.value })} />
+                </div>
+                <div className="field">
+                  <label>Setting</label>
+                  <input type="text" value={sel.setting} disabled={busy}
+                         onChange={(e) => edit(selected, { setting: e.target.value })} />
+                </div>
+                <div className="field">
+                  <label>Caption <em>what the picture cannot say</em></label>
+                  <input type="text" value={sel.caption} disabled={busy}
+                         onChange={(e) => edit(selected, { caption: e.target.value })} />
+                </div>
+                <div className="field">
+                  <label>The brief <em>the exact words asked for</em></label>
+                  <div style={{ fontSize: 11, lineHeight: 1.6, color: "var(--text-dim)",
+                                background: "var(--bg-sunk)", borderRadius: 5,
+                                padding: "7px 9px", userSelect: "text" }}>
+                    {panelPrompt(sel, style, who, notes[selected])}
+                  </div>
+                </div>
+                {drawn[selected] && (
+                  <div className="field">
+                    <label>Your note <em>redraws just this frame</em></label>
+                    <input
+                      type="text"
+                      value={notes[selected] ?? ""}
+                      disabled={busy}
+                      placeholder="older, grey at the temples"
+                      style={{ borderStyle: notes[selected]?.trim() ? "solid" : "dashed" }}
+                      onChange={(e) =>
+                        setNotes((n) => ({ ...n, [selected]: e.target.value }))}
+                    />
+                    <button className="btn small full" style={{ marginTop: 6 }}
+                            disabled={busy} onClick={() => void redraw(selected)}>
+                      {notes[selected]?.trim() ? "Redraw with note" : "Redraw this panel"}
+                    </button>
+                  </div>
+                )}
               </>
             )}
-            {panels && remaining === 0 && drawnCount > 0 && !busy && (
+          </div>
+        </div>
+      </div>
+
+      {/* ---- the cast, along the bottom: it belongs to the whole board ---- */}
+      {cast && (cast.people.length > 0 || cast.places.length > 0) && (
+        <div className="board-shelf">
+          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".13em",
+                         textTransform: "uppercase", color: "var(--text-faint)" }}>
+            Cast
+          </span>
+          {cast.people.map((p) => (
+            <button key={p.name} className="pill" style={{ cursor: "pointer",
+                     opacity: p.tier === 1 ? 1 : p.tier === 2 ? 0.8 : 0.62 }}
+                    title={(p.description || "The story never says what they look like.")
+                           + ` · ${p.mentions} mentions`}
+                    onClick={() => setCharacter(p.description || p.name)}>
+              {p.name}
+            </button>
+          ))}
+          {cast.places.length > 0 && <span className="divider" />}
+          {cast.places.map((pl) => (
+            <span key={pl.name} className="pill" style={{ opacity: 0.62 }}
+                  title={pl.description || "The story never describes it."}>
+              {pl.name}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* ---- the run bar: what it costs, said before you commit ---- */}
+      <div className="board-run">
+        {!panels ? (
+          <>
+            {story.trim() && !cast && writerReady && (
+              <button className="btn small" disabled={reading || busy} onClick={read}>
+                {reading ? "Reading the story…" : "Read the story"}
+              </button>
+            )}
+            <button className="btn primary small"
+                    disabled={busy || !story.trim() || !writerReady}
+                    onClick={divide}>
+              {stage === "dividing" ? "Dividing…" : "Divide into panels"}
+            </button>
+            {!writerReady && (
+              // Reading and dividing are both the writer's work. Saying so here
+              // beats a failure after the press.
+              <span style={{ fontSize: 10.5, color: "var(--warn)" }}>
+                Needs the prompt writer — add it from the Models tab.
+              </span>
+            )}
+          </>
+        ) : (
+          <>
+            <span style={{ fontSize: 11.5, color: "var(--text-dim)",
+                           fontVariantNumeric: "tabular-nums" }}>
+              <b style={{ color: "var(--text)" }}>{drawnCount}</b> of {panels.length} drawn
+            </span>
+            {remaining > 0 && !busy && (
+              <span className="stepper" title="Panels per press">
+                <button type="button" onClick={() => setBatch((n) => Math.max(1, n - 1))}>
+                  &minus;
+                </button>
+                <span>{Math.min(batch, remaining)} at a time</span>
+                <button type="button" onClick={() => setBatch((n) => Math.min(24, n + 1))}>
+                  +
+                </button>
+              </span>
+            )}
+            {remaining > 0 && (
+              <button className="btn primary small" disabled={busy} onClick={draw}>
+                {stage === "drawing" ? `Drawing ${done}/${panels.length}…`
+                  : stage === "building" ? "Building the rooms…"
+                  : stage === "casting" ? "Casting…"
+                  : drawnCount === 0
+                    ? `Draw ${Math.min(batch, remaining)} of ${panels.length} · about ${Math.ceil((Math.min(batch, remaining) + (ownSheet.length ? 0 : 1)) * 0.6)}–${Math.ceil((Math.min(batch, remaining) + (ownSheet.length ? 0 : 1)) * 2)} min`
+                    : `Draw next ${Math.min(batch, remaining)}`}
+              </button>
+            )}
+            {remaining === 0 && !busy && (
               <span style={{ fontSize: 11, color: "var(--good)" }}>
                 All {panels.length} drawn
               </span>
             )}
+            {!busy && (
+              <button className="btn small" disabled={busy} onClick={() => void enrich()}>
+                Work up the scenes
+              </button>
+            )}
             {busy && <button className="btn small" onClick={cancel}>Cancel</button>}
-            {!busy && panels && drawn.some(Boolean) && (
+            {!busy && drawn.some(Boolean) && (
               <>
-                <select
-                  value={layout}
-                  style={{ width: "auto", fontSize: 11, padding: "2px 6px" }}
-                  onChange={(e) => setLayout(e.target.value)}
-                >
+                <select value={layout} style={{ width: "auto", fontSize: 11, padding: "2px 6px" }}
+                        onChange={(e) => setLayout(e.target.value)}>
                   <option value="page">Page</option>
                   <option value="strip">Scrolling strip</option>
                 </select>
@@ -755,217 +866,25 @@ export default function Storyboard({
                 </button>
               </>
             )}
-          </div>
+          </>
+        )}
+        <div style={{ flex: 1 }} />
+        {elapsed > 0 && busy && (
+          <span style={{ fontSize: 10.5, color: "var(--text-faint)",
+                         fontVariantNumeric: "tabular-nums" }}>
+            {Math.floor(elapsed / 60)}m {elapsed % 60}s
+          </span>
+        )}
+      </div>
 
-          {prog && <JobProgress p={prog} label={
+      {prog && (
+        <div style={{ marginTop: 8 }}>
+          <JobProgress p={prog} label={
             stage === "dividing" ? "Dividing the story"
               : stage === "casting" ? "Casting the character"
-              : `Panel ${done + 1} of ${panels?.length ?? 0}`} />}
-        {panels && !busy && drawnCount > 0 && remaining > 0 && (
-          <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 8 }}>
-            <b style={{ color: "var(--text)" }}>{drawnCount}</b> of {panels.length} drawn.
-            {" "}Look at them before drawing more \u2014 a note on a wrong panel
-            costs one redraw, and a wrong style caught now costs one batch.
-          </div>
-        )}
-
-          {panels && stage === "idle" && drawn.every((d) => !d) && (
-            <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 9,
-                          lineHeight: 1.55 }}>
-              Expect roughly {Math.ceil((Math.min(batch, remaining) + (ownSheet.length ? 0 : 1)) * 0.6)}–
-              {Math.ceil((Math.min(batch, remaining) + (ownSheet.length ? 0 : 1)) * 2)} minutes for
-              {" "}{Math.min(batch, remaining)} of {panels.length} panels{ownSheet.length ? "" : " and the character sheet"}. The range is
-              wide because this Mac slows as it warms: measured panels ran 34
-              seconds cold and 123 seconds after a few minutes of work.
-            </div>
-          )}
-          {stage === "drawing" && elapsed > 0 && (
-            <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 9 }}>
-              {Math.floor(elapsed / 60)}m {elapsed % 60}s elapsed
-              {done > 0 && ` · ${Math.round(elapsed / done)}s a panel so far`}
-            </div>
-          )}
+              : `Panel ${done + 1} of ${panels?.length ?? 0}`} />
         </div>
-      </div>
-
-      <div>
-        {panels && (
-          <div className="panel">
-            <h2>{panels.length} panels</h2>
-            <div style={{ fontSize: 10.5, color: "var(--text-faint)",
-                          marginBottom: 11, lineHeight: 1.55 }}>
-              Edit anything here before drawing. Fixing a panel now costs
-              nothing; fixing it afterwards costs a minute of drawing.
-            </div>
-            {panels.map((p, i) => (
-              <div key={`g${i}`}>
-              {(p.place ?? "").trim()
-                && (i === 0 || panels[i - 1].scene !== p.scene) && (
-                <div style={{ fontSize: 10.5, color: "var(--text-dim)",
-                              background: "var(--bg-sunk)", borderRadius: 5,
-                              padding: "7px 9px", margin: "4px 0 10px",
-                              lineHeight: 1.5 }}>
-                  <b>{p.scene_title || `Scene ${p.scene ?? 1}`}</b> — every
-                  panel here is drawn in this place:
-                  <div style={{ marginTop: 3 }}>{p.place}</div>
-                </div>
-              )}
-              <div style={{ display: "flex", gap: 11, marginBottom: 15,
-                            alignItems: "flex-start" }}>
-                <div style={{
-                  width: 92, height: 92, flex: "0 0 92px", borderRadius: 6,
-                  background: "var(--bg-sunk)", overflow: "hidden",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 10.5, color: "var(--text-faint)",
-                }}>
-                  {drawn[i]
-                    ? <img src={vaultUrl(drawn[i]!)} alt={`Panel ${i + 1}`}
-                           style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                    : stage === "drawing" && done === i ? "drawing…" : i + 1}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", gap: 5, alignItems: "center",
-                                marginBottom: 4 }}>
-                    <select
-                      value={p.shot}
-                      disabled={busy}
-                      style={{ width: "auto", fontSize: 11, padding: "2px 5px" }}
-                      onChange={(e) => edit(i, { shot: e.target.value as Panel["shot"] })}
-                    >
-                      <option value="wide">wide</option>
-                      <option value="medium">medium</option>
-                      <option value="close-up">close-up</option>
-                    </select>
-                    <label style={{ fontSize: 10.5, color: "var(--text-dim)",
-                                    display: "flex", alignItems: "center", gap: 4,
-                                    cursor: "pointer", width: "auto" }}>
-                      <input
-                        type="checkbox"
-                        checked={p.character_in_frame}
-                        disabled={busy}
-                        style={{ width: "auto", margin: 0 }}
-                        onChange={(e) => edit(i, { character_in_frame: e.target.checked })}
-                      />
-                      in frame
-                    </label>
-                    <div style={{ flex: 1 }} />
-                    {drawn[i] && (
-                      <button className="btn small" disabled={busy}
-                              style={{ fontSize: 10.5, padding: "2px 8px" }}
-                              onClick={() => void redraw(i)}>
-                        {notes[i]?.trim() ? "Redraw with note" : "Redraw"}
-                      </button>
-                    )}
-                  </div>
-                  {/* The repair for a wrong frame. A sentence about what is
-                      wrong beats another roll of the dice, and it stays with
-                      the panel so later redraws keep the correction. */}
-                  {drawn[i] && (
-                    <input
-                      type="text"
-                      value={notes[i] ?? ""}
-                      disabled={busy}
-                      placeholder="what is wrong with this one — older, grey at the temples"
-                      style={{
-                        fontSize: 12, padding: "4px 6px", marginBottom: 3,
-                        borderStyle: notes[i]?.trim() ? "solid" : "dashed",
-                      }}
-                      onChange={(e) =>
-                        setNotes((n) => ({ ...n, [i]: e.target.value }))}
-                    />
-                  )}
-                  <input
-                    type="text" value={p.subject} disabled={busy}
-                    placeholder="who or what is in frame"
-                    style={{ fontSize: 12, padding: "4px 6px", marginBottom: 3 }}
-                    onChange={(e) => edit(i, { subject: e.target.value })}
-                  />
-                  <input
-                    type="text" value={p.action} disabled={busy}
-                    placeholder="what is happening"
-                    style={{ fontSize: 12, padding: "4px 6px", marginBottom: 3 }}
-                    onChange={(e) => edit(i, { action: e.target.value })}
-                  />
-                  <input
-                    type="text" value={p.setting} disabled={busy}
-                    placeholder="where"
-                    style={{ fontSize: 12, padding: "4px 6px", marginBottom: 3 }}
-                    onChange={(e) => edit(i, { setting: e.target.value })}
-                  />
-                  <input
-                    type="text" value={p.caption} disabled={busy}
-                    placeholder="caption — what the picture cannot say"
-                    style={{ fontSize: 12, padding: "4px 6px",
-                             fontStyle: p.caption ? "italic" : "normal" }}
-                    onChange={(e) => edit(i, { caption: e.target.value })}
-                  />
-                  <input
-                    type="text"
-                    value={(p.dialogue ?? []).map(
-                      (d) => (d.speaker ? `${d.speaker}: ` : "") + d.text).join(" / ")}
-                    disabled={busy}
-                    placeholder="dialogue — Name: what they say"
-                    style={{ fontSize: 12, padding: "4px 6px", marginTop: 3 }}
-                    onChange={(e) => edit(i, {
-                      // "Name: line / Name: line" is quicker to correct than
-                      // a pair of fields per speaker, and matches how the
-                      // writer returns it.
-                      dialogue: e.target.value.split("/").map((raw) => {
-                        const [a, ...rest] = raw.split(":");
-                        return rest.length
-                          ? { speaker: a.trim(), text: rest.join(":").trim() }
-                          : { speaker: "", text: a.trim() };
-                      }).filter((d) => d.text),
-                    })}
-                  />
-                  {(p.description ?? "").trim() && (
-                    <textarea
-                      value={p.description} disabled={busy} rows={3}
-                      style={{ fontSize: 11.5, padding: "5px 6px", marginTop: 3,
-                               color: "var(--text-dim)" }}
-                      onChange={(e) => edit(i, { description: e.target.value })}
-                    />
-                  )}
-                </div>
-              </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {pages.length > 0 && (
-          <div className="panel">
-            <h2>{pages.length === 1 ? "The page" : `${pages.length} pages`}</h2>
-            {pages.map((id, i) => (
-              <div key={id} style={{ marginBottom: 14 }}>
-                {pages.length > 1 && (
-                  <div style={{ fontSize: 10.5, color: "var(--text-faint)",
-                                marginBottom: 4 }}>
-                    Page {i + 1} of {pages.length}
-                  </div>
-                )}
-                <img src={vaultUrl(id)} alt={`Page ${i + 1}`}
-                     style={{ width: "100%", borderRadius: 6 }} />
-              </div>
-            ))}
-            <div style={{ fontSize: 10.5, color: "var(--text-faint)" }}>
-              Sealed in the Vault like anything else. Export them from there.
-            </div>
-          </div>
-        )}
-
-        {sheet && (
-          <div className="panel">
-            <h2>Character sheet</h2>
-            <img src={vaultUrl(sheet)} alt="Character sheet"
-                 style={{ width: "100%", borderRadius: 6 }} />
-            <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 6 }}>
-              Every panel is drawn against this, which is what keeps the same
-              person on the page from one shot to the next.
-            </div>
-          </div>
-        )}
-      </div>
+      )}
     </div>
   );
 }

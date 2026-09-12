@@ -397,3 +397,123 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   text-transform: uppercase; color: var(--text-faint);
   margin: 0 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
 }
+
+/* ---------------------------------------------------------------------------
+   The board workspace.
+
+   Three panes that scroll independently inside one frame that does not: the
+   prose on the left, the panels in the middle, and what produced the selected
+   panel on the right. The point is that the story and the pictures are on
+   screen at the same time — you are comparing them constantly, and a layout
+   that makes you scroll from one to the other makes that comparison cost
+   something. The cast sits along the bottom because it belongs to the whole
+   board, not to any one panel.
+--------------------------------------------------------------------------- */
+.board-work {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(340px, 1.8fr) minmax(230px, 0.95fr);
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  height: calc(100vh - 230px);
+  min-height: 420px;
+}
+.board-pane {
+  background: var(--bg-raised);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0;
+  min-width: 0;
+}
+.board-pane > .inner { padding: 13px 14px 26px; }
+.board-pane-head {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 14px 8px;
+  font-size: 10px; font-weight: 700; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--text-faint);
+  display: flex; align-items: center; gap: 8px;
+}
+.board-pane-head .n {
+  margin-left: auto; letter-spacing: 0; text-transform: none;
+  font-weight: 500; font-variant-numeric: tabular-nums;
+}
+
+/* The manuscript: the prose, never rewritten, with the selected panel's
+   sentences lit. */
+.ms-prose { font-size: 13px; line-height: 1.75; color: var(--text-dim); }
+.ms-beat {
+  display: block; border-left: 2px solid transparent;
+  padding: 2px 0 2px 9px; margin: 0 0 9px -11px;
+  cursor: pointer; transition: background .12s, border-color .12s;
+}
+.ms-beat:hover { border-left-color: var(--border-strong); }
+.ms-beat.lit {
+  background: rgba(124, 140, 255, .10);
+  border-left-color: var(--accent);
+  color: var(--text);
+}
+
+/* The board: image-first cards. */
+.board-cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 9px;
+}
+.board-card {
+  position: relative; text-align: left; padding: 0; font: inherit;
+  color: inherit; cursor: pointer; background: var(--bg-sunk);
+  border: 1px solid var(--border); border-radius: 7px; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.board-card:hover { border-color: var(--border-strong); }
+.board-card[aria-current="true"] {
+  border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent);
+}
+.board-card .shot {
+  aspect-ratio: 4 / 3; background: var(--bg-sunk); position: relative;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: var(--text-faint);
+}
+.board-card .shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.board-card .n {
+  position: absolute; left: 5px; top: 5px;
+  font-size: 9.5px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: #fff; background: rgba(8,10,14,.62); padding: 2px 5px; border-radius: 3px;
+}
+.board-card .cap {
+  padding: 6px 7px 7px; font-size: 11px; line-height: 1.4;
+  color: var(--text-dim); border-top: 1px solid var(--border);
+}
+.board-card .cap b { display: block; color: var(--text); font-size: 10.5px; }
+.board-scene {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 8px;
+  font-size: 10px; font-weight: 700; letter-spacing: .13em;
+  text-transform: uppercase; color: var(--text-faint); margin: 10px 0 1px;
+}
+.board-scene::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.board-scene:first-child { margin-top: 0; }
+
+/* The cast, along the bottom: it belongs to the board, not to one panel. */
+.board-shelf {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  padding: 9px 12px; margin-top: 10px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.board-shelf .divider {
+  width: 1px; align-self: stretch; background: var(--border); margin: 0 4px;
+}
+.board-run {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  padding: 9px 12px; margin-top: 8px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+
+@media (max-width: 1080px) {
+  .board-work { grid-template-columns: 1fr; height: auto; }
+  .board-pane { max-height: 46vh; }
+}
