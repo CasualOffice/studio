@@ -1157,15 +1157,26 @@ _ATTRIBUTE_HINTS = (
     "ed", "ing", "ish", "less", "en", "y",   # worn, faded, greying, reddish
 )
 
-# How much longer a clarification may reasonably be than the request. Making
-# "a cat" specific costs a few words; producing a paragraph means the model
-# stopped clarifying and started writing its own scene.
-_MAX_EXPANSION = 5
+# How much longer a clarification may reasonably be than the request.
+#
+# These caps were set to stop the model writing its own scene from nothing,
+# and measured against eight ordinary requests they rejected five good
+# rewrites -- "a red car with sun-faded paint and a dented wing, water running
+# down the windows" was thrown away for being too long. A three word request
+# becoming twenty-five words is not the model overreaching, it is the entire
+# reason someone pressed the button.
+#
+# The case they were guarding against is now caught earlier and better: a
+# request that names nothing returns UNCLEAR before any of this runs, and the
+# retention check below still guarantees nothing the user asked for is lost.
+# So these are loose, and retention does the real work.
+_MAX_EXPANSION = 14
 
-# How many more things a clarification may name than the request did. Giving a
-# subject a hat and a cap is clarification; giving it a book, a window, a rug
-# and a fireplace is a different picture.
-_MAX_NEW_THINGS = 4
+# How many more things a clarification may name than the request did. Enough
+# that a bowl of ramen may have its broth, noodles, egg and nori -- which was
+# rejected outright before -- while a request that comes back naming a dozen
+# unrelated objects is still refused.
+_MAX_NEW_THINGS = 12
 
 
 # Endings English adds to a word that is still the same word. Ordered longest
@@ -1188,6 +1199,38 @@ def _stem(word: str) -> str:
             break
     # "carries" -> "carri" -> "carry" territory: normalise the trailing i.
     return w[:-1] + "y" if w.endswith("i") else w
+
+
+# Why a rewrite was not offered, in words a person can act on. The reason
+# matters: "your prompt was already fine" and "I wrote something worse than
+# yours" are different facts, and reporting the first when the second is true
+# is what makes this feature look like it does nothing.
+_WHY_REJECTED = {
+    "dropped": "The rewrite lost something you asked for, so it was not used.",
+    "lost_intent": "The rewrite drifted away from what you asked for.",
+    "too_long": "The rewrite invented far more than you described.",
+    "rejected": "The rewrite added things you did not ask for.",
+    "empty": "The writer returned nothing usable.",
+}
+
+
+def _added_words(original: str, improved: str) -> list[str]:
+    """Significant words the rewrite introduced.
+
+    Shown so a proposal can be read at a glance instead of diffed by eye. Only
+    words that carry content -- the point is to answer "what did it add?",
+    which is the first thing anyone asks of a suggestion.
+    """
+    had = {_stem(w) for w in _significant(original)}
+    seen: set[str] = set()
+    out: list[str] = []
+    for w in _significant(improved):
+        st = _stem(w)
+        if st in had or st in seen:
+            continue
+        seen.add(st)
+        out.append(w)
+    return out
 
 
 def _first_line(raw: str) -> str:
@@ -1312,7 +1355,7 @@ def _clarified_with_reason(original: str, raw: str) -> tuple[str | None, str]:
     # The floor matters as much as the ratio: "a teapot" is one significant
     # word, and naming its glaze, its spout and its wear is a legitimate
     # clarification that a ratio alone would reject.
-    if len(_significant(line)) > max(24, _MAX_EXPANSION * len(_significant(original))):
+    if len(_significant(line)) > max(40, _MAX_EXPANSION * len(_significant(original))):
         return None, "too_long"
 
     # Length alone cannot tell a described teapot from a list of furniture.
@@ -2668,7 +2711,8 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                     return {
                         "prompt": original_prompt, "original": original_prompt,
                         "saw_image": bool(staged) and not blind,
-                        "unclear": True, "description": description,
+                        "unclear": True, "changed": False,
+                        "outcome": "unclear", "description": description,
                         "note": ("This does not say what to draw yet. Name "
                                  "the thing you want and I can make it "
                                  "specific."),
@@ -2690,16 +2734,27 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         if not _keeps_intent(user_prompt, improved):
             log(req_id, f"discarding rewrite {improved!r}: it lost the request", "warn")
             return {"prompt": original_prompt, "original": original_prompt,
-                    "saw_image": bool(staged) and not blind,
-                    "rejected": improved, "description": description}
+                    "saw_image": bool(staged) and not blind, "changed": False,
+                    "outcome": "rewrite_rejected", "rejected_because": "lost_intent",
+                    "attempt": improved,
+                    "note": _WHY_REJECTED["lost_intent"],
+                    "description": description}
     finally:
         # Never `staged`: it may hold a path the caller owns.
         _discard_staged(derived)
         _discard_staged(raw_staged)
 
+    changed = improved.strip() != original_prompt.strip()
     out = {"prompt": improved, "original": original_prompt,
            "saw_image": bool(staged) and not blind, "description": description,
-           "removed": removed, "changed": improved.strip() != original_prompt.strip()}
+           "removed": removed, "changed": changed,
+           # Every reply says which of these happened, so the interface never
+           # has to guess from whether the text came back the same. "Yours was
+           # already fine" and "I tried and the result was worse" look
+           # identical otherwise, and saying the first when the second is true
+           # is why this feature reads as doing nothing.
+           "outcome": "proposal" if changed else "already_specific",
+           "added": _added_words(original_prompt, improved)}
     if blind:
         out["note"] = ("Rewritten from your words only. Install the prompt "
                        "assistant (1.2 GiB) if you want it to look at the "

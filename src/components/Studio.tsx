@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, errDetail, errText, fmtDuration, newJobId, onEnginePreview, onEngineProgress, vaultUrl } from "../lib/api";
-import type { EngineProgress, ModelStatus, Recipe } from "../lib/types";
+import type { AssistResult, EngineProgress, ModelStatus, Recipe } from "../lib/types";
 import { autoPick, estimateSeconds, humanDuration, QUALITY_LABEL, SHAPES, stepsFor, type Quality } from "../lib/presets";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
 import MaskCanvas from "./MaskCanvas";
 import SendTo, { type Destination } from "./SendTo";
+import PromptProposal from "./PromptProposal";
 import Loras from "./Loras";
 import Adjust from "./Adjust";
 import { loadPref, savePref } from "../lib/prefs";
@@ -94,6 +95,8 @@ export default function Studio({
   const [took, setTook] = useState<number | null>(null);
   const [undoPrompt, setUndoPrompt] = useState<string | null>(null);
   const [assistNote, setAssistNote] = useState<string | null>(null);
+  /** What the enhancer suggests, pending your decision. */
+  const [proposal, setProposal] = useState<AssistResult | null>(null);
   const [elapsed, setElapsed] = useState(0);
   // Which model the engine currently holds, so a warm run is not quoted the
   // cold-start penalty.
@@ -165,30 +168,13 @@ export default function Studio({
     setAssisting(true);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
     try {
-      const r = await api.assistPrompt(id, prompt, mode, mode === "edit" ? images : []);
-      if (r.unclear) {
-        // Nothing was drawable in the request, so nothing was changed. Saying
-        // so beats inventing a subject to fill the gap, which is what this
-        // used to do.
-        const note = r.note ?? "Say what you want in the picture first.";
-        setAssistNote(note);
-        notify(note, true);
-        return;
-      }
-      if (r.prompt === prompt) {
-        const note = r.note ?? "Your prompt is already specific enough to leave alone.";
-        setAssistNote(note);
-        notify(note);
-        return;
-      }
-      setUndoPrompt(prompt);
-      setPrompt(r.prompt);
-      setAssistNote(r.removed?.length
-        ? `Removed empty quality labels: ${r.removed.join(", ")}.`
-        : r.note ?? "The rewrite kept every named subject and action.");
-      notify(r.saw_image
-        ? "Tied your request to what is actually in the picture."
-        : "Made your prompt specific. Nothing new was invented.");
+      // Shown, not applied. Overwriting the prompt the moment a rewrite
+      // existed meant you could not see what changed, and the three ways it
+      // could decline -- yours was fine, the rewrite was worse, the request
+      // named nothing -- were reported with one misleading sentence.
+      const r = await api.assistPrompt(
+        id, prompt, mode, mode === "edit" ? images : []);
+      setProposal(r);
     } catch (e) {
       notify(errText(e), true);
     } finally {
@@ -437,6 +423,7 @@ export default function Studio({
               value={prompt}
               onChange={(e) => {
                 setPrompt(e.target.value); setUndoPrompt(null); setAssistNote(null);
+                setProposal(null);
               }}
               placeholder={mode === "edit"
                 ? "make the jacket red"
@@ -457,7 +444,21 @@ export default function Studio({
                   ? "Make this precise using my picture"
                   : "Make my prompt precise"}
             </button>
-            {assistNote && (
+            {proposal && (
+              <PromptProposal
+                result={proposal}
+                busy={assisting}
+                onAccept={(text) => {
+                  setUndoPrompt(prompt);
+                  setPrompt(text);
+                  setProposal(null);
+                  setAssistNote(null);
+                  notify("Prompt updated. Undo is next to the box.");
+                }}
+                onDismiss={() => setProposal(null)}
+              />
+            )}
+            {assistNote && !proposal && (
               <div className="notice" style={{ marginTop: 7 }}>{assistNote}</div>
             )}
             {!assistantReady && (

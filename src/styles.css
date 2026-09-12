@@ -531,3 +531,35 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   .board-work { grid-template-columns: 1fr; height: auto; }
   .board-pane { max-height: 46vh; }
 }
+
+/* ---------------------------------------------------------------------------
+   The prompt enhancer's suggestion, shown before it is applied.
+--------------------------------------------------------------------------- */
+.proposal {
+  margin-top: 8px; padding: 11px 12px; border-radius: var(--radius);
+  border: 1px solid var(--accent); background: var(--bg-raised);
+  font-size: 12px; line-height: 1.55;
+}
+.proposal.warn  { border-color: #4a3d1f; background: rgba(232,180,74,.06); }
+.proposal.plain { border-color: var(--border); }
+.proposal b { display: block; margin-bottom: 6px; font-size: 12px; }
+.proposal .body { color: var(--text-dim); margin-bottom: 8px; }
+.proposal .text {
+  user-select: text; background: var(--bg-sunk); border-radius: 5px;
+  padding: 8px 9px; color: var(--text); line-height: 1.6;
+}
+.proposal .text.rejected { color: var(--text-dim); }
+.proposal .label {
+  font-size: 9.5px; letter-spacing: .13em; text-transform: uppercase;
+  color: var(--text-faint); margin-right: 6px;
+}
+.proposal .chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 8px; }
+.proposal .chip {
+  font-size: 10.5px; padding: 2px 7px; border-radius: 10px;
+  background: var(--bg-sunk); border: 1px solid var(--border); color: var(--text-dim);
+}
+.proposal .chip.add  { border-color: rgba(78,201,138,.4); color: var(--good); }
+.proposal .chip.drop { border-color: rgba(232,180,74,.4); color: var(--warn);
+                       text-decoration: line-through; }
+.proposal .seen { margin-top: 8px; color: var(--text-dim); font-size: 11px; }
+.proposal .row { display: flex; gap: 6px; margin-top: 10px; }

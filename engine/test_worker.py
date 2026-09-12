@@ -970,6 +970,46 @@ class MemoryHeadroom(unittest.TestCase):
             self.assertLess(worker._free_ram_gib(), worker._MIN_FREE_GIB, str(e))
 
 
+class EnhancerAcceptsGoodRewrites(unittest.TestCase):
+    """The validators must not throw away work the model got right.
+
+    Measured against eight ordinary requests, the expansion caps rejected five
+    good rewrites -- "a red car with sun-faded paint and a dented wing, water
+    running down the windows" was refused for being too long. A three word
+    request becoming twenty-five words is the reason someone pressed the
+    button, not evidence the model overreached. Retention stays strict; the
+    caps do not.
+    """
+
+    def test_a_short_request_may_expand_a_long_way(self):
+        out, why = worker._clarified_with_reason(
+            "a bowl of ramen",
+            "a bowl of ramen with clear broth, pale yellow noodles, a soft white "
+            "egg floating in the centre, and dark strips of nori resting on the rim.")
+        self.assertEqual(why, "ok", f"rejected as {why}")
+        self.assertIsNotNone(out)
+
+    def test_detail_added_to_a_named_subject_is_kept(self):
+        out, why = worker._clarified_with_reason(
+            "a red car in the rain at night",
+            "a red car with sun-faded paint and a dented wing, sitting in a "
+            "puddled parking lot at night, rain sliding down the windows.")
+        self.assertEqual(why, "ok", f"rejected as {why}")
+
+    def test_what_the_user_wrote_still_has_to_survive(self):
+        # The loosened caps must not weaken the guarantee that matters.
+        out, why = worker._clarified_with_reason(
+            "an old bicycle against a brick wall",
+            "an ornate bronze sundial on a lawn, with a stone birdbath beside it.")
+        self.assertIsNone(out, "a rewrite about something else was accepted")
+
+    def test_every_outcome_has_a_name(self):
+        # The interface reports what happened rather than inferring it from
+        # whether the text came back unchanged.
+        for why in ("dropped", "lost_intent", "too_long", "rejected", "empty"):
+            self.assertIn(why, worker._WHY_REJECTED, f"{why} has no explanation")
+
+
 class CleanPromptRequest(unittest.TestCase):
     """The cleaner must remove folklore, not meaning.
 

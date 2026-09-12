@@ -308,3 +308,28 @@ export interface Cast {
   places: CastPlace[];
   words: number;
 }
+
+/** What the prompt enhancer did, said plainly rather than inferred. */
+export type AssistOutcome =
+  | "proposal"          // it has a suggestion for you
+  | "already_specific"  // your words were fine as they were
+  | "rewrite_rejected"  // it tried, and what it wrote was worse
+  | "unclear";          // the request names nothing that could be drawn
+
+export interface AssistResult {
+  prompt: string;
+  original: string;
+  outcome?: AssistOutcome;
+  changed?: boolean;
+  /** Significant words the rewrite introduced. */
+  added?: string[];
+  /** Empty quality labels it stripped out. */
+  removed?: string[];
+  /** What it wrote, when that was rejected — shown so you can judge it. */
+  attempt?: string;
+  rejected_because?: string;
+  saw_image?: boolean;
+  description?: string;
+  unclear?: boolean;
+  note?: string;
+}

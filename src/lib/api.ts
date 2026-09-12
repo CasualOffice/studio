@@ -1,9 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type {
-  EngineProgress, GenerateArgs, HostInfo, ModelStatus,
-  Lora, Orphans, Panel, RepairReport, ResolvedLora, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus,
-} from "./types";
+import type { AssistResult, EngineProgress, GenerateArgs, HostInfo, Lora, ModelStatus, Orphans, Panel, RepairReport, ResolvedLora, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus } from "./types";
 
 /** Tauri rejects with our structured error; normalise it to a message. */
 export function errText(e: unknown): string {
@@ -95,9 +92,7 @@ export const api = {
   cancelJob: (jobId: string) => invoke<void>("cancel_job", { jobId }),
 
   assistPrompt: (jobId: string, prompt: string, mode: string, images: string[]) =>
-    invoke<{ prompt: string; original: string; saw_image: boolean;
-             unclear?: boolean; note?: string; changed?: boolean;
-             removed?: string[]; rejected_because?: string }>(
+    invoke<AssistResult>(
       "assist_prompt", { jobId, prompt, mode, images }
     ),
 
