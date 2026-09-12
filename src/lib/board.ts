@@ -13,7 +13,8 @@ import type { Panel } from "./types";
 /** Style is a whole-board decision: a board whose style drifts is not a board. */
 export const STYLES: { id: string; label: string; words: string }[] = [
   { id: "anime", label: "Anime",
-    words: "flat cel-shaded anime illustration, clean linework, muted palette" },
+    words: "cel-shaded anime, clean confident linework, flat colour with hard "
+         + "shadow shapes, screentone texture" },
   { id: "photo", label: "Photographic",
     words: "photographic, natural skin texture, available light, 35mm, shallow depth of field" },
   { id: "ink", label: "Ink and wash",
@@ -21,6 +22,26 @@ export const STYLES: { id: string; label: string; words: string }[] = [
   { id: "paint", label: "Painted",
     words: "digital painting, visible brush strokes, soft edges, muted colour" },
 ];
+
+/**
+ * What every panel is, before it is anything else.
+ *
+ * Nothing in these prompts used to say the picture was a panel, so each one
+ * was drawn as a standalone illustration -- a well-composed portrait of the
+ * moment, centred and complete, which is the opposite of what a panel does.
+ * Panels crop, they hold a single beat, and they are read in sequence. The
+ * finished pages looked like comics only because the compositor drew the
+ * borders and set the captions afterwards; the pictures inside them had never
+ * been asked to be panels at all.
+ *
+ * Not applied to the character sheet or the room reference. Those are
+ * reference material, drawn flat and neutral on purpose, and framing them as
+ * panels would put a border and a dramatic crop on the very thing every panel
+ * is supposed to match against.
+ */
+const PANEL_FRAMING =
+  "a single comic book panel, sequential art, cropped composition, no border, "
+  + "no text, no speech bubbles, no caption";
 
 export function styleWords(id: string): string {
   return STYLES.find((s) => s.id === id)?.words ?? "";
@@ -52,7 +73,8 @@ export function panelPrompt(
   // repair for a wrong frame: a sentence in English about that one panel,
   // rather than rolling the dice on a new seed and hoping. It is kept with
   // the panel, so a later redraw is still the panel you asked for.
-  return [styleWords(style), `${panel.shot} shot`, ...body, (note ?? "").trim()]
+  return [styleWords(style), PANEL_FRAMING, `${panel.shot} shot`, ...body,
+          (note ?? "").trim()]
     .map((b) => b.trim())
     .filter(Boolean)
     .join(". ") + ".";

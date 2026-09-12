@@ -82,8 +82,36 @@ describe("panelPrompt", () => {
   });
 
   it("falls back to no style words for an unknown style", () => {
+    // An unknown style must contribute nothing at all -- not an empty clause,
+    // not a stray separator. The panel framing still leads, because every
+    // panel is a panel whatever style it is drawn in.
     expect(styleWords("no-such-style")).toBe("");
-    expect(panelPrompt(panel(), "no-such-style", CHAR).startsWith("wide shot")).toBe(true);
+    const out = panelPrompt(panel(), "no-such-style", CHAR);
+    expect(out.startsWith("a single comic book panel")).toBe(true);
+    expect(out).not.toContain("..");
+    expect(out).not.toMatch(/^[.,;\s]/);
+  });
+
+  it("asks for a panel, not a picture of the moment", () => {
+    // Nothing used to say the picture was a panel, so each one came back as a
+    // standalone illustration: centred, complete, and the opposite of what a
+    // panel does. Pages looked like comics only because the compositor drew
+    // the borders afterwards.
+    const out = panelPrompt(panel(), "anime", CHAR);
+    expect(out).toContain("comic book panel");
+    expect(out).toContain("sequential art");
+    // The compositor sets the words. Asking the model for them as well gets
+    // gibberish lettering burned into the picture underneath the real caption.
+    expect(out).toContain("no text");
+    expect(out).toContain("no speech bubbles");
+  });
+
+  it("does not frame the reference sheets as panels", () => {
+    // The sheet and the room are what every panel matches against. Framing
+    // them as panels would crop and dramatise the one thing that has to stay
+    // flat and neutral.
+    expect(sheetPrompt("anime", CHAR)).not.toContain("comic book panel");
+    expect(placePrompt("anime", "a parlour at dusk")).not.toContain("comic book panel");
   });
 });
 
