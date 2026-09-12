@@ -94,7 +94,6 @@ export default function Studio({
   const [selected, setSelected] = useState(0);
   const [took, setTook] = useState<number | null>(null);
   const [undoPrompt, setUndoPrompt] = useState<string | null>(null);
-  const [assistNote, setAssistNote] = useState<string | null>(null);
   /** What the enhancer suggests, pending your decision. */
   const [proposal, setProposal] = useState<AssistResult | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -422,7 +421,7 @@ export default function Studio({
             <textarea
               value={prompt}
               onChange={(e) => {
-                setPrompt(e.target.value); setUndoPrompt(null); setAssistNote(null);
+                setPrompt(e.target.value); setUndoPrompt(null);
                 setProposal(null);
               }}
               placeholder={mode === "edit"
@@ -452,14 +451,10 @@ export default function Studio({
                   setUndoPrompt(prompt);
                   setPrompt(text);
                   setProposal(null);
-                  setAssistNote(null);
                   notify("Prompt updated. Undo is next to the box.");
                 }}
                 onDismiss={() => setProposal(null)}
               />
-            )}
-            {assistNote && !proposal && (
-              <div className="notice" style={{ marginTop: 7 }}>{assistNote}</div>
             )}
             {!assistantReady && (
               <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5 }}>

@@ -31,7 +31,9 @@ export default function PromptProposal({
       <div className="proposal plain">
         <b>Nothing to add.</b> Your prompt already names what to draw, so it was
         left alone.
-        <button className="btn small" onClick={onDismiss}>Close</button>
+        <div className="row">
+          <button className="btn small" onClick={onDismiss}>Close</button>
+        </div>
       </div>
     );
   }
@@ -41,7 +43,9 @@ export default function PromptProposal({
       <div className="proposal warn">
         <b>This does not say what to draw yet.</b>
         <div className="body">{result.note}</div>
-        <button className="btn small" onClick={onDismiss}>Close</button>
+        <div className="row">
+          <button className="btn small" onClick={onDismiss}>Close</button>
+        </div>
       </div>
     );
   }
@@ -67,7 +71,9 @@ export default function PromptProposal({
           </>
         )}
         {!result.attempt && (
-          <button className="btn small" onClick={onDismiss}>Close</button>
+          <div className="row">
+            <button className="btn small" onClick={onDismiss}>Close</button>
+          </div>
         )}
       </div>
     );

@@ -2182,14 +2182,24 @@ def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         "captions": [str(c or "") for c in column("captions", "")],
         "shots": [str(x or "medium") for x in column("shots", "medium")],
         "dialogue": [list(d or []) for d in column("dialogue", [])],
-        "scenes": [int(x or 1) for x in column("scenes", 1)],
+        "scenes": [_as_scene(x) for x in column("scenes", 1)],
     }
     layout = str(req.get("layout") or "page")
-    size = int(req.get("font_size", 19))
+    # Clamped rather than trusted. These have no control in the app today, so
+    # every value seen so far is the default -- which is exactly when a bad one
+    # slips through unnoticed, and a zero or negative here divides by zero or
+    # draws a page with no room on it.
+    def _dim(key: str, default: int, low: int, high: int) -> int:
+        try:
+            return max(low, min(high, int(req.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+
+    size = _dim("font_size", 19, 8, 72)
     style = {
-        "width": int(req.get("page_width", 1240 if layout == "page" else 860)),
-        "margin": int(req.get("margin", 34)),
-        "gutter": int(req.get("gutter", 18)),
+        "width": _dim("page_width", 1240 if layout == "page" else 860, 320, 8192),
+        "margin": _dim("margin", 34, 0, 400),
+        "gutter": _dim("gutter", 18, 0, 400),
         "font": _caption_font(size),
         "small": _caption_font(13),
         "line_h": int(size * 1.4),
@@ -2268,7 +2278,7 @@ def _establish_places(req_id: str, panels: list[dict[str, Any]],
     """
     by_scene: dict[int, list[dict[str, Any]]] = {}
     for p in panels:
-        by_scene.setdefault(int(p.get("scene", 1) or 1), []).append(p)
+        by_scene.setdefault(_as_scene(p.get("scene", 1)), []).append(p)
 
     places: dict[int, str] = {}
     for n, (scene, group) in enumerate(sorted(by_scene.items())):
@@ -2361,7 +2371,7 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             str(p.get("action", "")).strip(),
             str(p.get("setting", "")).strip(),
         ) if x)
-        place = places.get(int(p.get("scene", 1) or 1), "")
+        place = places.get(_as_scene(p.get("scene", 1)), "")
         user = (f"Style: {style}\n"
                 + (f"Place, already settled: {place}\n" if place else "")
                 + f"Panel: {moment}.")
@@ -2373,7 +2383,7 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             log(req_id, f"panel {i + 1} not enriched: {exc}", "warn")
             out.append({**p, "description": "",
-                        "place": places.get(int(p.get("scene", 1) or 1), "")})
+                        "place": places.get(_as_scene(p.get("scene", 1)), "")})
             continue
 
         text = " ".join(raw.strip().splitlines()[0].split())
@@ -2383,7 +2393,7 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             log(req_id, f"panel {i + 1} enrichment lost the moment; keeping it plain", "warn")
             text = ""
         out.append({**p, "description": text[:400],
-                    "place": places.get(int(p.get("scene", 1) or 1), "")})
+                    "place": places.get(_as_scene(p.get("scene", 1)), "")})
 
     return {"panels": out}
 
