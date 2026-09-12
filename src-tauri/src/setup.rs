@@ -98,25 +98,33 @@ fn required_distributions_present(paths: &AppPaths) -> bool {
     let Ok(entries) = std::fs::read_dir(site) else {
         return false;
     };
+    // Both sides go through the same normalisation. They did not before: the
+    // directory names had every hyphen turned into an underscore while the
+    // names being searched for kept theirs, so "cryptography_50.0.1.dist_info"
+    // was tested against "cryptography-" and every one of the six failed. The
+    // check could not return true on any machine, which made the setup screen
+    // permanent -- installing the runtime again could never clear it, because
+    // the install was never what was wrong.
+    fn key(s: &str) -> String {
+        s.to_lowercase().replace('-', "_")
+    }
     let names: Vec<String> = entries
         .flatten()
-        .map(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .to_lowercase()
-                .replace('-', "_")
-        })
+        .map(|e| key(&e.file_name().to_string_lossy()))
         .collect();
     [
-        format!("mlx_gen-{MLX_GEN_VERSION}.dist_info"),
-        format!("mlx_lm-{MLX_LM_VERSION}.dist_info"),
-        format!("mlx_vlm-{MLX_VLM_VERSION}.dist_info"),
+        format!("mlx_gen-{MLX_GEN_VERSION}.dist-info"),
+        format!("mlx_lm-{MLX_LM_VERSION}.dist-info"),
+        format!("mlx_vlm-{MLX_VLM_VERSION}.dist-info"),
         "cryptography-".into(),
         "pillow_heif-".into(),
         "huggingface_hub-".into(),
     ]
     .iter()
-    .all(|want| names.iter().any(|name| name.starts_with(want)))
+    .all(|want| {
+        let want = key(want);
+        names.iter().any(|name| name.starts_with(&want))
+    })
 }
 
 async fn download_to(
@@ -425,4 +433,61 @@ pub async fn bootstrap(report: Reporter<'_>, paths: &AppPaths, force: bool) -> R
     };
     std::fs::write(paths.stamp(), serde_json::to_vec_pretty(&stamp)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The readiness check must pass against a real site-packages layout.
+    ///
+    /// It could not. Directory names were normalised -- lowercased, hyphens
+    /// turned to underscores -- while the names searched for kept their
+    /// hyphens, so every comparison failed on every machine. `ready` was
+    /// therefore always false, the setup screen never cleared, and installing
+    /// the runtime again could not help because the install was never what was
+    /// wrong. A test over the names pip actually writes catches that; a test
+    /// over hand-written names in the same style as the code would not.
+    #[test]
+    fn required_distributions_match_the_names_pip_writes() {
+        let dir = std::env::temp_dir().join(format!(
+            "ms-setup-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let site = dir
+            .join("runtime")
+            .join("venv")
+            .join(format!("lib/python{PY_SERIES}/site-packages"));
+        std::fs::create_dir_all(&site).unwrap();
+        for name in [
+            format!("mlx_gen-{MLX_GEN_VERSION}.dist-info"),
+            format!("mlx_lm-{MLX_LM_VERSION}.dist-info"),
+            format!("mlx_vlm-{MLX_VLM_VERSION}.dist-info"),
+            "cryptography-50.0.1.dist-info".to_string(),
+            "pillow_heif-1.7.0.dist-info".to_string(),
+            "huggingface_hub-1.30.0.dist-info".to_string(),
+            "numpy-2.5.3.dist-info".to_string(),
+        ] {
+            std::fs::create_dir_all(site.join(name)).unwrap();
+        }
+
+        let paths = crate::paths::AppPaths::at(dir.clone());
+        assert!(
+            required_distributions_present(&paths),
+            "the six required distributions are present under their real \
+             pip-written names and the check still says no"
+        );
+
+        std::fs::remove_dir_all(site.join(format!("mlx_vlm-{MLX_VLM_VERSION}.dist-info"))).unwrap();
+        assert!(
+            !required_distributions_present(&paths),
+            "a missing distribution must be noticed"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
