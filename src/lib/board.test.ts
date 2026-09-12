@@ -178,6 +178,136 @@ describe("panelPrompt with a worked-up scene", () => {
   });
 });
 
+describe("the cast is described once, and the subject is not a garment", () => {
+  // Read off a real run. The subject was joined to the cast description with
+  // ", ", so a panel of Mira asked for "... oversized grey wool coat, dark
+  // green scarf, Mira" -- the name arriving in the middle of a list of clothes,
+  // and drawn as one more of them.
+  const MIRA = "Mira: young woman, short dark hair, thin face, "
+             + "oversized grey wool coat, dark green scarf";
+  const BOTH = `${MIRA}; Jonas: tall, stooped, grey overcoat, flat cap`;
+  const count = (text: string, needle: string) => text.split(needle).length - 1;
+
+  it("does not weld the subject's name onto the clothing", () => {
+    const out = panelPrompt(
+      panel({ subject: "Mira", action: "finds letter under sugar tin",
+              setting: "a narrow kitchen" }), ANIME, MIRA);
+    expect(out).not.toContain("scarf, Mira");
+    expect(count(out, "Mira")).toBe(1);
+    expect(out).toContain("dark green scarf");
+    expect(out).toContain("finds letter under sugar tin");
+  });
+
+  it("names a second person once as well", () => {
+    // The multi-character cast is written "Mira: ...; Jonas: ...", so the names
+    // are what stands before each colon.
+    const out = panelPrompt(panel({ subject: "Jonas" }), ANIME, BOTH);
+    expect(count(out, "Jonas")).toBe(1);
+    expect(out).not.toContain("flat cap, Jonas");
+    expect(out).toContain("dark green scarf");
+    expect(out).toContain("grey overcoat");
+  });
+
+  it("matches a name whatever its case or trailing punctuation", () => {
+    for (const subject of ["mira", "MIRA", "Mira."]) {
+      expect(count(panelPrompt(panel({ subject }), ANIME, MIRA), "ira")).toBe(1);
+    }
+  });
+
+  it("still says a subject the cast does not name", () => {
+    // Not everyone in a panel is in the cast description, and dropping a name
+    // the prompt is the only statement of would lose the person entirely.
+    const out = panelPrompt(panel({ subject: "the postman" }), ANIME, MIRA);
+    expect(out).toContain("the postman");
+  });
+
+  it("gives a thing in frame a clause of its own, not a slot in the wardrobe", () => {
+    const out = panelPrompt(
+      panel({ subject: "a kitchen tap", action: "water running" }), ANIME, MIRA);
+    expect(out).toContain("a kitchen tap");
+    expect(out).not.toContain("scarf, a kitchen tap");
+    expect(out).toContain("dark green scarf. a kitchen tap.");
+  });
+
+  it("still leaves the whole cast out of a panel nobody is in", () => {
+    const out = panelPrompt(
+      panel({ subject: "a kitchen tap", character_in_frame: false }), ANIME, BOTH);
+    expect(out).not.toContain("dark green scarf");
+    expect(out).not.toContain("Jonas");
+    expect(out).toContain("a kitchen tap");
+  });
+});
+
+describe("the prompt does not contradict or repeat itself", () => {
+  it("states the shot once, even when the brief says it again", () => {
+    // A real brief came back as "Mira stands in the narrow kitchen, wide shot.
+    // Pale green walls, ..." for a panel whose prompt already said "wide shot".
+    // Said twice it is noise; said differently by the writer and the enricher
+    // it asks for two distances at once.
+    const out = panelPrompt(
+      panel({ description: "Mira stands in the narrow kitchen, wide shot. "
+                         + "Pale green walls, scuffed lino." }), ANIME, CHAR);
+    expect(out.split("wide shot").length - 1).toBe(1);
+    expect(out).toContain("Mira stands in the narrow kitchen. Pale green walls");
+  });
+
+  it("takes the echo out of the front of a brief too", () => {
+    const out = panelPrompt(
+      panel({ shot: "close-up",
+              description: "Close-up shot. Her hands on the sugar tin." }),
+      ANIME, CHAR);
+    expect(out).toContain("Her hands on the sugar tin");
+    expect(out.split(" shot").length - 1).toBe(1);
+    expect(out).not.toContain("Close-up shot.");
+  });
+
+  it("leaves a shot named mid-sentence alone rather than mangling the grammar", () => {
+    // Cutting it out here would take the grammar with it: "a of her hands".
+    const out = panelPrompt(
+      panel({ description: "A close-up shot of her hands, steam rising." }),
+      ANIME, CHAR);
+    expect(out).toContain("A close-up shot of her hands, steam rising");
+  });
+
+  it("falls back to the terse fields when the brief was only the shot", () => {
+    const out = panelPrompt(panel({ description: "Wide shot." }), ANIME, CHAR);
+    expect(out).toContain("stands in the hallway");
+    expect(out).toContain("a narrow flat");
+  });
+
+  it("does not double the full stop the brief already ends with", () => {
+    // The parts are joined with ". " and a brief is whole sentences, so this
+    // used to read "dim light from a corner lamp.. plain ground behind ...".
+    const out = panelPrompt(
+      panel({ shot: "close-up",
+              description: "Her hands, lit by a corner lamp." }), ANIME, CHAR);
+    expect(out).not.toContain("..");
+    expect(out).toContain("lit by a corner lamp. plain ground");
+  });
+
+  it("does not run the next clause on from a part ending in a comma", () => {
+    const out = panelPrompt(
+      panel({ description: "A narrow hallway, faded linoleum," }), ANIME, CHAR);
+    expect(out).not.toContain("linoleum, the place itself");
+    expect(out).toContain("faded linoleum. the place itself");
+  });
+
+  it("lets the shot have the last word on how much place is in frame", () => {
+    // The enrichment stage lists the walls, the floor and the light whatever
+    // the shot is, so a close-up asked for plain ground and then listed the
+    // room anyway, a clause later in the same prompt. The brief cannot be
+    // rewritten from here, but the distance can be settled after it.
+    const out = panelPrompt(
+      panel({ shot: "close-up",
+              description: "Pale green walls, scuffed lino, a bare bulb." }),
+      ANIME, CHAR);
+    expect(out.indexOf("no scenery")).toBeGreaterThan(out.indexOf("bare bulb"));
+    // And the same order without a brief, so there is one rule, not two.
+    const terse = panelPrompt(panel({ shot: "medium" }), ANIME, CHAR);
+    expect(terse.indexOf("kept simple")).toBeGreaterThan(terse.indexOf("a narrow flat"));
+  });
+});
+
 describe("sheetPrompt", () => {
   it("asks for a neutral reference, not a scene", () => {
     const out = sheetPrompt(ANIME, CHAR);
@@ -186,12 +316,30 @@ describe("sheetPrompt", () => {
     expect(out).toContain(CHAR);
   });
 
-  it("builds one labelled lineup when the story has several major characters", () => {
+  it("builds one sheet for the whole cast, and says how many there are", () => {
+    // Asked for a lineup of "each named character", the drawer put three
+    // figures on a sheet for a cast of two -- and that invented person is then
+    // the reference every panel of the board is drawn against. Stating the
+    // count is what fixes it.
     const out = sheetPrompt(INK, "Mira: red scarf\nJon: blue coat");
-    expect(out).toContain("Cast reference lineup");
+    expect(out).toContain("two people");
     expect(out).toContain("Mira: red scarf");
     expect(out).toContain("Jon: blue coat");
     expect(out).toContain("distinct silhouettes");
+  });
+
+  it("does not ask for the names to be written on the sheet", () => {
+    // A diffusion model cannot letter. Asking for a "labelled" lineup printed
+    // "Referace Mekwarird" across the one image every frame is conditioned
+    // against. The names bind identity in the description, not in ink.
+    const out = sheetPrompt(INK, "Mira: red scarf\nJon: blue coat");
+    expect(out).not.toContain("labelled");
+    expect(out).not.toContain("named");
+  });
+
+  it("counts a larger cast correctly", () => {
+    const four = sheetPrompt(INK, "A: a\nB: b\nC: c\nD: d");
+    expect(four).toContain("four people");
   });
 });
 
