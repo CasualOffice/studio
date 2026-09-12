@@ -214,8 +214,11 @@ export default function Gallery({
     : null;
 
   if (open && openProject && openProject.length > 1) {
-    const panelsOf = openProject.filter((i) => i.project_index != null);
-    const sheets = openProject.filter((i) => i.project_index == null);
+    const pagesOf = openProject.filter((i) => i.model === "composed");
+    const panelsOf = openProject.filter(
+      (i) => i.project_index != null && i.model !== "composed");
+    const sheets = openProject.filter(
+      (i) => i.project_index == null && i.model !== "composed");
     const total = openProject.reduce((n, i) => n + i.bytes, 0);
     return (
       <div>
@@ -226,6 +229,7 @@ export default function Gallery({
           <h2 style={{ margin: 0 }}>{open.project_name || "Picture board"}</h2>
           <span style={{ fontSize: 12, color: "var(--text-faint)" }}>
             {panelsOf.length} panels
+            {pagesOf.length ? ` · ${pagesOf.length} composed page${pagesOf.length === 1 ? "" : "s"}` : ""}
             {sheets.length ? ` · ${sheets.length} reference sheets` : ""}
             {" · "}{fmtBytes(total)}
             {" · "}{new Date(open.created_at).toLocaleDateString()}
@@ -273,6 +277,22 @@ export default function Gallery({
                      onClick={() => setOpen({ ...it, project: null })}>
                   <img src={vaultUrl(it.id)} alt="" loading="lazy" />
                   <div className="meta"><div className="sub">{it.prompt.slice(0, 48)}</div></div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {pagesOf.length > 0 && (
+          <>
+            <div className="sub-head">Composed pages</div>
+            <div className="gallery-grid" style={{ marginBottom: 18 }}>
+              {pagesOf.map((it, i) => (
+                <div className="gallery-card" key={it.id}
+                     onClick={() => setOpen({ ...it, project: null })}>
+                  <span className="count">{i + 1}</span>
+                  <img src={vaultUrl(it.id)} alt="" loading="lazy" />
+                  <div className="meta"><div className="sub">{it.prompt}</div></div>
                 </div>
               ))}
             </div>

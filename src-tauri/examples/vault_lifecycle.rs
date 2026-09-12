@@ -96,7 +96,7 @@ fn main() {
     let out = dir.join("exported.png");
     check!(
         "export writes plaintext where asked",
-        vault.export(&first, &out).is_ok()
+        vault.export(&first, &out, false).is_ok()
     );
     check!(
         "exported bytes match",

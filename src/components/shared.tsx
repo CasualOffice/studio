@@ -114,9 +114,10 @@ export function ImageDrop({
   useEffect(() => {
     // Tauri v2 delivers OS file drops as a webview event, not an HTML5 one.
     let unlisten: (() => void) | undefined;
+    let live = true;
     (async () => {
       const { getCurrentWebview } = await import("@tauri-apps/api/webview");
-      unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+      const remove = await getCurrentWebview().onDragDropEvent((event) => {
         const el = ref.current;
         if (!el) return;
         if (event.payload.type === "over") {
@@ -138,8 +139,10 @@ export function ImageDrop({
           setOver(false);
         }
       });
+      if (live) unlisten = remove;
+      else remove();
     })();
-    return () => unlisten?.();
+    return () => { live = false; unlisten?.(); };
   }, [add]);
 
   const pick = async () => {
@@ -161,15 +164,15 @@ export function ImageDrop({
   // should not require exporting it and importing it back.
   const openVault = async () => {
     setPicking(true);
-    if (vaultItems === null) {
-      try {
-        setVaultItems((await api.vaultList()).filter(
-          (i) => i.mime.startsWith("image/") && i.kind !== "mask"
-        ));
-      } catch (e) {
-        onError(errText(e));
-        setVaultItems([]);
-      }
+    try {
+      // Refresh on every open. Generations can finish while this component is
+      // mounted, and a cached first snapshot hid those new images.
+      setVaultItems((await api.vaultList()).filter(
+        (i) => i.mime.startsWith("image/") && i.kind !== "mask"
+      ));
+    } catch (e) {
+      onError(errText(e));
+      setVaultItems([]);
     }
   };
 
@@ -312,7 +315,7 @@ export async function exportMany(
     let bytes = 0;
     let failed = 0;
     for (const it of items) {
-      let name = it.name || `${it.id}.png`;
+      let name = (it.name || `${it.id}.png`).split(/[\\/]/).pop() || `${it.id}.png`;
       if (used.has(name)) {
         // Two runs of one prompt produce two files with one name. Numbering
         // the later one keeps both rather than silently overwriting.
@@ -324,11 +327,19 @@ export async function exportMany(
         name = `${stem} ${n}${ext}`;
       }
       used.add(name);
-      try {
-        bytes += await api.vaultExport(it.id, `${dir}/${name}`);
-      } catch {
-        failed++;
+      let written = false;
+      for (let attempt = 1; attempt <= 100 && !written; attempt++) {
+        const dot = name.lastIndexOf(".");
+        const stem = dot > 0 ? name.slice(0, dot) : name;
+        const ext = dot > 0 ? name.slice(dot) : "";
+        const candidate = attempt === 1 ? name : `${stem} ${attempt}${ext}`;
+        try {
+          bytes += await api.vaultExport(it.id, `${dir}/${candidate}`, false);
+          used.add(candidate);
+          written = true;
+        } catch { /* existing file or a destination failure; try a suffix */ }
       }
+      if (!written) failed++;
     }
     const ok = items.length - failed;
     notify(
@@ -352,7 +363,7 @@ export async function exportItem(
       title: "Export a decrypted copy",
     });
     if (!dest) return;
-    const bytes = await api.vaultExport(item.id, dest);
+    const bytes = await api.vaultExport(item.id, dest, true);
     notify(`Exported ${(bytes / 1024).toFixed(0)} KB — this copy is not encrypted.`);
   } catch (e) {
     notify(errText(e), true);

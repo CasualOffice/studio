@@ -95,6 +95,12 @@ export function panelPrompt(
 
 /** The prompt for the character sheet every panel is drawn against. */
 export function sheetPrompt(style: string, character: string): string {
+  const cast = character.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (cast.length > 1) {
+    return `${styleWords(style)}. Cast reference lineup, each named character `
+      + `shown separately, full body, neutral poses, plain background, distinct `
+      + `silhouettes and clothing. ${cast.join("; ")}.`;
+  }
   return `${styleWords(style)}. Character reference sheet, full body, neutral `
        + `pose, plain background. ${character.trim()}.`;
 }

@@ -93,6 +93,7 @@ export default function Studio({
   const [selected, setSelected] = useState(0);
   const [took, setTook] = useState<number | null>(null);
   const [undoPrompt, setUndoPrompt] = useState<string | null>(null);
+  const [assistNote, setAssistNote] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   // Which model the engine currently holds, so a warm run is not quoted the
   // cold-start penalty.
@@ -169,15 +170,22 @@ export default function Studio({
         // Nothing was drawable in the request, so nothing was changed. Saying
         // so beats inventing a subject to fill the gap, which is what this
         // used to do.
-        notify(r.note ?? "Say what you want in the picture first.", true);
+        const note = r.note ?? "Say what you want in the picture first.";
+        setAssistNote(note);
+        notify(note, true);
         return;
       }
       if (r.prompt === prompt) {
-        notify("Your prompt is already specific enough to leave alone.");
+        const note = r.note ?? "Your prompt is already specific enough to leave alone.";
+        setAssistNote(note);
+        notify(note);
         return;
       }
       setUndoPrompt(prompt);
       setPrompt(r.prompt);
+      setAssistNote(r.removed?.length
+        ? `Removed empty quality labels: ${r.removed.join(", ")}.`
+        : r.note ?? "The rewrite kept every named subject and action.");
       notify(r.saw_image
         ? "Tied your request to what is actually in the picture."
         : "Made your prompt specific. Nothing new was invented.");
@@ -222,9 +230,9 @@ export default function Studio({
       });
     } catch { unPrev = undefined; }
     const t0 = performance.now();
+    let maskId: string | null = null;
     try {
       // A painted mask is stored like any other content, then referenced by id.
-      let maskId: string | null = null;
       if (editKind === "mask" && maskBytes) {
         maskId = await api.vaultImportBytes(
           maskBytes, "mask.png", "image/png", "mask"
@@ -273,6 +281,11 @@ export default function Studio({
       if (detail) console.error("engine:", detail);
       notify(msg.includes("ancelled") ? "Cancelled." : msg, !msg.includes("ancelled"));
     } finally {
+      // Masks are private working material, not library items. The engine has
+      // finished reading it at this point, regardless of success or failure.
+      if (maskId) {
+        try { await api.vaultDelete(maskId); } catch { /* lock/cleanup race */ }
+      }
       un(); unPrev?.();
       setRunning(false); setJobId(null); setProg(null);
       setPreview(null);
@@ -422,7 +435,9 @@ export default function Studio({
             </label>
             <textarea
               value={prompt}
-              onChange={(e) => { setPrompt(e.target.value); setUndoPrompt(null); }}
+              onChange={(e) => {
+                setPrompt(e.target.value); setUndoPrompt(null); setAssistNote(null);
+              }}
               placeholder={mode === "edit"
                 ? "make the jacket red"
                 : "a ceramic teapot on a linen cloth by a window"}
@@ -439,9 +454,12 @@ export default function Studio({
               {assisting
                 ? "Thinking…"
                 : mode === "edit" && images.length > 0
-                  ? "✨ Make this precise, using my picture"
-                  : "✨ Make my prompt precise"}
+                  ? "Make this precise using my picture"
+                  : "Make my prompt precise"}
             </button>
+            {assistNote && (
+              <div className="notice" style={{ marginTop: 7 }}>{assistNote}</div>
+            )}
             {!assistantReady && (
               <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5 }}>
                 Needs the prompt writer — a 2.1 GB download in the Models tab.

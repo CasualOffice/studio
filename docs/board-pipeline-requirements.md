@@ -5,19 +5,21 @@ confirmed in the code before it was written down.
 
 ## Status
 
-Four of the five defects below are fixed. Each line is marked, because a
+All five defects below are fixed. Each line is marked, because a
 requirements document that still describes solved problems is worse than none:
-it sends the next person to fix something twice and hides the one thing left.
+it sends the next person to fix something twice.
 
 - **Length is guessed** — fixed. The slider is gone; the count is derived from
   beats and reported, with the expected range for that much prose alongside it.
 - **Characters are not extracted** — fixed. `op_cast` reads the cast out of the
   prose and verifies every name against the text before it is kept.
-- **Only one character exists** — **still true.** The board holds one character
-  sheet. A scene with two people draws the second one fresh each time.
-- **Coverage is not verifiable** — partly fixed. The division reports how many
-  panels it produced against the range that much prose usually needs, and says
-  so when it falls outside. Which sentences went unused is still not shown.
+- **Only one character exists** — fixed. A verified cast is assigned per panel
+  and up to four major characters share one labelled lineup reference, so the
+  same identities condition every frame without exceeding the model's current
+  reference-image limit.
+- **Coverage is not verifiable** — fixed. Every panel carries an exact source
+  passage and the deterministic coverage check shows its percentage and lists
+  every unanchored passage before drawing begins.
 - **Correction is re-rolling** — fixed. A note written about a frame is
   appended to that frame's brief and kept with it, so a redraw is a correction
   rather than another roll of the dice.
@@ -79,3 +81,13 @@ to see what asked for it.
   that is where the time goes.
 - Arithmetic belongs in code, where it can be tested, rather than being asked
   of a model.
+
+## Implemented workflow
+
+The UI exposes five review gates: **Read story → Plan panels → Prepare briefs →
+Draw → Compose**. Story edits invalidate all derived work. Panel edits invalidate
+only that panel's image and any composed pages. Drawing is resumable in small
+batches, reuses cast and place references, and composition is available only
+when every panel has an image. The manuscript, cast, prompts, corrections,
+references, outputs, and coverage report are stored as an encrypted vault draft;
+only interface choices such as layout and batch size remain in preferences.

@@ -22,6 +22,7 @@ stdout stream stays a clean JSON Lines channel.
 from __future__ import annotations
 
 import contextlib
+import atexit
 import gc
 import io
 import json
@@ -29,11 +30,14 @@ import math
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import traceback
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -776,11 +780,38 @@ def _subscribe(req_id: str, obj: Any, task: str):
 _STAGE_ROOT: str | None = None
 
 
+def _remove_stage_root() -> None:
+    """Remove this process's plaintext staging directory on clean exit."""
+    global _STAGE_ROOT
+    if _STAGE_ROOT:
+        shutil.rmtree(_STAGE_ROOT, ignore_errors=True)
+        _STAGE_ROOT = None
+
+
+def _scavenge_stale_stage_dirs(max_age_seconds: int = 24 * 60 * 60) -> None:
+    """Remove private staging left by a worker that crashed.
+
+    Only directories owned by this uid and older than a day are considered, so
+    a second running app instance is never disturbed.
+    """
+    now = time.time()
+    root = Path(tempfile.gettempdir())
+    for candidate in root.glob("msvault-*"):
+        try:
+            stat = candidate.stat()
+            if stat.st_uid == os.getuid() and now - stat.st_mtime >= max_age_seconds:
+                shutil.rmtree(candidate, ignore_errors=True)
+        except OSError:
+            continue
+
+
+_scavenge_stale_stage_dirs()
+atexit.register(_remove_stage_root)
+
+
 def _stage_dir() -> str:
     """A private directory for briefly-decrypted source images."""
     global _STAGE_ROOT
-    import tempfile
-
     if _STAGE_ROOT is None or not os.path.isdir(_STAGE_ROOT):
         _STAGE_ROOT = tempfile.mkdtemp(prefix="msvault-")
         os.chmod(_STAGE_ROOT, 0o700)
@@ -838,12 +869,18 @@ def _stage_vault_inputs(inputs: list[dict[str, Any]]) -> list[str]:
     usable: list[str] = []
     try:
         for entry in inputs:
+            try:
+                safe_id = str(uuid.UUID(str(entry["id"])))
+            except (KeyError, ValueError, AttributeError) as exc:
+                raise ValueError("vault input has an invalid id") from exc
             with open(entry["path"], "rb") as fh:
                 sealed = fh.read()
             plain = vc.open_with_file_key(bytes.fromhex(entry["key"]), sealed)
             # Keep the original extension so PIL can sniff the format.
-            suffix = entry.get("ext") or "png"
-            dest = os.path.join(_stage_dir(), f"{entry['id']}.{suffix}")
+            suffix = str(entry.get("ext") or "png").lower()
+            if not re.fullmatch(r"[a-z0-9]{1,8}", suffix):
+                suffix = "png"
+            dest = os.path.join(_stage_dir(), f"{safe_id}.{suffix}")
             fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "wb") as f:
                 f.write(plain)
@@ -1161,6 +1198,26 @@ def _first_line(raw: str) -> str:
             continue
         return candidate.rstrip(" .,;") + "."
     return ""
+
+
+def _clean_prompt_request(text: str) -> tuple[str, list[str]]:
+    """Remove prompt folklore that does not describe visible content.
+
+    This runs before the writer, not after it, so the intent guard evaluates
+    only meaningful words and does not reject a better prompt merely because
+    it correctly dropped "8k" or "masterpiece".
+    """
+    cleaned = text
+    removed: list[str] = []
+    for phrase in sorted(_EMPTY_MODIFIERS, key=len, reverse=True):
+        pattern = re.compile(r"(?<![\w-])" + re.escape(phrase) + r"(?![\w-])",
+                             re.IGNORECASE)
+        if pattern.search(cleaned):
+            removed.append(phrase)
+            cleaned = pattern.sub("", cleaned)
+    cleaned = re.sub(r"\s*[,;]\s*(?=[,;]|$)", "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ,;.-")
+    return cleaned, removed
 
 
 def _dropped_words(original: str, line: str) -> list[str]:
@@ -1553,6 +1610,10 @@ def _shotlist_instruction(story: str, count: int) -> str:
         '  "setting": where it takes place\n'
         '  "character_in_frame": true if the person we follow is visible in '
         'this panel, false if it shows something else\n'
+        '  "characters": an array naming every person visible in this panel, '
+        'using exactly how the story refers to them\n'
+        '  "source": an exact short quote from the sentence or beat this panel '
+        'covers. Never paraphrase it\n'
         '  "caption": one short line to sit under the panel, in the voice of '
         'the story. Narration, not description -- the reader can already see '
         'the picture. Six to fourteen words. Empty string if the panel needs '
@@ -1570,7 +1631,7 @@ def _shotlist_instruction(story: str, count: int) -> str:
     )
 
 
-def _parse_shotlist(raw: str, count: int) -> list[dict[str, str]]:
+def _parse_shotlist(raw: str, count: int, story: str = "") -> list[dict[str, Any]]:
     """Pull the panel array out of the model's reply.
 
     Models fence JSON in backticks and preface it with a sentence however
@@ -1603,6 +1664,16 @@ def _parse_shotlist(raw: str, count: int) -> list[dict[str, str]]:
         # a running tap, given the protagonist's description, draws her
         # running instead.
         in_frame = p.get("character_in_frame")
+        raw_characters = p.get("characters")
+        characters: list[str] = []
+        if isinstance(raw_characters, list):
+            for value in raw_characters:
+                name = " ".join(str(value).split())[:80]
+                if name and (not story or _mentions(story, name) > 0):
+                    characters.append(name)
+        source = " ".join(str(p.get("source", "")).split())[:240]
+        if story and source and source.lower() not in " ".join(story.split()).lower():
+            source = ""
         cleaned.append({
             "shot": shot,
             "subject": str(p.get("subject", "")).strip(),
@@ -1610,7 +1681,10 @@ def _parse_shotlist(raw: str, count: int) -> list[dict[str, str]]:
             "setting": str(p.get("setting", "")).strip(),
             # Default to showing them: a board is mostly about its character,
             # and a missing flag should not quietly write them out.
-            "character_in_frame": True if in_frame is None else bool(in_frame),
+            "character_in_frame": bool(characters) or (
+                True if in_frame is None else bool(in_frame)),
+            "characters": characters,
+            "source": source,
             # Narration, kept short. A caption that restates the picture is
             # worse than none, and a long one stops being a caption.
             "caption": " ".join(str(p.get("caption", "")).split())[:120],
@@ -1626,6 +1700,30 @@ def _parse_shotlist(raw: str, count: int) -> list[dict[str, str]]:
     if not cleaned:
         raise ValueError("the writer returned no usable panels")
     return cleaned
+
+
+def _story_coverage(story: str, panels: list[dict[str, Any]]) -> dict[str, Any]:
+    """Report which prose units are anchored by a panel's exact source quote."""
+    units = [" ".join(s.split()) for s in re.split(r"(?<=[.!?])\s+|\n+", story)
+             if s.strip()]
+    sources = [str(p.get("source", "")).lower() for p in panels if p.get("source")]
+    covered: list[int] = []
+    for index, unit in enumerate(units):
+        words = set(_significant(unit))
+        if not words:
+            continue
+        for source in sources:
+            source_words = set(_significant(source))
+            overlap = len(words & source_words) / len(words)
+            if source in unit.lower() or unit.lower() in source or overlap >= 0.45:
+                covered.append(index)
+                break
+    missing = [unit for index, unit in enumerate(units) if index not in covered]
+    return {
+        "covered": len(covered), "total": len(units),
+        "percent": round(100 * len(covered) / len(units)) if units else 100,
+        "missing": missing[:20],
+    }
 
 
 # Fonts that ship with macOS, in order of preference. A board that falls back
@@ -2304,6 +2402,10 @@ def _shotlist_instruction_derived(story: str, low: int, high: int) -> str:
         '  "setting": where it takes place\n'
         '  "character_in_frame": true if the person we follow is visible in '
         'this panel, false if it shows something else\n'
+        '  "characters": an array naming every person visible in this panel, '
+        'using exactly how the story refers to them\n'
+        '  "source": an exact short quote from the sentence or beat this panel '
+        'covers. Never paraphrase it\n'
         '  "caption": one short line to sit under the panel, in the voice of '
         'the story. Narration, not description. Six to fourteen words, or an '
         'empty string if the panel needs no words. It must belong to THIS '
@@ -2409,12 +2511,13 @@ def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                      _shotlist_instruction_derived(story, low, high),
                      max_tokens=min(6000, 180 * high), temperature=0.3,
                      repo=req.get("writer"))
-        panels = _parse_shotlist(raw, high)
+        panels = _parse_shotlist(raw, high, story)
         log(req_id, f"{words} words divided into {len(panels)} panels "
                     f"(expected {low}-{high})")
         return {"panels": panels, "asked": None, "derived": True,
                 "words": words, "expected_low": low, "expected_high": high,
-                "out_of_range": not (low <= len(panels) <= high)}
+                "out_of_range": not (low <= len(panels) <= high),
+                "coverage": _story_coverage(story, panels)}
 
     count = max(2, min(int(asked), 60))
     emit({"id": req_id, "type": "progress", "phase": "denoise",
@@ -2423,11 +2526,11 @@ def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     raw = _write(req_id, SHOTLIST_SYSTEM, _shotlist_instruction(story, count),
                  max_tokens=min(6000, 180 * count), temperature=0.3,
                  repo=req.get("writer"))
-    panels = _parse_shotlist(raw, count)
+    panels = _parse_shotlist(raw, count, story)
     if len(panels) < count:
         log(req_id, f"asked for {count} panels, got {len(panels)}", "warn")
     return {"panels": panels, "asked": count, "derived": False,
-            "words": words}
+            "words": words, "coverage": _story_coverage(story, panels)}
 
 
 def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
@@ -2440,9 +2543,17 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     # without it, a missing reader would fall back to the default repo and
     # fail at load time instead of degrading to a text-only rewrite.
     repo = req.get("assistant", "mlx-community/Qwen2-VL-2B-Instruct-4bit")
-    user_prompt = (req.get("prompt") or "").strip()
-    if not user_prompt:
+    original_prompt = (req.get("prompt") or "").strip()
+    if not original_prompt:
         raise ValueError("write something first, then ask for help improving it")
+    user_prompt, removed = _clean_prompt_request(original_prompt)
+    if not user_prompt:
+        return {
+            "prompt": original_prompt, "original": original_prompt,
+            "saw_image": False, "unclear": True,
+            "note": "Name something visible instead of quality labels.",
+            "removed": removed,
+        }
 
     mode = req.get("mode", "generate")
     # Sources normally arrive sealed as `vault_inputs`, which are decrypted to
@@ -2544,7 +2655,7 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                     # drawn. Inventing a subject to fill the gap is what made
                     # this useless before.
                     return {
-                        "prompt": user_prompt, "original": user_prompt,
+                        "prompt": original_prompt, "original": original_prompt,
                         "saw_image": bool(staged) and not blind,
                         "unclear": True, "description": description,
                         "note": ("This does not say what to draw yet. Name "
@@ -2558,7 +2669,7 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                 log(req_id, f"rewrite rejected ({why}); keeping the request",
                     "warn")
                 return {
-                    "prompt": user_prompt, "original": user_prompt,
+                    "prompt": original_prompt, "original": original_prompt,
                     "saw_image": bool(staged) and not blind,
                     "description": description, "rejected_because": why,
                     "note": ("Your words were kept: the rewrite drifted from "
@@ -2567,7 +2678,7 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
 
         if not _keeps_intent(user_prompt, improved):
             log(req_id, f"discarding rewrite {improved!r}: it lost the request", "warn")
-            return {"prompt": user_prompt, "original": user_prompt,
+            return {"prompt": original_prompt, "original": original_prompt,
                     "saw_image": bool(staged) and not blind,
                     "rejected": improved, "description": description}
     finally:
@@ -2575,8 +2686,9 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         _discard_staged(derived)
         _discard_staged(raw_staged)
 
-    out = {"prompt": improved, "original": user_prompt,
-           "saw_image": bool(staged) and not blind, "description": description}
+    out = {"prompt": improved, "original": original_prompt,
+           "saw_image": bool(staged) and not blind, "description": description,
+           "removed": removed, "changed": improved.strip() != original_prompt.strip()}
     if blind:
         out["note"] = ("Rewritten from your words only. Install the prompt "
                        "assistant (1.2 GiB) if you want it to look at the "
@@ -4189,14 +4301,14 @@ OPS = {
 def handle(req: dict[str, Any]) -> None:
     req_id = req.get("id", "?")
     op = req.get("op", "")
-    with _CANCEL_LOCK:
-        _ACTIVE.add(req_id)
-    _touch()
     fn = OPS.get(op)
     if fn is None:
         emit({"id": req_id, "type": "error", "error": f"unknown op: {op}",
               "kind": "protocol"})
         return
+    with _CANCEL_LOCK:
+        _ACTIVE.add(req_id)
+    _touch()
     try:
         result = fn(req_id, req)
         emit({"id": req_id, "type": "result", "result": result})

@@ -259,6 +259,10 @@ export interface Panel {
   setting: string;
   /** Whether the person we follow is visible in this panel. */
   character_in_frame: boolean;
+  /** Story names of every person visible in this frame. */
+  characters?: string[];
+  /** Exact prose fragment this panel covers, used to audit story coverage. */
+  source?: string;
   /** One line of narration under the panel. Empty when it needs no words. */
   caption: string;
   /** Which continuous stretch of story this belongs to. Pages break here. */

@@ -684,11 +684,24 @@ pub fn set_hf_token(paths: &AppPaths, token: &str) -> Result<()> {
         }
         return Ok(());
     }
-    std::fs::write(&path, token)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let tmp = path.with_extension("tmp");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        file.write_all(token.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(tmp, path)?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&path, token)?;
     }
     Ok(())
 }

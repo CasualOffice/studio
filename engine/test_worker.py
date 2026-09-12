@@ -17,6 +17,7 @@ import secrets
 import sys
 import tempfile
 import unittest
+import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -154,7 +155,8 @@ class Downscale(unittest.TestCase):
             big = os.path.join(d, "big.png")
             Image.new("RGB", (2400, 1800)).save(big)
             out = worker._downscale_for_assist([big])
-            self.assertEqual(max(Image.open(out[0]).size), worker.ASSIST_MAX_EDGE)
+            with Image.open(out[0]) as reduced:
+                self.assertEqual(max(reduced.size), worker.ASSIST_MAX_EDGE)
 
     def test_small_images_are_left_alone(self):
         from PIL import Image
@@ -185,7 +187,7 @@ class Staging(unittest.TestCase):
         key, fid = secrets.token_bytes(32), secrets.token_bytes(16)
         path = os.path.join(tmp, f"blob-{ext}")
         vc.write_sealed(path, key, fid, buf.getvalue())
-        return {"id": f"i{ext}", "file_id": fid.hex(), "key": key.hex(),
+        return {"id": str(uuid.uuid4()), "file_id": fid.hex(), "key": key.hex(),
                 "path": path, "ext": ext}
 
     def test_one_path_per_input_whatever_the_format(self):
@@ -210,7 +212,7 @@ class Staging(unittest.TestCase):
             staged = worker._stage_vault_inputs([entry])
             worker._discard_staged(staged)
             leftovers = [f for f in os.listdir(worker._stage_dir())
-                         if f.startswith("iwebp")]
+                         if f.startswith(entry["id"])]
             self.assertEqual(leftovers, [], "conversion left a file behind")
 
 
@@ -588,6 +590,17 @@ class Clarification(unittest.TestCase):
             "a glazed stoneware teapot with a chipped spout and crazed white glaze")
         self.assertIsNotNone(out)
 
+    def test_empty_quality_labels_are_removed_before_rewriting(self):
+        cleaned, removed = worker._clean_prompt_request(
+            "masterpiece, 8k, a red bicycle, highly detailed")
+        self.assertEqual(cleaned, "a red bicycle")
+        self.assertEqual(set(removed), {"masterpiece", "8k", "highly detailed"})
+
+    def test_quality_cleanup_keeps_descriptive_content(self):
+        cleaned, _ = worker._clean_prompt_request(
+            "a weathered red bicycle against a brick wall")
+        self.assertEqual(cleaned, "a weathered red bicycle against a brick wall")
+
 
 class ShotListParsing(unittest.TestCase):
     """Getting the panels back out of whatever the writer decided to say.
@@ -606,6 +619,23 @@ class ShotListParsing(unittest.TestCase):
         self.assertEqual(len(panels), 2)
         self.assertEqual(panels[0]["shot"], "wide")
         self.assertEqual(panels[1]["setting"], "the kitchen")
+
+    def test_source_quotes_and_story_characters_are_preserved(self):
+        raw = ('[{"shot":"wide","subject":"Mira","action":"enters",'
+               '"setting":"home","character_in_frame":true,'
+               '"characters":["Mira","Invented"],'
+               '"source":"Mira comes home"}]')
+        panels = worker._parse_shotlist(raw, 1, "Mira comes home late.")
+        self.assertEqual(panels[0]["source"], "Mira comes home")
+        self.assertEqual(panels[0]["characters"], ["Mira"])
+
+    def test_coverage_reports_unanchored_passages(self):
+        story = "Mira opens the door. The photographs face the wall. She freezes."
+        panels = [{"source": "Mira opens the door"}, {"source": "She freezes"}]
+        coverage = worker._story_coverage(story, panels)
+        self.assertEqual(coverage["covered"], 2)
+        self.assertEqual(coverage["total"], 3)
+        self.assertEqual(coverage["missing"], ["The photographs face the wall."])
 
     def test_a_fenced_array_parses(self):
         panels = worker._parse_shotlist(f"```json\n{self.GOOD}\n```", 2)
@@ -845,7 +875,8 @@ class TiledUpscaleCancels(unittest.TestCase):
     def test_the_tile_loop_checks_for_cancellation(self):
         import ast
 
-        src = open(os.path.join(HERE, "worker.py")).read()
+        with open(os.path.join(HERE, "worker.py"), encoding="utf-8") as handle:
+            src = handle.read()
         tree = ast.parse(src)
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef) and n.name == "_upscale_tiled")
@@ -858,7 +889,8 @@ class TiledUpscaleCancels(unittest.TestCase):
     def test_every_loop_over_model_calls_can_be_stopped(self):
         import ast
 
-        src = open(os.path.join(HERE, "worker.py")).read()
+        with open(os.path.join(HERE, "worker.py"), encoding="utf-8") as handle:
+            src = handle.read()
         tree = ast.parse(src)
         for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
             if not any(isinstance(n, (ast.For, ast.While)) for n in ast.walk(fn)):
@@ -1082,7 +1114,8 @@ class VideoLoadArguments(unittest.TestCase):
     def test_image_count_is_not_passed_twice(self):
         import ast
 
-        src = open(os.path.join(HERE, "worker.py")).read()
+        with open(os.path.join(HERE, "worker.py"), encoding="utf-8") as handle:
+            src = handle.read()
         tree = ast.parse(src)
         checked = 0
         for node in ast.walk(tree):
@@ -1113,7 +1146,8 @@ class ModuleIntegrity(unittest.TestCase):
     def _tree(self):
         import ast
 
-        return ast.parse(open(os.path.join(HERE, "worker.py")).read())
+        with open(os.path.join(HERE, "worker.py"), encoding="utf-8") as handle:
+            return ast.parse(handle.read())
 
     def test_no_module_constant_is_referenced_without_being_defined(self):
         import ast

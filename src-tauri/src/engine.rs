@@ -44,6 +44,9 @@ pub struct EngineProgress {
     pub seed: Option<i64>,
     pub item_index: Option<u32>,
     pub item_count: Option<u32>,
+    pub bytes_per_second: Option<f64>,
+    pub eta_seconds: Option<f64>,
+    pub stalled_seconds: Option<f64>,
 }
 
 pub struct Engine {
@@ -203,14 +206,22 @@ impl Engine {
     /// Send a request and await its terminal result.
     pub async fn request(&self, job_id: &str, op: &str, mut params: Value) -> Result<Value> {
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(job_id.to_string(), tx);
+        {
+            let mut pending = self.pending.lock().await;
+            if pending.contains_key(job_id) {
+                return Err(AppError::Engine(format!(
+                    "a job with id {job_id} is already running"
+                )));
+            }
+            pending.insert(job_id.to_string(), tx);
+        }
 
         if let Value::Object(ref mut m) = params {
             m.insert("id".into(), json!(job_id));
             m.insert("op".into(), json!(op));
         }
 
-        {
+        let write_result: Result<()> = async {
             let mut stdin = self.stdin.lock().await;
             let line = format!("{}\n", serde_json::to_string(&params)?);
             stdin
@@ -218,13 +229,32 @@ impl Engine {
                 .await
                 .map_err(|e| AppError::Engine(format!("could not reach the engine: {e}")))?;
             stdin.flush().await?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = write_result {
+            self.pending.lock().await.remove(job_id);
+            return Err(error);
         }
 
-        match rx.await {
-            Ok(Ok(v)) => Ok(v),
-            Ok(Err(f)) => Err(AppError::Engine(f.message)),
-            Err(_) => Err(AppError::EngineDown),
+        // A malformed or wedged worker must not leave a command waiting for
+        // ever. Six hours is deliberately generous for large local jobs while
+        // still giving the host a terminal failure it can recover from.
+        match tokio::time::timeout(std::time::Duration::from_secs(6 * 60 * 60), rx).await {
+            Ok(Ok(Ok(v))) => Ok(v),
+            Ok(Ok(Err(f))) => Err(AppError::Engine(f.message)),
+            Ok(Err(_)) => Err(AppError::EngineDown),
+            Err(_) => {
+                self.pending.lock().await.remove(job_id);
+                Err(AppError::Engine(
+                    "the engine did not finish the job within six hours".into(),
+                ))
+            }
         }
+    }
+
+    pub async fn has_pending(&self) -> bool {
+        !self.pending.lock().await.is_empty()
     }
 
     /// Fire-and-forget: cancellation must not queue behind the running job.
@@ -283,6 +313,9 @@ async fn dispatch(app: &AppHandle, pending: &Pending, v: Value) {
                     seed: v["seed"].as_i64(),
                     item_index: v["item_index"].as_u64().map(|n| n as u32),
                     item_count: v["item_count"].as_u64().map(|n| n as u32),
+                    bytes_per_second: v["bytes_per_second"].as_f64(),
+                    eta_seconds: v["eta_seconds"].as_f64(),
+                    stalled_seconds: v["stalled_seconds"].as_f64(),
                 },
             );
         }

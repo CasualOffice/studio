@@ -7,9 +7,10 @@ use crate::setup::{self, SetupState};
 use crate::vault::{RepairReport, Vault, VaultItem, VaultStatus};
 use serde::Deserialize;
 use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 pub struct AppState {
     /// Behind a lock because model storage can be relocated at runtime, and
@@ -17,6 +18,8 @@ pub struct AppState {
     paths_inner: std::sync::RwLock<AppPaths>,
     pub vault: Arc<Vault>,
     pub engine: Mutex<Option<Arc<Engine>>>,
+    job_gate: Arc<RwLock<()>>,
+    setup_running: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -25,6 +28,8 @@ impl AppState {
             paths_inner: std::sync::RwLock::new(paths),
             vault,
             engine: Mutex::new(None),
+            job_gate: Arc::new(RwLock::new(())),
+            setup_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -110,9 +115,19 @@ pub fn setup_state(state: State<'_, AppState>) -> SetupState {
 
 #[tauri::command]
 pub async fn run_setup(app: AppHandle, state: State<'_, AppState>, force: bool) -> Result<()> {
+    if state.setup_running.swap(true, Ordering::AcqRel) {
+        return Err(AppError::msg("Runtime setup is already running."));
+    }
+    let exclusive = state.job_gate.clone().try_write_owned().map_err(|_| {
+        state.setup_running.store(false, Ordering::Release);
+        AppError::msg("Wait for the current local job before repairing the runtime.")
+    })?;
     let paths = state.paths();
+    let running = state.setup_running.clone();
     tauri::async_runtime::spawn(async move {
+        let _exclusive = exclusive;
         let _ = setup::run(app, paths, force).await;
+        running.store(false, Ordering::Release);
     });
     Ok(())
 }
@@ -159,11 +174,27 @@ pub async fn vault_unlock_biometry(state: State<'_, AppState>) -> Result<VaultSt
 }
 
 #[tauri::command]
-pub async fn vault_lock(app: AppHandle, state: State<'_, AppState>) -> Result<VaultStatus> {
+pub async fn vault_lock(_app: AppHandle, state: State<'_, AppState>) -> Result<VaultStatus> {
+    let _exclusive = state.job_gate.try_write().map_err(|_| {
+        AppError::msg("A local job is still running. Cancel it or wait before locking.")
+    })?;
+    // A job that finishes after the key is destroyed cannot commit its sealed
+    // output to the index. Refuse the lock while a request is active; the idle
+    // timer will try again after later activity, and an explicit cancel can
+    // still stop the work first.
+    let engine = state.engine.lock().await.as_ref().cloned();
+    if let Some(engine) = engine.as_ref() {
+        if engine.has_pending().await {
+            return Err(AppError::msg(
+                "A local job is still running. Cancel it or wait for it to finish before locking.",
+            ));
+        }
+    }
+
     state.vault.lock();
-    // Locking should also drop model weights: leaving several GiB resident
-    // after the user deliberately locked would be the wrong default.
-    if let Ok(engine) = state.engine(&app).await {
+    // Locking should also drop model weights. Use only an existing worker: a
+    // lock action must never start a fresh engine just to unload it.
+    if let Some(engine) = engine {
         let _ = engine.request(&new_job_id(), "unload", json!({})).await;
     }
     Ok(state.vault.status())
@@ -207,6 +238,24 @@ pub fn vault_list(state: State<'_, AppState>) -> Result<Vec<VaultItem>> {
     Ok(state.vault.list()?)
 }
 
+/// The in-progress Board is private project content, not an interface
+/// preference. Keep it in the encrypted index so locking the vault locks the
+/// manuscript, cast, notes and panel plan as well.
+#[tauri::command]
+pub fn board_state_get(state: State<'_, AppState>) -> Result<Option<String>> {
+    Ok(state.vault.get_state("board-draft")?)
+}
+
+#[tauri::command]
+pub fn board_state_set(state: State<'_, AppState>, value: String) -> Result<()> {
+    if value.len() > 2 * 1024 * 1024 {
+        return Err(AppError::msg("the Board draft is unexpectedly large"));
+    }
+    serde_json::from_str::<serde_json::Value>(&value)
+        .map_err(|e| AppError::msg(format!("the Board draft is not valid JSON: {e}")))?;
+    Ok(state.vault.set_state("board-draft", value)?)
+}
+
 #[tauri::command]
 pub fn vault_delete(state: State<'_, AppState>, id: String) -> Result<()> {
     Ok(state.vault.delete(&id)?)
@@ -214,8 +263,15 @@ pub fn vault_delete(state: State<'_, AppState>, id: String) -> Result<()> {
 
 /// The single sanctioned path for plaintext to leave the vault.
 #[tauri::command]
-pub fn vault_export(state: State<'_, AppState>, id: String, dest: String) -> Result<u64> {
-    Ok(state.vault.export(&id, std::path::Path::new(&dest))?)
+pub fn vault_export(
+    state: State<'_, AppState>,
+    id: String,
+    dest: String,
+    overwrite: bool,
+) -> Result<u64> {
+    Ok(state
+        .vault
+        .export(&id, std::path::Path::new(&dest), overwrite)?)
 }
 
 /// Store bytes the interface produced, such as a painted mask.
@@ -235,11 +291,20 @@ pub fn vault_import_bytes(
     if data.is_empty() {
         return Err(AppError::msg("nothing to store"));
     }
+    if !matches!(kind.as_str(), "mask" | "adjust") {
+        return Err(AppError::msg("unsupported in-memory import kind"));
+    }
+    let safe_name = std::path::Path::new(&name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.is_empty())
+        .unwrap_or("imported")
+        .to_string();
     let item = VaultItem {
         id: uuid::Uuid::new_v4().to_string(),
         content_hash: None,
         kind,
-        name,
+        name: safe_name,
         mime,
         bytes: data.len() as u64,
         model: String::new(),
@@ -367,6 +432,9 @@ pub async fn set_models_location(
     path: String,
     move_existing: bool,
 ) -> Result<StorageInfo> {
+    let _exclusive = state.job_gate.try_write().map_err(|_| {
+        AppError::msg("Wait for the current local job before moving model storage.")
+    })?;
     let dest = std::path::PathBuf::from(path.trim());
     if !dest.is_absolute() {
         return Err(AppError::msg("Choose a folder, not a relative path."));
@@ -375,6 +443,15 @@ pub async fn set_models_location(
 
     // Refuse to move onto a volume that cannot hold what is already stored.
     let current = state.paths().models_root().clone();
+    let current_cmp = current.canonicalize().unwrap_or_else(|_| current.clone());
+    let dest_cmp = dest.canonicalize().unwrap_or_else(|_| dest.clone());
+    if current_cmp != dest_cmp
+        && (dest_cmp.starts_with(&current_cmp) || current_cmp.starts_with(&dest_cmp))
+    {
+        return Err(AppError::msg(
+            "Choose a folder outside the current model folder. Parent and child locations cannot be moved into each other.",
+        ));
+    }
     let needed = models::dir_size_of(&current);
     if move_existing && needed > 0 {
         let host = HostInfo::probe_for(&dest);
@@ -396,18 +473,41 @@ pub async fn set_models_location(
         }
     }
 
-    if move_existing && current.exists() && current != dest {
+    if move_existing && current.exists() && current_cmp != dest_cmp {
+        if std::fs::read_dir(&dest)?.next().is_some() {
+            return Err(AppError::msg(
+                "Choose an empty destination folder so existing files cannot be overwritten.",
+            ));
+        }
         let from = current.clone();
-        let to = dest.clone();
-        tauri::async_runtime::spawn_blocking(move || models::copy_tree(&from, &to))
+        let parent = dest
+            .parent()
+            .ok_or_else(|| AppError::msg("the destination has no parent folder"))?;
+        let staging = parent.join(format!(".modelstudio-move-{}", uuid::Uuid::new_v4()));
+        let to = staging.clone();
+        let copied = tauri::async_runtime::spawn_blocking(move || models::copy_tree(&from, &to))
             .await
-            .map_err(|e| AppError::msg(format!("move task failed: {e}")))??;
-        let _ = std::fs::remove_dir_all(&current);
+            .map_err(|e| AppError::msg(format!("move task failed: {e}")))?;
+        if let Err(error) = copied {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+        std::fs::remove_dir(&dest)?;
+        if let Err(error) = std::fs::rename(&staging, &dest) {
+            let _ = std::fs::create_dir_all(&dest);
+            return Err(error.into());
+        }
     }
 
     let mut paths = state.paths();
-    paths.set_models_root(dest)?;
+    // The old directory is intentionally still intact until this succeeds. If
+    // configuration persistence fails, the copied destination can be selected
+    // again and no model data has been removed.
+    paths.set_models_root(dest.clone())?;
     state.replace_paths(paths.clone());
+    if move_existing && current.exists() && current_cmp != dest_cmp {
+        let _ = std::fs::remove_dir_all(&current);
+    }
     let _ = app;
     Ok(storage_info_for(&paths))
 }
@@ -436,6 +536,7 @@ pub async fn download_model(
     model_id: String,
     job_id: String,
 ) -> Result<serde_json::Value> {
+    let _job = state.job_gate.read().await;
     let host = HostInfo::probe(&state.paths());
     let entry = models::find(&state.paths(), &host, &model_id)
         .ok_or_else(|| AppError::msg(format!("unknown model: {model_id}")))?;
@@ -487,6 +588,10 @@ pub async fn download_model(
 
 #[tauri::command]
 pub fn delete_model(state: State<'_, AppState>, model_id: String) -> Result<u64> {
+    let _exclusive = state
+        .job_gate
+        .try_write()
+        .map_err(|_| AppError::msg("Wait for the current local job before deleting a model."))?;
     let host = HostInfo::probe(&state.paths());
     let entry = models::find(&state.paths(), &host, &model_id)
         .ok_or_else(|| AppError::msg(format!("unknown model: {model_id}")))?;
@@ -598,6 +703,7 @@ pub async fn resolve_model(
     state: State<'_, AppState>,
     repo: String,
 ) -> Result<serde_json::Value> {
+    let _job = state.job_gate.read().await;
     let repo = normalize_repo(&repo)?;
     let engine = state.engine(&app).await?;
     let mut resolved = engine
@@ -683,11 +789,18 @@ pub fn add_custom_model(state: State<'_, AppState>, spec: NewModel) -> Result<()
 
 #[tauri::command]
 pub fn remove_custom_model(state: State<'_, AppState>, model_id: String) -> Result<()> {
+    let _exclusive = state.job_gate.try_write().map_err(|_| {
+        AppError::msg("Wait for the current local job before changing the model catalog.")
+    })?;
     models::remove_custom(&state.paths(), &model_id)
 }
 
 #[tauri::command]
 pub async fn unload_model(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
+    let _exclusive = state
+        .job_gate
+        .try_write()
+        .map_err(|_| AppError::msg("Wait for the current local job before unloading the model."))?;
     let engine = state.engine(&app).await?;
     engine.request(&new_job_id(), "unload", json!({})).await?;
     Ok(())
@@ -695,13 +808,20 @@ pub async fn unload_model(app: AppHandle, state: State<'_, AppState>) -> Result<
 
 #[tauri::command]
 pub async fn engine_ping(app: AppHandle, state: State<'_, AppState>) -> Result<serde_json::Value> {
+    let _job = state.job_gate.read().await;
     let engine = state.engine(&app).await?;
     engine.request(&new_job_id(), "ping", json!({})).await
 }
 
 #[tauri::command]
-pub async fn cancel_job(app: AppHandle, state: State<'_, AppState>, job_id: String) -> Result<()> {
-    let engine = state.engine(&app).await?;
+pub async fn cancel_job(_app: AppHandle, state: State<'_, AppState>, job_id: String) -> Result<()> {
+    let engine = state
+        .engine
+        .lock()
+        .await
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| AppError::msg("that job is no longer running"))?;
     engine.cancel(&job_id).await
 }
 
@@ -762,6 +882,7 @@ async fn run_job(
     args: GenerateArgs,
     op: &str,
 ) -> Result<Vec<String>> {
+    let _job = state.job_gate.read().await;
     state.require_unlocked()?;
 
     let host = HostInfo::probe(&state.paths());
@@ -1031,6 +1152,7 @@ pub async fn upscale(
     resolution: String,
     low_ram: bool,
 ) -> Result<Vec<String>> {
+    let _job = state.job_gate.read().await;
     state.require_unlocked()?;
     let host = HostInfo::probe(&state.paths());
     let entry = models::find(&state.paths(), &host, &model_id)
@@ -1132,6 +1254,7 @@ pub async fn assist_prompt(
     mode: String,
     images: Vec<String>,
 ) -> Result<serde_json::Value> {
+    let _job = state.job_gate.read().await;
     state.require_unlocked()?;
 
     let host = HostInfo::probe(&state.paths());
@@ -1211,6 +1334,7 @@ pub async fn generate_video(
     seed: i64,
     first_frame: Option<String>,
 ) -> Result<Vec<String>> {
+    let _job = state.job_gate.read().await;
     state.require_unlocked()?;
 
     let host = HostInfo::probe(&state.paths());
@@ -1376,6 +1500,7 @@ pub async fn resolve_lora(
     state: State<'_, AppState>,
     repo: String,
 ) -> Result<serde_json::Value> {
+    let _job = state.job_gate.read().await;
     let repo = normalize_repo(&repo)?;
     let engine = state.engine(&app).await?;
     engine
@@ -1397,6 +1522,7 @@ pub async fn add_lora(
     name: String,
     bytes: u64,
 ) -> Result<Vec<Lora>> {
+    let _job = state.job_gate.read().await;
     let repo = normalize_repo(&repo)?;
     let engine = state.engine(&app).await?;
     engine
@@ -1433,6 +1559,10 @@ pub async fn add_lora(
 
 #[tauri::command]
 pub fn remove_lora(state: State<'_, AppState>, handle: String) -> Result<Vec<Lora>> {
+    let _exclusive = state
+        .job_gate
+        .try_write()
+        .map_err(|_| AppError::msg("Wait for the current local job before removing an adapter."))?;
     let paths = state.paths();
     let mut list = load_loras(&paths);
     list.retain(|l| l.handle != handle);
@@ -1489,6 +1619,7 @@ pub async fn enrich_panels(
     panels: serde_json::Value,
     style: String,
 ) -> Result<serde_json::Value> {
+    let _job = state.job_gate.read().await;
     state.require_unlocked()?;
 
     let host = HostInfo::probe(&state.paths());
@@ -1532,6 +1663,8 @@ pub struct BoardPages {
     pub scenes: Vec<u32>,
     /// "page" for tiers, "strip" for a vertical scroll.
     pub layout: String,
+    pub project: Option<String>,
+    pub project_name: Option<String>,
 }
 
 #[tauri::command]
@@ -1541,6 +1674,7 @@ pub async fn compose_board(
     job_id: String,
     board: BoardPages,
 ) -> Result<Vec<String>> {
+    let _job = state.job_gate.read().await;
     let BoardPages {
         panels,
         captions,
@@ -1548,6 +1682,8 @@ pub async fn compose_board(
         dialogue,
         scenes,
         layout,
+        project,
+        project_name,
     } = board;
     state.require_unlocked()?;
     if panels.is_empty() {
@@ -1657,9 +1793,9 @@ pub async fn compose_board(
             inputs: panels.clone(),
             created_at: chrono::Local::now().to_rfc3339(),
             duration_ms: started.elapsed().as_millis() as u64,
-            project: None,
-            project_name: None,
-            project_index: None,
+            project: project.clone(),
+            project_name: project_name.clone(),
+            project_index: Some(i as u32),
         })?;
     }
 
@@ -1692,6 +1828,7 @@ pub async fn shot_list(
     // panels regardless of what was in it.
     panels: Option<u32>,
 ) -> Result<serde_json::Value> {
+    let _job = state.job_gate.read().await;
     state.require_unlocked()?;
 
     let host = HostInfo::probe(&state.paths());
@@ -1728,6 +1865,7 @@ pub async fn story_cast(
     job_id: String,
     story: String,
 ) -> Result<serde_json::Value> {
+    let _job = state.job_gate.read().await;
     state.require_unlocked()?;
 
     let host = HostInfo::probe(&state.paths());
@@ -1757,8 +1895,12 @@ pub fn hf_token_status(state: State<'_, AppState>) -> Result<serde_json::Value> 
     Ok(json!({
         "present": token.is_some(),
         // Enough to recognise which token is stored, not enough to use it.
-        "hint": token.map(|t| format!("{}...{}", &t[..t.len().min(6)],
-                                      &t[t.len().saturating_sub(4)..])),
+        "hint": token.map(|t| {
+            let first: String = t.chars().take(6).collect();
+            let mut last: String = t.chars().rev().take(4).collect();
+            last = last.chars().rev().collect();
+            format!("{first}...{last}")
+        }),
     }))
 }
 
@@ -1768,6 +1910,9 @@ pub fn hf_token_status(state: State<'_, AppState>) -> Result<serde_json::Value> 
 /// afterwards; the next request starts a fresh one that can see the new value.
 #[tauri::command]
 pub async fn set_hf_token(state: State<'_, AppState>, token: String) -> Result<()> {
+    let _exclusive = state.job_gate.try_write().map_err(|_| {
+        AppError::msg("Wait for the current local job before changing the access token.")
+    })?;
     models::set_hf_token(&state.paths(), &token)?;
     state.stop_engine().await;
     Ok(())

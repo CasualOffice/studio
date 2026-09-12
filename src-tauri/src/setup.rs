@@ -8,15 +8,22 @@ use crate::error::{AppError, Result};
 use crate::paths::AppPaths;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::process::Stdio;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-/// Pinned fallback used when the GitHub release API is unreachable.
-const FALLBACK_PY: &str = "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14+20260901-aarch64-apple-darwin-install_only.tar.gz";
+/// A reviewed, immutable runtime artifact. Do not replace this with a
+/// "latest" lookup: setup downloads executable code and must be reproducible.
+const PYTHON_URL: &str = "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-aarch64-apple-darwin-install_only.tar.gz";
+const PYTHON_SHA256: &str = "3ee3ee547cedfeb7c2b16b2b7156039f7b470bb8f857e226fd3d2eb11db83c76";
 const PY_SERIES: &str = "3.12";
+const MLX_GEN_VERSION: &str = "0.36.0";
+const MLX_LM_VERSION: &str = "0.31.3";
+const MLX_VLM_VERSION: &str = "0.7.0";
+const ENGINE_REQUIREMENTS: &str = include_str!("../../engine/requirements.lock");
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct InstallStamp {
@@ -69,7 +76,9 @@ pub fn state(paths: &AppPaths) -> SetupState {
     let stamp: Option<InstallStamp> = std::fs::read_to_string(paths.stamp())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
-    let engine_present = stamp.is_some();
+    let engine_present = stamp.as_ref().is_some_and(|s| {
+        s.python_version.starts_with(PY_SERIES) && s.mlxgen_version == MLX_GEN_VERSION
+    }) && required_distributions_present(paths);
     SetupState {
         ready: python_present && venv_present && engine_present,
         python_present,
@@ -80,46 +89,43 @@ pub fn state(paths: &AppPaths) -> SetupState {
     }
 }
 
-async fn resolve_python_url() -> String {
-    // Resolve the newest build at runtime so a pinned tag cannot go stale,
-    // but never let a network hiccup block setup.
-    let client = reqwest::Client::builder()
-        .user_agent("melp-model-studio")
-        .build();
-    let Ok(client) = client else {
-        return FALLBACK_PY.into();
+fn required_distributions_present(paths: &AppPaths) -> bool {
+    let site = paths
+        .venv()
+        .join("lib")
+        .join(format!("python{PY_SERIES}"))
+        .join("site-packages");
+    let Ok(entries) = std::fs::read_dir(site) else {
+        return false;
     };
-
-    let resp = client
-        .get("https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest")
-        .send()
-        .await;
-    let Ok(resp) = resp else {
-        return FALLBACK_PY.into();
-    };
-    let Ok(json) = resp.json::<serde_json::Value>().await else {
-        return FALLBACK_PY.into();
-    };
-
-    let want_prefix = format!("cpython-{}.", PY_SERIES);
-    let assets = json.get("assets").and_then(|a| a.as_array());
-    if let Some(assets) = assets {
-        for a in assets {
-            let name = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            if name.starts_with(&want_prefix)
-                && name.contains("aarch64-apple-darwin")
-                && name.ends_with("-install_only.tar.gz")
-            {
-                if let Some(url) = a.get("browser_download_url").and_then(|u| u.as_str()) {
-                    return url.to_string();
-                }
-            }
-        }
-    }
-    FALLBACK_PY.into()
+    let names: Vec<String> = entries
+        .flatten()
+        .map(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .to_lowercase()
+                .replace('-', "_")
+        })
+        .collect();
+    [
+        format!("mlx_gen-{MLX_GEN_VERSION}.dist_info"),
+        format!("mlx_lm-{MLX_LM_VERSION}.dist_info"),
+        format!("mlx_vlm-{MLX_VLM_VERSION}.dist_info"),
+        "cryptography-".into(),
+        "pillow_heif-".into(),
+        "huggingface_hub-".into(),
+    ]
+    .iter()
+    .all(|want| names.iter().any(|name| name.starts_with(want)))
 }
 
-async fn download_to(report: Reporter<'_>, url: &str, dest: &Path, span: (f32, f32)) -> Result<()> {
+async fn download_to(
+    report: Reporter<'_>,
+    url: &str,
+    expected_sha256: &str,
+    dest: &Path,
+    span: (f32, f32),
+) -> Result<()> {
     let client = reqwest::Client::builder()
         .user_agent("melp-model-studio")
         .build()?;
@@ -133,11 +139,13 @@ async fn download_to(report: Reporter<'_>, url: &str, dest: &Path, span: (f32, f
     let mut stream = resp.bytes_stream();
     let mut done: u64 = 0;
     let mut last_emit = std::time::Instant::now();
+    let mut digest = Sha256::new();
 
     use tokio::io::AsyncWriteExt;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
         done += chunk.len() as u64;
+        digest.update(&chunk);
         file.write_all(&chunk).await?;
         if last_emit.elapsed().as_millis() > 120 {
             last_emit = std::time::Instant::now();
@@ -157,6 +165,13 @@ async fn download_to(report: Reporter<'_>, url: &str, dest: &Path, span: (f32, f
         }
     }
     file.flush().await?;
+    let actual = format!("{:x}", digest.finalize());
+    if actual != expected_sha256 {
+        let _ = tokio::fs::remove_file(dest).await;
+        return Err(AppError::msg(format!(
+            "Python runtime checksum mismatch: expected {expected_sha256}, got {actual}"
+        )));
+    }
     Ok(())
 }
 
@@ -183,30 +198,41 @@ async fn run_streaming(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
-    // Read stdout inline rather than on a task: the reporter borrows, so it
-    // cannot be moved into a 'static future.
-    if let Some(out) = stdout {
-        let mut lines = BufReader::new(out).lines();
-        let mut n = 0u32;
-        while let Ok(Some(line)) = lines.next_line().await {
-            n += 1;
-            // pip is verbose; a slow crawl beats a fake percentage.
-            let frac = span.0 + (span.1 - span.0) * (1.0 - (-(n as f32) / 220.0).exp());
-            report(step, &line, Some(frac));
-        }
-    }
-
-    let mut err_text = String::new();
-    if let Some(err) = stderr {
-        let mut lines = BufReader::new(err).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            err_text.push_str(&line);
-            err_text.push('\n');
-            if err_text.len() > 8000 {
-                err_text.drain(..4000);
+    // Both pipes must be drained concurrently. pip writes progress to stderr;
+    // waiting for stdout to close first can fill the stderr pipe and deadlock.
+    let stdout_future = async {
+        if let Some(out) = stdout {
+            let mut lines = BufReader::new(out).lines();
+            let mut n = 0u32;
+            while let Ok(Some(line)) = lines.next_line().await {
+                n += 1;
+                // pip is verbose; a slow crawl beats a fake percentage.
+                let frac = span.0 + (span.1 - span.0) * (1.0 - (-(n as f32) / 220.0).exp());
+                report(step, &line, Some(frac));
             }
         }
-    }
+    };
+
+    let stderr_future = async {
+        let mut err_text = String::new();
+        if let Some(err) = stderr {
+            let mut lines = BufReader::new(err).lines();
+            let mut n = 0u32;
+            while let Ok(Some(line)) = lines.next_line().await {
+                n += 1;
+                err_text.push_str(&line);
+                err_text.push('\n');
+                if err_text.len() > 8000 {
+                    err_text.drain(..4000);
+                }
+                let frac = span.0 + (span.1 - span.0) * (1.0 - (-(n as f32) / 220.0).exp());
+                report(step, &line, Some(frac));
+            }
+        }
+        err_text
+    };
+
+    let (_, err_text) = tokio::join!(stdout_future, stderr_future);
 
     let status = child.wait().await?;
     if !status.success() {
@@ -280,10 +306,9 @@ async fn provision_python(report: Reporter<'_>, paths: &AppPaths, force: bool) -
         return Ok(());
     }
 
-    report("python", "Resolving Python runtime", Some(0.01));
-    let url = resolve_python_url().await;
+    report("python", "Preparing verified Python runtime", Some(0.01));
     let archive = paths.runtime().join("python.tar.gz");
-    download_to(report, &url, &archive, (0.02, 0.20)).await?;
+    download_to(report, PYTHON_URL, PYTHON_SHA256, &archive, (0.02, 0.20)).await?;
 
     report("python", "Extracting Python runtime", Some(0.22));
     let staging = paths.runtime().join("python-staging");
@@ -333,15 +358,14 @@ pub async fn bootstrap(report: Reporter<'_>, paths: &AppPaths, force: bool) -> R
     provision_venv(report, paths, force).await?;
 
     // ---- 3. Engine ------------------------------------------------------
-    report("engine", "Upgrading pip", Some(0.30));
+    report("engine", "Installing pinned packaging tools", Some(0.30));
     let mut up = Command::new(paths.venv_python());
     up.args([
         "-m",
         "pip",
         "install",
-        "--upgrade",
-        "pip",
-        "wheel",
+        "pip==26.2.1",
+        "wheel==0.48.0",
         "--no-input",
     ]);
     run_streaming(report, "engine", up, (0.30, 0.34)).await?;
@@ -351,37 +375,18 @@ pub async fn bootstrap(report: Reporter<'_>, paths: &AppPaths, force: bool) -> R
         "Installing mlx-gen and PyTorch — this is the long part (~3 GB)",
         Some(0.35),
     );
+    let requirements = paths.runtime().join("requirements.lock");
+    std::fs::write(&requirements, ENGINE_REQUIREMENTS)?;
     let mut pip = Command::new(paths.venv_python());
     pip.args([
         "-m",
         "pip",
         "install",
-        "--upgrade",
         "--no-input",
-        "mlx-gen",
-        "huggingface_hub[hf_transfer]",
-        // Pinned deliberately. MLX-Gen allows anything below 0.32, but the
-        // versions differ in ways that matter: 0.31.0 changes mx.repeat's
-        // accepted argument types (which SeedVR2 depends on) and lacks
-        // mx.new_thread_local_stream (which mlx-vlm needs). 0.31.2 is the one
-        // where generation, editing and the prompt assistant all work.
-        "mlx==0.31.2",
-        "mlx-metal==0.31.2",
-        // Vault sealing happens inside the engine process, so plaintext never
-        // reaches disk; this is the AEAD implementation it uses.
-        "cryptography",
-        // The local prompt assistant. Its declared floor is mlx>=0.32.2, which
-        // conflicts with MLX-Gen's <0.32 cap, but it runs correctly on 0.31.2;
-        // pip will warn about the mismatch and that warning is expected.
-        "mlx-vlm",
-        // The prompt writer is a text model, and text generation is a
-        // different library from vision. Keeping the two apart is deliberate:
-        // a 2B vision-language model doing both could not hold a rule while
-        // writing, and answered "make it look better" by inventing a scene.
-        "mlx-lm",
-        // iPhone photos are HEIC, which Pillow cannot read on its own.
-        "pillow-heif",
+        "--only-binary=:all:",
+        "--requirement",
     ]);
+    pip.arg(&requirements);
     // Keep pip's own cache inside our root so the disk meter stays honest.
     pip.env("PIP_CACHE_DIR", paths.root.join("pipcache"));
     run_streaming(report, "engine", pip, (0.35, 0.95)).await?;

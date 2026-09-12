@@ -164,6 +164,14 @@ describe("sheetPrompt", () => {
     expect(out).toContain("plain background");
     expect(out).toContain(CHAR);
   });
+
+  it("builds one labelled lineup when the story has several major characters", () => {
+    const out = sheetPrompt("ink", "Mira: red scarf\nJon: blue coat");
+    expect(out).toContain("Cast reference lineup");
+    expect(out).toContain("Mira: red scarf");
+    expect(out).toContain("Jon: blue coat");
+    expect(out).toContain("distinct silhouettes");
+  });
 });
 
 describe("panelReferences", () => {

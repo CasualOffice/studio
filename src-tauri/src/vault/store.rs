@@ -125,9 +125,21 @@ pub fn content_hash(bytes: &[u8]) -> String {
 
 fn derive_kek(passphrase: &str, kdf: &KdfParams) -> Result<[u8; 32], VaultError> {
     use argon2::{Algorithm, Argon2, Params, Version};
+    if kdf.algo != "argon2id"
+        || !(8 * 1024..=1024 * 1024).contains(&kdf.m_cost)
+        || !(1..=10).contains(&kdf.t_cost)
+        || !(1..=16).contains(&kdf.p_cost)
+    {
+        return Err(VaultError::Corrupt(
+            "unsafe or unsupported KDF parameters".into(),
+        ));
+    }
     let salt = B64
         .decode(&kdf.salt)
         .map_err(|e| VaultError::Corrupt(e.to_string()))?;
+    if !(16..=64).contains(&salt.len()) {
+        return Err(VaultError::Corrupt("KDF salt has an invalid length".into()));
+    }
     let params = Params::new(kdf.m_cost, kdf.t_cost, kdf.p_cost, Some(32))
         .map_err(|e| VaultError::Kdf(e.to_string()))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
@@ -189,6 +201,10 @@ pub struct VaultItem {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 struct Index {
     items: Vec<VaultItem>,
+    /// Small private application documents, such as the in-progress Board.
+    /// They live inside the encrypted index so drafts never touch localStorage.
+    #[serde(default)]
+    state: std::collections::BTreeMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +314,12 @@ impl Vault {
     }
     fn blob_path(&self, id: &str) -> PathBuf {
         self.blobs().join(id)
+    }
+
+    fn validate_id(id: &str) -> Result<(), VaultError> {
+        uuid::Uuid::parse_str(id)
+            .map(|_| ())
+            .map_err(|_| VaultError::NoSuchItem(id.to_string()))
     }
 
     pub fn exists(&self) -> bool {
@@ -558,6 +580,7 @@ impl Vault {
     }
 
     pub fn get_item(&self, id: &str) -> Result<VaultItem, VaultError> {
+        Self::validate_id(id)?;
         self.with_unlocked(|u| {
             u.index
                 .items
@@ -583,7 +606,11 @@ impl Vault {
     /// Derive the key for one existing blob, so the engine can open exactly
     /// that input and nothing else. The file id lives in the blob's header.
     pub fn input_key(&self, id: &str) -> Result<([u8; 16], [u8; 32], PathBuf), VaultError> {
+        Self::validate_id(id)?;
         self.with_unlocked(|u| {
+            if !u.index.items.iter().any(|item| item.id == id) {
+                return Err(VaultError::NoSuchItem(id.to_string()));
+            }
             let path = self.blob_path(id);
             if !path.exists() {
                 return Err(VaultError::NoSuchItem(id.to_string()));
@@ -612,6 +639,7 @@ impl Vault {
 
     /// Record an already-sealed blob that the engine wrote into place.
     pub fn commit_slot(&self, mut item: VaultItem) -> Result<(), VaultError> {
+        Self::validate_id(&item.id)?;
         let mut guard = write_guard!(self.inner);
         let u = guard.as_mut().ok_or(VaultError::Locked)?;
         if !self.blob_path(&item.id).exists() {
@@ -641,18 +669,21 @@ impl Vault {
     /// releasing first let two concurrent writers interleave, so the later
     /// write clobbered the earlier one's entry and orphaned its blob.
     pub fn put(&self, plaintext: &[u8], mut item: VaultItem) -> Result<String, VaultError> {
+        Self::validate_id(&item.id)?;
         let mut guard = write_guard!(self.inner);
         let u = guard.as_mut().ok_or(VaultError::Locked)?;
 
         let hash = content_hash(plaintext);
-        if let Some(existing) = u
-            .index
-            .items
-            .iter()
-            .find(|i| i.content_hash.as_deref() == Some(hash.as_str()))
-        {
-            // Same bytes already stored; hand back what is already there.
-            return Ok(existing.id.clone());
+        if item.kind != "mask" {
+            if let Some(existing) = u
+                .index
+                .items
+                .iter()
+                .find(|i| i.content_hash.as_deref() == Some(hash.as_str()))
+            {
+                // Same bytes already stored; hand back what is already there.
+                return Ok(existing.id.clone());
+            }
         }
         item.content_hash = Some(hash);
 
@@ -669,7 +700,11 @@ impl Vault {
     }
 
     pub fn get(&self, id: &str) -> Result<Vec<u8>, VaultError> {
+        Self::validate_id(id)?;
         self.with_unlocked(|u| {
+            if !u.index.items.iter().any(|item| item.id == id) {
+                return Err(VaultError::NoSuchItem(id.to_string()));
+            }
             let path = self.blob_path(id);
             if !path.exists() {
                 return Err(VaultError::NoSuchItem(id.to_string()));
@@ -680,8 +715,12 @@ impl Vault {
     }
 
     pub fn delete(&self, id: &str) -> Result<(), VaultError> {
+        Self::validate_id(id)?;
         let mut guard = write_guard!(self.inner);
         let u = guard.as_mut().ok_or(VaultError::Locked)?;
+        if !u.index.items.iter().any(|item| item.id == id) {
+            return Err(VaultError::NoSuchItem(id.to_string()));
+        }
         u.index.items.retain(|i| i.id != id);
         let index = u.index.clone();
         let dek = u.dek;
@@ -712,6 +751,10 @@ impl Vault {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
                 if known.contains(&name) || name.ends_with(".tmp") {
+                    continue;
+                }
+                if Self::validate_id(&name).is_err() {
+                    unreadable += 1;
                     continue;
                 }
                 let Ok(sealed) = std::fs::read(e.path()) else {
@@ -782,13 +825,41 @@ impl Vault {
     }
 
     /// The one sanctioned way plaintext leaves the vault.
-    pub fn export(&self, id: &str, dest: &Path) -> Result<u64, VaultError> {
+    pub fn export(&self, id: &str, dest: &Path, overwrite: bool) -> Result<u64, VaultError> {
         let plain = self.get(id)?;
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(dest, &plain)?;
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .create_new(!overwrite)
+            .truncate(overwrite)
+            .open(dest)?;
+        file.write_all(&plain)?;
+        file.sync_all()?;
         Ok(plain.len() as u64)
+    }
+
+    pub fn get_state(&self, key: &str) -> Result<Option<String>, VaultError> {
+        self.with_unlocked(|u| Ok(u.index.state.get(key).cloned()))
+    }
+
+    pub fn set_state(&self, key: &str, value: String) -> Result<(), VaultError> {
+        if key.is_empty()
+            || key.len() > 64
+            || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(VaultError::Corrupt("invalid application-state key".into()));
+        }
+        let mut guard = write_guard!(self.inner);
+        let u = guard.as_mut().ok_or(VaultError::Locked)?;
+        let mut index = u.index.clone();
+        index.state.insert(key.to_string(), value);
+        self.write_index(&u.dek, &index)?;
+        u.index = index;
+        Ok(())
     }
 }
 
@@ -840,4 +911,46 @@ fn delete_biometric_kek() -> Result<(), VaultError> {
 #[cfg(not(target_os = "macos"))]
 fn delete_biometric_kek() -> Result<(), VaultError> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("modelstudio-{name}-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn rejects_blob_ids_that_are_paths() {
+        for id in ["../vault.json", "/tmp/file", "not-a-uuid"] {
+            assert!(Vault::validate_id(id).is_err(), "accepted {id}");
+        }
+        assert!(Vault::validate_id(&uuid::Uuid::new_v4().to_string()).is_ok());
+    }
+
+    #[test]
+    fn encrypted_state_survives_lock_and_unlock() {
+        let root = scratch("state");
+        let vault = Vault::new(root.clone());
+        vault.create("a long test passphrase", false).unwrap();
+        vault
+            .set_state("board-draft", r#"{"story":"private"}"#.into())
+            .unwrap();
+        vault.lock();
+        assert!(matches!(
+            vault.get_state("board-draft"),
+            Err(VaultError::Locked)
+        ));
+        vault
+            .unlock_with_passphrase("a long test passphrase")
+            .unwrap();
+        assert_eq!(
+            vault.get_state("board-draft").unwrap().as_deref(),
+            Some(r#"{"story":"private"}"#)
+        );
+        let raw_index = std::fs::read(root.join("index.enc")).unwrap();
+        assert!(!raw_index.windows(7).any(|bytes| bytes == b"private"));
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

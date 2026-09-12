@@ -50,6 +50,8 @@ export default function Welcome({
     (n, p) => n + p.m.package_gib * 1024 ** 3, 0);
 
   const installAll = async () => {
+    let failures = 0;
+    let cancelled = false;
     for (const p of pending) {
       const id = newJobId();
       setBusy(p.m.id); setJobId(id); setProg(null);
@@ -62,13 +64,20 @@ export default function Welcome({
         const msg = errText(e);
         notify(`${p.m.name}: ${msg}`, true);
         // One failure should not abandon the rest; the others still help.
-        if (msg.includes("ancelled")) break;
+        if (msg.includes("ancelled")) { cancelled = true; break; }
+        failures++;
       } finally {
         un(); setBusy(null); setJobId(null); setProg(null);
       }
     }
-    notify("Ready. Everything is on this Mac — nothing gets sent anywhere.");
-    onSkip();
+    if (cancelled) {
+      notify("Download stopped. You can continue with the models already installed.");
+    } else if (failures > 0) {
+      notify(`${failures} model download${failures === 1 ? "" : "s"} failed. Retry before continuing.`, true);
+    } else {
+      notify("Ready. Everything is on this Mac; nothing gets sent anywhere.");
+      onSkip();
+    }
   };
 
   const cancel = async () => {

@@ -69,16 +69,20 @@ export const api = {
       expected_low?: number;
       expected_high?: number;
       out_of_range?: boolean;
+      coverage?: { covered: number; total: number; percent: number; missing: string[] };
     }>("shot_list", { jobId, story, panels }),
   enrichPanels: (jobId: string, panels: Panel[], style: string) =>
     invoke<{ panels: Panel[] }>("enrich_panels", { jobId, panels, style }),
   composeBoard: (
     jobId: string, panels: string[], captions: string[], shots: string[],
     dialogue: { speaker: string; text: string }[][], scenes: number[],
-    layout: string
+    layout: string, project: string | null, projectName: string
   ) => invoke<string[]>("compose_board",
                         { jobId, board: { panels, captions, shots, dialogue,
-                                          scenes, layout } }),
+                                          scenes, layout, project,
+                                          project_name: projectName } }),
+  boardStateGet: () => invoke<string | null>("board_state_get"),
+  boardStateSet: (value: string) => invoke<void>("board_state_set", { value }),
   findOrphans: () => invoke<Orphans>("find_orphans"),
   sweepOrphans: () => invoke<number>("sweep_orphans"),
   hfTokenStatus: () =>
@@ -92,7 +96,8 @@ export const api = {
 
   assistPrompt: (jobId: string, prompt: string, mode: string, images: string[]) =>
     invoke<{ prompt: string; original: string; saw_image: boolean;
-             unclear?: boolean; note?: string }>(
+             unclear?: boolean; note?: string; changed?: boolean;
+             removed?: string[]; rejected_because?: string }>(
       "assist_prompt", { jobId, prompt, mode, images }
     ),
 
@@ -120,8 +125,8 @@ export const api = {
   vaultList: () => invoke<VaultItem[]>("vault_list"),
   vaultRepair: () => invoke<RepairReport>("vault_repair"),
   vaultDelete: (id: string) => invoke<void>("vault_delete", { id }),
-  vaultExport: (id: string, dest: string) =>
-    invoke<number>("vault_export", { id, dest }),
+  vaultExport: (id: string, dest: string, overwrite = false) =>
+    invoke<number>("vault_export", { id, dest, overwrite }),
   vaultImport: (source: string, kind: "image" | "any") =>
     invoke<string>("vault_import", { source, kind }),
   vaultImportBytes: (data: Uint8Array, name: string, mime: string, kind: string) =>

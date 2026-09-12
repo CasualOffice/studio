@@ -8,13 +8,17 @@ it. This describes what that means in practice, and what it does not cover.
 Everything the app generates or imports is sealed before it reaches disk,
 with ChaCha20-Poly1305 and a per-file subkey derived by HKDF. The index of
 what exists is encrypted too, so filenames and prompts are not readable from
-the filesystem. The key that wraps the rest is derived from your passphrase
+the filesystem. In-progress Board manuscripts, cast data, panel briefs and
+corrections are stored in that encrypted index as well, rather than browser
+preferences. The key that wraps the rest is derived from your passphrase
 with Argon2id, or held in the macOS Keychain behind a biometric access
 control when the build is signed with a team identifier.
 
 Plaintext exists only in memory, and only while a model needs it. Source
 images are decrypted into a private staging directory for as long as a job
-runs and removed afterwards, including on failure.
+runs and removed afterwards, including on failure. Staging directories carry
+an application-specific prefix and stale remnants from a process crash are
+scavenged at the next engine start.
 
 Nothing is sent anywhere. There is no account, no API key, no telemetry, and
 no cloud inference. The only network traffic is model downloads, which go to

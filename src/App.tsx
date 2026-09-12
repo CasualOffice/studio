@@ -11,6 +11,7 @@ import Video from "./components/Video";
 import Storyboard from "./components/Storyboard";
 import Welcome from "./components/Welcome";
 import { loadPref, savePref } from "./lib/prefs";
+import { migrateBoardDraft } from "./lib/boardDraft";
 import Security from "./components/Security";
 import Activity from "./components/Activity";
 import { Toast } from "./components/shared";
@@ -132,6 +133,9 @@ export default function App() {
     let un: (() => void) | undefined;
     let idle: number | undefined;
     onEngineProgress((p) => {
+      // Engine work is activity too. A person waiting for a long local render
+      // must not lose the result merely because they are not moving the mouse.
+      window.dispatchEvent(new Event("modelstudio:activity"));
       const phase = p.phase === "download" ? "Downloading" :
         p.phase === "load" ? "Loading model" : "Working";
       // A download is the one job long enough that you will leave the tab it
@@ -179,9 +183,11 @@ export default function App() {
 
   useEffect(() => {
     if (!ready) return;
+    void migrateBoardDraft().catch((e) =>
+      notify(`Could not secure the old Board draft: ${errText(e)}`, true));
     void refreshModels();
     void refreshItems();
-  }, [ready, refreshModels, refreshItems]);
+  }, [ready, refreshModels, refreshItems, notify]);
 
   useEffect(() => {
     let un: (() => void) | undefined;
@@ -201,10 +207,14 @@ export default function App() {
         try {
           setVault(await api.vaultLock());
           notify("Vault locked after 15 minutes of inactivity.");
-        } catch { /* already locked */ }
+        } catch {
+          // Active jobs deliberately refuse a lock. Re-arm the timer so the
+          // vault still locks once the work has gone quiet.
+          reset();
+        }
       }, IDLE_LOCK_MS);
     };
-    const events: (keyof WindowEventMap)[] = ["mousemove", "keydown", "mousedown", "wheel"];
+    const events = ["mousemove", "keydown", "mousedown", "wheel", "modelstudio:activity"];
     events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
     reset();
     return () => {

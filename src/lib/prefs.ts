@@ -25,3 +25,11 @@ export function savePref(key: string, value: unknown): void {
     // Full or disabled storage is not worth interrupting the user for.
   }
 }
+
+export function removePref(key: string): void {
+  try {
+    localStorage.removeItem(PREFIX + key);
+  } catch {
+    // Unavailable storage must never stop a migration from completing.
+  }
+}

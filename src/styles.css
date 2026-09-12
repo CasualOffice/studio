@@ -421,6 +421,18 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   height: calc(100vh - 230px);
   min-height: 420px;
 }
+.board-flow {
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  margin: 0 0 8px; color: var(--text-faint); font-size: 10.5px;
+}
+.board-flow > span:not(.board-save) {
+  padding: 4px 8px; border-radius: 5px; border: 1px solid transparent;
+}
+.board-flow > span.current {
+  color: var(--text); background: var(--bg-raised); border-color: var(--border-strong);
+  font-weight: 650;
+}
+.board-flow .board-save { margin-left: auto; color: var(--good); }
 .board-pane {
   background: var(--bg-raised);
   overflow-y: auto;
@@ -515,6 +527,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 }
 
 @media (max-width: 1080px) {
+  .board-flow .board-save { width: 100%; margin-left: 0; }
   .board-work { grid-template-columns: 1fr; height: auto; }
   .board-pane { max-height: 46vh; }
 }

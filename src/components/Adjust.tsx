@@ -47,11 +47,21 @@ export default function Adjust({
   }, [sourceId]);
 
   const applyAspect = (r: Rect, a: number | null): Rect => {
-    if (!a) return r;
-    // Keep the taller/wider dimension and derive the other, so dragging feels
-    // like it follows the pointer rather than fighting it.
-    const h = r.w / a;
-    return h <= 1 ? { ...r, h: r.w / a } : { ...r, h };
+    const availableW = Math.max(0, 1 - r.x);
+    const availableH = Math.max(0, 1 - r.y);
+    if (!a || !natural.w || !natural.h) {
+      return { ...r, w: Math.min(r.w, availableW), h: Math.min(r.h, availableH) };
+    }
+    // The selection is stored in normalised image coordinates. Correct for
+    // the source's own aspect ratio before enforcing the requested output.
+    const normalisedAspect = a * natural.h / natural.w;
+    let w = Math.min(r.w, availableW);
+    let h = w / normalisedAspect;
+    if (h > availableH) {
+      h = availableH;
+      w = Math.min(availableW, h * normalisedAspect);
+    }
+    return { ...r, w, h };
   };
 
   const pointIn = (e: React.PointerEvent) => {

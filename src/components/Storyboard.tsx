@@ -3,6 +3,7 @@ import { api, errText, newJobId, onEngineProgress, vaultUrl } from "../lib/api";
 import type { Cast, EngineProgress, ModelStatus, Panel } from "../lib/types";
 import { ImageDrop, JobProgress } from "./shared";
 import { loadPref, savePref } from "../lib/prefs";
+import { loadBoardDraft, type BoardDraft, type Coverage } from "../lib/boardDraft";
 import { STYLES, panelPrompt, panelReferences, panelSeed, placePrompt,
          sheetPrompt, styleWords } from "../lib/board";
 
@@ -45,11 +46,10 @@ export default function Storyboard({
   const [modelId, setModelId] = useState("");
   const model = usable.find((m) => m.id === modelId) ?? usable[0];
 
-  const [story, setStory] = useState(() => loadPref("boardStory", ""));
+  const [story, setStory] = useState("");
   // The cast, read out of the story rather than typed in. `null` means the
   // story has not been read yet.
-  const [cast, setCast] = useState<Cast | null>(
-    () => loadPref<Cast | null>("boardCast", null));
+  const [cast, setCast] = useState<Cast | null>(null);
   const [reading, setReading] = useState(false);
   /**
    * How many panels one press draws.
@@ -67,19 +67,15 @@ export default function Storyboard({
    * loose pictures sharing a timestamp. Kept across restarts with the rest of
    * the board, and replaced when a new story is divided.
    */
-  const [projectId, setProjectId] = useState<string | null>(
-    () => loadPref<string | null>("boardProject", null));
+  const [projectId, setProjectId] = useState<string | null>(null);
 
 
   const [style, setStyle] = useState(() => loadPref("boardStyle", STYLES[0].id));
-  const [character, setCharacter] = useState(() => loadPref("boardCharacter", ""));
+  const [character, setCharacter] = useState("");
 
-  const [panels, setPanels] = useState<Panel[] | null>(
-    () => loadPref<Panel[] | null>("boardPanels", null));
-  const [sheet, setSheet] = useState<string | null>(
-    () => loadPref<string | null>("boardSheet", null));
-  const [drawn, setDrawn] = useState<(string | null)[]>(
-    () => loadPref<(string | null)[]>("boardDrawn", []));
+  const [panels, setPanels] = useState<Panel[] | null>(null);
+  const [sheet, setSheet] = useState<string | null>(null);
+  const [drawn, setDrawn] = useState<(string | null)[]>([]);
   /** The distinct scenes the panels fall into, in order. */
   const scenes = useMemo(() => {
     const seen: number[] = [];
@@ -99,10 +95,26 @@ export default function Storyboard({
    * drawn from their own subjects. Shared by the run and by redraw, so a
    * redrawn panel is cast exactly like the one it replaces.
    */
-  const who = useMemo(() => {
-    const lead = cast?.people.find((p) => p.tier === 1);
-    return character.trim() || lead?.description || lead?.name || "";
-  }, [character, cast]);
+  const lead = useMemo(() => cast?.people.find((p) => p.tier === 1), [cast]);
+  const personBrief = (name: string) => {
+    const person = cast?.people.find((p) => p.name.toLowerCase() === name.toLowerCase());
+    if (!person) return name;
+    if (person === lead && character.trim()) return `${person.name}: ${character.trim()}`;
+    return `${person.name}: ${person.description || "appearance not specified"}`;
+  };
+  const castForSheet = useMemo(() => {
+    const major = cast?.people.filter((p) => p.tier <= 2).slice(0, 4) ?? [];
+    if (major.length === 0) return character.trim();
+    return major.map((p) => p === lead && character.trim()
+      ? `${p.name}: ${character.trim()}`
+      : `${p.name}: ${p.description || "appearance not specified"}`).join("\n");
+  }, [cast, character, lead]);
+  const panelWho = (panel: Panel) => {
+    const named = panel.characters?.map(personBrief).filter(Boolean) ?? [];
+    if (named.length > 0) return named.join("; ");
+    return panel.character_in_frame
+      ? (character.trim() || lead?.description || lead?.name || "") : "";
+  };
 
   /** What to call this board in the library: the story's own opening. */
   const projectName = useMemo(() => {
@@ -131,8 +143,7 @@ export default function Storyboard({
    * not another roll of the dice. It is appended to that panel's brief and
    * survives every later redraw, so the panel stays the one you asked for.
    */
-  const [notes, setNotes] = useState<Record<number, string>>(
-    () => loadPref<Record<number, string>>("boardNotes", {}));
+  const [notes, setNotes] = useState<Record<number, string>>({});
   const [elapsed, setElapsed] = useState(0);
   const [composing, setComposing] = useState(false);
   const [pages, setPages] = useState<string[]>([]);
@@ -145,27 +156,73 @@ export default function Storyboard({
   const [ownSheet, setOwnSheet] = useState<string[]>([]);
   /** One location sheet per scene, keyed by scene number. The character sheet
    *  holds the person; these hold the rooms. */
-  const [placeSheets, setPlaceSheets] = useState<Record<number, string>>(
-    () => loadPref<Record<number, string>>("boardPlaces", {}));
+  const [placeSheets, setPlaceSheets] = useState<Record<number, string>>({});
+  const [coverage, setCoverage] = useState<Coverage | null>(null);
   const timer = useRef<number | null>(null);
+  const [draftLoaded, setDraftLoaded] = useState(false);
 
 
-  // A board is minutes of work, so it survives a quit. Only the text and the
-  // vault ids are stored; the pictures themselves stay sealed in the vault.
-  useEffect(() => { savePref("boardStory", story); }, [story]);
-  useEffect(() => { savePref("boardCast", cast); }, [cast]);
-  useEffect(() => { savePref("boardProject", projectId); }, [projectId]);
+  // A Board contains the manuscript and creative history. Load it from the
+  // encrypted vault, migrating old plaintext preferences exactly once.
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      try {
+        const draft: Partial<BoardDraft> | null = await loadBoardDraft();
+        if (!live || !draft) return;
+        setStory(typeof draft.story === "string" ? draft.story : "");
+        setCast(draft.cast ?? null);
+        setProjectId(draft.projectId ?? null);
+        setCharacter(typeof draft.character === "string" ? draft.character : "");
+        setPanels(Array.isArray(draft.panels) ? draft.panels : null);
+        setSheet(typeof draft.sheet === "string" ? draft.sheet : null);
+        setDrawn(Array.isArray(draft.drawn) ? draft.drawn : []);
+        setRedraws(Array.isArray(draft.redraws) ? draft.redraws : []);
+        setNotes(draft.notes ?? {});
+        setPages(Array.isArray(draft.pages) ? draft.pages : []);
+        setOwnSheet(Array.isArray(draft.ownSheet) ? draft.ownSheet : []);
+        setPlaceSheets(draft.placeSheets ?? {});
+        setCoverage(draft.coverage ?? null);
+      } catch (e) {
+        if (live) notify(`Could not restore the encrypted Board draft: ${errText(e)}`, true);
+      } finally {
+        if (live) setDraftLoaded(true);
+      }
+    })();
+    return () => { live = false; };
+  }, [notify]);
+
+  useEffect(() => {
+    if (!draftLoaded) return;
+    const draft: BoardDraft = {
+      version: 1, story, cast, projectId, character, panels, sheet, drawn,
+      redraws, notes, pages, ownSheet, placeSheets,
+      coverage,
+    };
+    const timeout = window.setTimeout(() => {
+      void api.boardStateSet(JSON.stringify(draft)).catch((e) =>
+        notify(`Could not save the encrypted Board draft: ${errText(e)}`, true));
+    }, 350);
+    return () => window.clearTimeout(timeout);
+  }, [draftLoaded, story, cast, projectId, character, panels, sheet, drawn,
+      redraws, notes, pages, ownSheet, placeSheets, coverage, notify]);
+
+  // These are interface choices, not project content, so they remain prefs.
   useEffect(() => { savePref("boardBatch", batch); }, [batch]);
-  useEffect(() => { savePref("boardNotes", notes); }, [notes]);
   useEffect(() => { savePref("boardStyle", style); }, [style]);
-  useEffect(() => { savePref("boardCharacter", character); }, [character]);
-  useEffect(() => { savePref("boardPanels", panels); }, [panels]);
-  useEffect(() => { savePref("boardSheet", sheet); }, [sheet]);
-  useEffect(() => { savePref("boardDrawn", drawn); }, [drawn]);
   useEffect(() => { savePref("boardLayout", layout); }, [layout]);
-  useEffect(() => { savePref("boardPlaces", placeSheets); }, [placeSheets]);
 
-  const busy = stage !== "idle";
+  const busy = stage !== "idle" || reading;
+
+  const changeStory = (next: string) => {
+    if (next === story) return;
+    setStory(next);
+    // Every downstream decision was made from the previous manuscript. Keeping
+    // any of it would quietly mix two different stories.
+    setCast(null); setPanels(null); setProjectId(null); setSheet(null);
+    setDrawn([]); setRedraws([]); setNotes({}); setPages([]);
+    setPlaceSheets({}); setCoverage(null); setSelected(0);
+  };
 
   /** Step one: divide the prose. Nothing is drawn yet. */
   /**
@@ -213,6 +270,7 @@ export default function Storyboard({
     try {
       const r = await api.shotList(id, story, null);
       setPanels(r.panels);
+      setCoverage(r.coverage ?? null);
       // A fresh division is a different comic, so it gets its own identity
       // rather than adding panels to whatever was in the library before.
       setProjectId(newJobId());
@@ -238,6 +296,9 @@ export default function Storyboard({
   const drawnCount = useMemo(
     () => drawn.filter(Boolean).length, [drawn]);
   const remaining = Math.max(0, (panels?.length ?? 0) - drawnCount);
+  const preparedCount = panels?.filter((p) => (p.description ?? "").trim()).length ?? 0;
+  const workflow = !cast ? "read" : !panels ? "plan" : preparedCount === 0
+    ? "prepare" : remaining > 0 ? "draw" : "compose";
 
   /**
    * The indices this press will draw: the next `batch` panels with no picture.
@@ -269,7 +330,8 @@ export default function Storyboard({
 
     stop.current = false;
     setDone(0);
-    setRedraws(new Array(panels.length).fill(0));
+    setRedraws((current) => Array.from(
+      { length: panels.length }, (_, i) => current[i] ?? 0));
     setElapsed(0);
     const started = Date.now();
     if (timer.current) window.clearInterval(timer.current);
@@ -286,13 +348,14 @@ export default function Storyboard({
     // The sheet is the anchor. Every panel references it, which is the whole
     // reason the character survives from one shot to the next -- so if the
     // user brought their own, there is nothing to cast.
-    if (ownSheet.length > 0) {
-      setSheet(ownSheet[0]);
+    const existingSheet = ownSheet[0] ?? sheet;
+    if (existingSheet || !castForSheet.trim()) {
+      setSheet(existingSheet ?? null);
       const places = await buildPlaces();
       setStage("drawing");
       for (const i of nextBatch()) {
         if (stop.current) { notify("Stopped."); break; }
-        const ok = await drawOne(i, ownSheet[0], places);
+        const ok = await drawOne(i, existingSheet ?? null, places);
         if (!ok && stop.current) break;
       }
       if (timer.current) { window.clearInterval(timer.current); timer.current = null; }
@@ -307,7 +370,7 @@ export default function Storyboard({
     try {
       const res = await api.generate({
         job_id: castId, model_id: model.id,
-        prompt: sheetPrompt(style, who),
+        prompt: sheetPrompt(style, castForSheet),
         negative_prompt: null,
         width: PANEL_W, height: PANEL_H,
         steps: model.steps_default || 4,
@@ -399,8 +462,9 @@ export default function Storyboard({
 
   /** Draw a single panel against the sheet. Shared by the run and by redraw,
    *  so a board with one bad panel costs one panel to fix rather than six. */
-  const drawOne = async (i: number, sheetId: string,
-                         places: Record<number, string> = placeSheets): Promise<boolean> => {
+  const drawOne = async (i: number, sheetId: string | null,
+                         places: Record<number, string> = placeSheets,
+                         redrawCount = redraws[i] ?? 0): Promise<boolean> => {
     if (!model || !panels) return false;
     const id = newJobId();
     setJobId(id);
@@ -408,14 +472,14 @@ export default function Storyboard({
     try {
       const res = await api.editImage({
         job_id: id, model_id: model.id,
-        prompt: panelPrompt(panels[i], style, who, notes[i]),
+        prompt: panelPrompt(panels[i], style, panelWho(panels[i]), notes[i]),
         negative_prompt: null,
         width: PANEL_W, height: PANEL_H,
         steps: model.steps_default || 4,
         guidance: Math.min(1.0, model.guidance_max),
         // Redrawing the same panel with the same seed reproduces the picture
         // that was already rejected, so a redraw moves the seed on.
-        seed: panelSeed(i, redraws[i] ?? 0),
+        seed: panelSeed(i, redrawCount),
         count: 1,
         images: panelReferences(panels[i], sheetId,
                                 places[panels[i].scene ?? 1] ?? null),
@@ -471,21 +535,31 @@ export default function Storyboard({
   };
 
   /** Change one field of one panel. The division is a draft, not a verdict. */
-  const edit = (i: number, patch: Partial<Panel>) =>
+  const edit = (i: number, patch: Partial<Panel>) => {
     setPanels((ps) => {
       if (!ps) return ps;
       const n = [...ps];
       n[i] = { ...n[i], ...patch };
       return n;
     });
+    // The existing picture represents the old brief. Keep it in the Vault,
+    // but mark this slot for drawing again instead of presenting stale art as
+    // though it matched the edited panel.
+    setDrawn((items) => {
+      if (!items[i]) return items;
+      const next = [...items]; next[i] = null; return next;
+    });
+    setPages([]);
+  };
 
   /** Redraw one panel, keeping the rest of the board. */
   const redraw = async (i: number) => {
-    if (!sheet) { notify("Draw the board first.", true); return; }
+    if (!drawn[i]) { notify("Draw this panel first.", true); return; }
     stop.current = false;
-    setRedraws((r) => { const n = [...r]; n[i] = (n[i] ?? 0) + 1; return n; });
+    const nextRedraw = (redraws[i] ?? 0) + 1;
+    setRedraws((r) => { const n = [...r]; n[i] = nextRedraw; return n; });
     setStage("drawing");
-    await drawOne(i, sheet);
+    await drawOne(i, sheet, placeSheets, nextRedraw);
     setStage("idle"); setProg(null); setJobId(null);
   };
 
@@ -513,7 +587,7 @@ export default function Storyboard({
         pairs.map((p) => p.shot),
         pairs.map((p) => p.dialogue ?? []),
         pairs.map((p) => p.scene),
-        layout);
+        layout, projectId, projectName);
       setPages(made);
       onProduced();
       notify(made.length === 1
@@ -551,8 +625,22 @@ export default function Storyboard({
   const selIndex = panels ? Math.min(selected, panels.length - 1) : 0;
   const sel = panels?.[selIndex] ?? null;
 
+  if (!draftLoaded) {
+    return <div className="empty-state">Opening your encrypted Board draft…</div>;
+  }
+
   return (
     <div style={{ padding: 14 }}>
+      <div className="board-flow" aria-label="Board workflow">
+        {["read", "plan", "prepare", "draw", "compose"].map((name) => (
+          <span key={name} className={name === workflow ? "current" : ""}>
+            {name === "read" ? "Read story" : name === "plan" ? "Plan panels"
+              : name === "prepare" ? "Prepare briefs" : name === "draw" ? "Draw"
+                : "Compose"}
+          </span>
+        ))}
+        <span className="board-save">Encrypted draft saved automatically</span>
+      </div>
       <div className="board-work">
 
         {/* ---- the manuscript: your prose, never rewritten ---- */}
@@ -570,7 +658,7 @@ export default function Storyboard({
                   value={story}
                   rows={14}
                   disabled={busy}
-                  onChange={(e) => setStory(e.target.value)}
+                  onChange={(e) => changeStory(e.target.value)}
                   placeholder={"Mira comes home and finds the door already open. "
                     + "Nothing is taken, but every photograph has been turned to "
                     + "face the wall."}
@@ -592,12 +680,28 @@ export default function Storyboard({
                     className={"ms-beat" + (i === selected ? " lit" : "")}
                     onClick={() => setSelected(i)}
                   >
-                    {[p.subject, p.action].filter(Boolean).join(", ")
+                    {p.source || [p.subject, p.action].filter(Boolean).join(", ")
                       || p.caption || `Panel ${i + 1}`}
                   </span>
                 ))}
+                {coverage && coverage.total > 0 && (
+                  <div className={"notice" + (coverage.missing.length ? " warn" : " good")}
+                       style={{ marginTop: 10 }}>
+                    <strong>{coverage.percent}% of the prose is anchored</strong>
+                    {coverage.missing.length > 0 ? (
+                      <details>
+                        <summary>{coverage.missing.length} passage{coverage.missing.length === 1 ? "" : "s"} need review</summary>
+                        {coverage.missing.map((text, i) => <p key={i}>{text}</p>)}
+                      </details>
+                    ) : "Every passage has a panel source quote."}
+                  </div>
+                )}
                 <button className="btn small" style={{ marginTop: 8 }} disabled={busy}
-                        onClick={() => { setPanels(null); setDrawn([]); }}>
+                        onClick={() => {
+                          setPanels(null); setProjectId(null); setSheet(null);
+                          setDrawn([]); setRedraws([]); setNotes({}); setPages([]);
+                          setPlaceSheets({}); setCoverage(null); setSelected(0);
+                        }}>
                   Back to the prose
                 </button>
               </div>
@@ -659,8 +763,8 @@ export default function Storyboard({
                      style={{ width: "100%", maxWidth: 260, borderRadius: 6 }} />
                 <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5,
                               lineHeight: 1.5 }}>
-                  Every panel is drawn against this, which is what keeps the same
-                  person on the page from one shot to the next.
+                  Panels share this cast reference, so recurring people keep the
+                  same appearance from one shot to the next.
                 </div>
               </div>
             )}
@@ -689,13 +793,13 @@ export default function Storyboard({
             {!panels || !sel ? (
               <>
                 <div className="field">
-                  <label>Who we follow <em>every panel holds this</em></label>
+                  <label>Lead appearance override <em>optional</em></label>
                   <textarea
                     value={character}
                     rows={3}
                     disabled={busy}
                     onChange={(e) => setCharacter(e.target.value)}
-                    placeholder="a young woman with short black hair and a red scarf"
+                    placeholder="short black hair, red scarf, narrow face"
                   />
                 </div>
                 <div className="field">
@@ -743,6 +847,14 @@ export default function Storyboard({
                   </select>
                 </div>
                 <div className="field">
+                  <label>Story source <em>coverage anchor</em></label>
+                  <div style={{ fontSize: 11, lineHeight: 1.55, color: "var(--text-dim)",
+                                background: "var(--bg-sunk)", borderRadius: 5,
+                                padding: "6px 8px" }}>
+                    {sel.source || "No exact source quote was returned. Review this panel against the manuscript."}
+                  </div>
+                </div>
+                <div className="field">
                   <label style={{ display: "flex", alignItems: "center", gap: 6,
                                   cursor: "pointer" }}>
                     <input type="checkbox" checked={sel.character_in_frame} disabled={busy}
@@ -750,6 +862,14 @@ export default function Storyboard({
                            onChange={(e) => edit(selIndex, { character_in_frame: e.target.checked })} />
                     the one we follow is in this frame
                   </label>
+                </div>
+                <div className="field">
+                  <label>People in frame <em>names from the story</em></label>
+                  <input type="text" value={(sel.characters ?? []).join(", ")} disabled={busy}
+                         onChange={(e) => edit(selIndex, {
+                           characters: e.target.value.split(",").map((v) => v.trim()).filter(Boolean),
+                           character_in_frame: Boolean(e.target.value.trim()),
+                         })} />
                 </div>
                 <div className="field">
                   <label>Subject</label>
@@ -817,7 +937,7 @@ export default function Storyboard({
                   <div style={{ fontSize: 11, lineHeight: 1.6, color: "var(--text-dim)",
                                 background: "var(--bg-sunk)", borderRadius: 5,
                                 padding: "7px 9px", userSelect: "text" }}>
-                    {panelPrompt(sel, style, who, notes[selIndex])}
+                    {panelPrompt(sel, style, panelWho(sel), notes[selIndex])}
                   </div>
                 </div>
                 {drawn[selIndex] && (
@@ -852,13 +972,12 @@ export default function Storyboard({
             Cast
           </span>
           {cast.people.map((p) => (
-            <button key={p.name} className="pill" style={{ cursor: "pointer",
+            <span key={p.name} className="pill" style={{
                      opacity: p.tier === 1 ? 1 : p.tier === 2 ? 0.8 : 0.62 }}
                     title={(p.description || "The story never says what they look like.")
-                           + ` · ${p.mentions} mentions`}
-                    onClick={() => setCharacter(p.description || p.name)}>
+                           + ` · ${p.mentions} mentions`}>
               {p.name}
-            </button>
+            </span>
           ))}
           {cast.places.length > 0 && <span className="divider" />}
           {cast.places.map((pl) => (
@@ -874,16 +993,19 @@ export default function Storyboard({
       <div className="board-run">
         {!panels ? (
           <>
-            {story.trim() && !cast && writerReady && (
-              <button className="btn small" disabled={reading || busy} onClick={read}>
-                {reading ? "Reading the story…" : "Read the story"}
+            {story.trim() && writerReady && (
+              <button className={"btn small" + (!cast ? " primary" : "")}
+                      disabled={busy} onClick={read}>
+                {reading ? "Reading the story…" : cast ? "Read again" : "Read story and cast"}
               </button>
             )}
-            <button className="btn primary small"
-                    disabled={busy || !story.trim() || !writerReady}
-                    onClick={divide}>
-              {stage === "dividing" ? "Dividing…" : "Divide into panels"}
-            </button>
+            {cast && (
+              <button className="btn primary small"
+                      disabled={busy || !story.trim() || !writerReady}
+                      onClick={divide}>
+                {stage === "dividing" ? "Planning panels…" : "Plan the panels"}
+              </button>
+            )}
             {!writerReady && (
               // Reading and dividing are both the writer's work. Saying so here
               // beats a failure after the press.
@@ -898,7 +1020,7 @@ export default function Storyboard({
                            fontVariantNumeric: "tabular-nums" }}>
               <b style={{ color: "var(--text)" }}>{drawnCount}</b> of {panels.length} drawn
             </span>
-            {remaining > 0 && !busy && (
+            {remaining > 0 && preparedCount > 0 && !busy && (
               <span className="stepper" title="Panels per press">
                 <button type="button" onClick={() => setBatch((n) => Math.max(1, n - 1))}>
                   &minus;
@@ -909,7 +1031,13 @@ export default function Storyboard({
                 </button>
               </span>
             )}
-            {remaining > 0 && (
+            {preparedCount === 0 && (
+              <button className="btn primary small" disabled={busy}
+                      onClick={() => void enrich()}>
+                {stage === "enriching" ? "Preparing briefs…" : "Prepare drawing briefs"}
+              </button>
+            )}
+            {remaining > 0 && preparedCount > 0 && (
               <button className="btn primary small" disabled={busy} onClick={draw}>
                 {stage === "drawing" ? `Drawing ${done}/${panels.length}…`
                   : stage === "building" ? "Building the rooms…"
@@ -924,20 +1052,21 @@ export default function Storyboard({
                 All {panels.length} drawn
               </span>
             )}
-            {!busy && (
+            {!busy && preparedCount > 0 && drawnCount === 0 && (
               <button className="btn small" disabled={busy} onClick={() => void enrich()}>
-                Work up the scenes
+                Prepare again
               </button>
             )}
             {busy && <button className="btn small" onClick={cancel}>Cancel</button>}
-            {!busy && drawn.some(Boolean) && (
+            {!busy && remaining === 0 && drawn.some(Boolean) && (
               <>
                 <select value={layout} style={{ width: "auto", fontSize: 11, padding: "2px 6px" }}
                         onChange={(e) => setLayout(e.target.value)}>
                   <option value="page">Page</option>
                   <option value="strip">Scrolling strip</option>
                 </select>
-                <button className="btn small" onClick={() => void compose()}>
+                <button className="btn small" disabled={composing}
+                        onClick={() => void compose()}>
                   {composing ? "Composing…" : "Make a page"}
                 </button>
               </>
@@ -945,6 +1074,17 @@ export default function Storyboard({
           </>
         )}
         <div style={{ flex: 1 }} />
+        {!busy && (story || panels) && (
+          <button className="btn small" onClick={() => {
+            setStory(""); setCast(null); setPanels(null); setProjectId(null);
+            setCharacter(""); setSheet(null); setDrawn([]); setRedraws([]);
+            setNotes({}); setPages([]); setOwnSheet([]); setPlaceSheets({});
+            setCoverage(null);
+            setSelected(0);
+          }}>
+            New board
+          </button>
+        )}
         {elapsed > 0 && busy && (
           <span style={{ fontSize: 10.5, color: "var(--text-faint)",
                          fontVariantNumeric: "tabular-nums" }}>
