@@ -82,6 +82,39 @@ export function JobProgress({ p, label }: { p: EngineProgress | null; label: str
   );
 }
 
+/** The part of a drop zone's on-screen rect that the hit test needs. */
+export interface DropRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Whether an OS file drop landed on a drop zone.
+ *
+ * Tauri names the payload's field a `PhysicalPosition`, so this used to divide
+ * the position by `window.devicePixelRatio` before comparing it against the
+ * zone's CSS-pixel rect. On macOS wry actually reports logical points, so the
+ * division halved a coordinate that was already correct: on a Retina display a
+ * drop three hundred points down the window was tested against a point a
+ * hundred and fifty down and fell outside every zone, which is why dragging an
+ * image in had never once worked on these machines. The position is compared
+ * exactly as it arrives, and nothing here consults the device pixel ratio.
+ *
+ * A zero-sized rect matches nothing. Every tab stays mounted, so every drop
+ * zone in the app hears every drop, and a hidden one measures as an empty rect
+ * at the origin -- which contains the point (0, 0), so a drop in the very
+ * corner of the window used to land in all of them at the same time.
+ */
+export function dropLandedIn(rect: DropRect, point: { x: number; y: number }): boolean {
+  if (rect.width === 0 || rect.height === 0) return false;
+  return point.x >= rect.left && point.x <= rect.right
+    && point.y >= rect.top && point.y <= rect.bottom;
+}
+
 /** File picker + drag-and-drop that copies sources into the app's own inputs. */
 export function ImageDrop({
   images, onChange, max = 3, onError,
@@ -125,6 +158,16 @@ export function ImageDrop({
     }
   }, [images, max, onChange, onError]);
 
+  // Every call site passes a fresh inline `onError`, and `add` closes over the
+  // images it is adding to, so `add` was a new function on every parent render.
+  // The parent re-renders on every progress event, so during a run the effect
+  // below tore down and re-registered its four OS listeners several times a
+  // second, and a file dropped in one of those gaps was ignored. Reading the
+  // latest `add` through a ref lets that effect subscribe once per mount and
+  // still see the current images and callbacks.
+  const addRef = useRef(add);
+  useEffect(() => { addRef.current = add; }, [add]);
+
   useEffect(() => {
     // Tauri v2 delivers OS file drops as a webview event, not an HTML5 one.
     let unlisten: (() => void) | undefined;
@@ -134,25 +177,14 @@ export function ImageDrop({
       const remove = await getCurrentWebview().onDragDropEvent((event) => {
         const el = ref.current;
         if (!el) return;
-        // Every tab stays mounted, so every drop zone in the app is listening
-        // at once. A hidden one measures as a zero-sized rect at the origin,
-        // which contains the point (0, 0) -- so a drop in the very corner of
-        // the window landed in all of them at the same time.
-        const box = el.getBoundingClientRect();
-        if (box.width === 0 || box.height === 0) return;
+        // `dropLandedIn` owns the whole hit test, including the zero-sized
+        // rect a hidden tab's zone reports.
+        const rect = el.getBoundingClientRect();
         if (event.payload.type === "over") {
-          const { x, y } = event.payload.position;
-          const r = el.getBoundingClientRect();
-          const scale = window.devicePixelRatio || 1;
-          const px = x / scale, py = y / scale;
-          setOver(px >= r.left && px <= r.right && py >= r.top && py <= r.bottom);
+          setOver(dropLandedIn(rect, event.payload.position));
         } else if (event.payload.type === "drop") {
-          const { x, y } = event.payload.position;
-          const r = el.getBoundingClientRect();
-          const scale = window.devicePixelRatio || 1;
-          const px = x / scale, py = y / scale;
-          if (px >= r.left && px <= r.right && py >= r.top && py <= r.bottom) {
-            void add(event.payload.paths);
+          if (dropLandedIn(rect, event.payload.position)) {
+            void addRef.current(event.payload.paths);
           }
           setOver(false);
         } else {
@@ -163,7 +195,7 @@ export function ImageDrop({
       else remove();
     })();
     return () => { live = false; unlisten?.(); };
-  }, [add]);
+  }, []);
 
   const pick = async () => {
     const sel = await open({
@@ -288,11 +320,18 @@ export function ImageDrop({
  */
 export function Toast({ msg, bad, onDone }: { msg: string; bad?: boolean; onDone: () => void }) {
   const [copied, setCopied] = useState(false);
+  // App passes a fresh inline `onDone` on every render, so depending on it here
+  // restarted the timer each time -- and App re-renders on every progress
+  // event, which during a run arrive far more often than every 3.2 seconds. A
+  // success toast therefore never reached the end of its own countdown and sat
+  // on screen for the whole generation.
+  const onDoneRef = useRef(onDone);
+  useEffect(() => { onDoneRef.current = onDone; }, [onDone]);
   useEffect(() => {
     if (bad) return;               // a failure waits for the reader
-    const t = setTimeout(onDone, 3200);
+    const t = setTimeout(() => onDoneRef.current(), 3200);
     return () => clearTimeout(t);
-  }, [msg, bad, onDone]);
+  }, [msg, bad]);
   useEffect(() => setCopied(false), [msg]);
   return (
     <div className={"toast" + (bad ? " bad" : "")}>

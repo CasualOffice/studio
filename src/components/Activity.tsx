@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { api, errText, fmtBytes, onEngineLog, onEngineStderr } from "../lib/api";
 import type { EngineLog } from "../lib/api";
 
@@ -25,7 +25,11 @@ export default function Activity({ notify }: { notify: (m: string, bad?: boolean
   const [busy, setBusy] = useState(false);
   const [logs, setLogs] = useState<EngineLog[]>([]);
   const [showStderr, setShowStderr] = useState(false);
-  const stderr = useRef<string[]>([]);
+  // State, not a ref. The tail was held in a ref, and writing to one does not
+  // re-render: the raw output panel -- the thing you open precisely because a
+  // run appears to have hung -- showed only the lines that had arrived before
+  // it was opened and then never moved while you watched it.
+  const [stderr, setStderr] = useState<string[]>([]);
 
   useEffect(() => {
     // Subscribing is async, so the component can unmount before either
@@ -38,7 +42,7 @@ export default function Activity({ notify }: { notify: (m: string, bad?: boolean
     void onEngineLog((l) => setLogs((prev) => [...prev.slice(-199), l])).then(keep);
     void onEngineStderr((line) => {
       // Keep a bounded tail: PyTorch and tokenizers are extremely chatty.
-      stderr.current = [...stderr.current.slice(-299), line];
+      setStderr((prev) => [...prev.slice(-299), line]);
     }).then(keep);
     return () => { live = false; uns.forEach((u) => u()); };
   }, []);
@@ -132,7 +136,7 @@ export default function Activity({ notify }: { notify: (m: string, bad?: boolean
         )}
         {showStderr && (
           <div className="setup-log" style={{ maxHeight: 200, marginTop: 8 }}>
-            {stderr.current.slice(-60).join("\n") || "(nothing)"}
+            {stderr.slice(-60).join("\n") || "(nothing)"}
           </div>
         )}
       </div>
