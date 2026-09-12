@@ -1,5 +1,6 @@
 import { api } from "./api";
 import { loadPref, removePref } from "./prefs";
+import type { StyleLock } from "./board";
 import type { Cast, Panel } from "./types";
 
 export interface Coverage {
@@ -24,6 +25,17 @@ export interface BoardDraft {
   story: string;
   cast: Cast | null;
   projectId: string | null;
+  /**
+   * The exact style words this board is drawn from.
+   *
+   * The style used to live only in plaintext preferences as a preset id, which
+   * made it the one whole-board creative decision the board did not own -- so
+   * improving a preset reached back into work already drawn, and the anime
+   * words had already been replaced once between two public tags. Optional
+   * because a draft written before this carries no lock; the board takes one
+   * from the remembered id on first load.
+   */
+  style: StyleLock | null;
   character: string;
   panels: Panel[] | null;
   sheet: string | null;

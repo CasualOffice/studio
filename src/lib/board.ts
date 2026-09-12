@@ -10,16 +10,40 @@ import type { Panel } from "./types";
  * in a test and invisible in a preview.
  */
 
-/** Style is a whole-board decision: a board whose style drifts is not a board. */
-export const STYLES: { id: string; label: string; words: string }[] = [
-  { id: "anime", label: "Anime",
+export interface Style {
+  id: string;
+  /**
+   * Bumped whenever `words` changes, so a board can tell that the preset it
+   * was drawn under is no longer the preset of the same name.
+   */
+  version: number;
+  label: string;
+  words: string;
+}
+
+/**
+ * Style is a whole-board decision: a board whose style drifts is not a board.
+ *
+ * These are the defaults for a *new* board. They are not what an existing
+ * board is drawn from -- see `lockStyle`. Anime is at version 2 because its
+ * words were replaced between v0.1.0 and v0.2.0 ("flat cel-shaded anime
+ * illustration, clean linework, muted palette"), which is exactly the drift
+ * the lock exists to stop: a board half-drawn under one build and finished
+ * under the next had panels 1-6 and 7-12 asking for different things.
+ *
+ * Bump the version in the same commit that edits the words. A preset may be
+ * improved freely -- that is what happened, and it was a real fix -- but it
+ * must not reach back into work already drawn.
+ */
+export const STYLES: Style[] = [
+  { id: "anime", version: 2, label: "Anime",
     words: "cel-shaded anime, clean confident linework, flat colour with hard "
          + "shadow shapes, screentone texture" },
-  { id: "photo", label: "Photographic",
+  { id: "photo", version: 1, label: "Photographic",
     words: "photographic, natural skin texture, available light, 35mm, shallow depth of field" },
-  { id: "ink", label: "Ink and wash",
+  { id: "ink", version: 1, label: "Ink and wash",
     words: "black ink illustration with grey wash, visible brushwork, high contrast" },
-  { id: "paint", label: "Painted",
+  { id: "paint", version: 1, label: "Painted",
     words: "digital painting, visible brush strokes, soft edges, muted colour" },
 ];
 
@@ -60,6 +84,89 @@ export function styleWords(id: string): string {
   return STYLES.find((s) => s.id === id)?.words ?? "";
 }
 
+export function styleLabel(id: string): string {
+  return STYLES.find((s) => s.id === id)?.label ?? id;
+}
+
+/**
+ * The exact words a board is drawn from, resolved once and kept with it.
+ *
+ * A board used to store only the preset id, in plaintext preferences, and
+ * resolve it against whatever `STYLES` said at draw time. So the look -- the
+ * one decision that has to hold for the length of a long project -- was the
+ * one thing the board did not own. Improving a preset silently changed work
+ * already in progress, and the anime words had already been replaced once
+ * between two public tags. Chapter eleven could not be made to match
+ * chapter one.
+ *
+ * `framing` is in here for the same reason and is the sharper case: it is
+ * prepended to every panel prompt, it is not part of any style, and it did not
+ * exist at all in v0.1.0.
+ *
+ * An unknown id resolves to the first style rather than to nothing. It used to
+ * resolve to the empty string, which dropped the style words from every prompt
+ * while the board went on looking like it had worked -- the failure the file's
+ * own header calls invisible in a preview and obvious in a test. The caller is
+ * expected to notice the substitution and say so; `isKnownStyle` is how.
+ */
+export interface StyleLock {
+  id: string;
+  version: number;
+  words: string;
+  framing: string;
+}
+
+export function isKnownStyle(id: string): boolean {
+  return STYLES.some((s) => s.id === id);
+}
+
+export function lockStyle(id: string): StyleLock {
+  const style = STYLES.find((s) => s.id === id) ?? STYLES[0];
+  return {
+    id: style.id,
+    version: style.version,
+    words: style.words,
+    framing: PANEL_FRAMING,
+  };
+}
+
+/**
+ * A lock read back out of a draft, made safe to draw from.
+ *
+ * The draft is JSON, so every field here is whatever was on disk -- written by
+ * an older build, a newer one, or by hand. A missing `framing` is the dangerous
+ * one: `panelPrompt` trims each part, and trimming `undefined` throws, which
+ * would take the whole Board tab down on load rather than degrading. Anything
+ * unusable falls back to the named preset, and to the first preset if the name
+ * has gone too.
+ */
+export function reviveLock(raw: unknown): StyleLock | null {
+  if (!raw || typeof raw !== "object") return null;
+  const lock = raw as Partial<StyleLock>;
+  const words = typeof lock.words === "string" ? lock.words.trim() : "";
+  if (!words) return null;
+  const base = lockStyle(typeof lock.id === "string" ? lock.id : STYLES[0].id);
+  return {
+    id: typeof lock.id === "string" && lock.id ? lock.id : base.id,
+    version: typeof lock.version === "number" ? lock.version : base.version,
+    words,
+    framing: typeof lock.framing === "string" ? lock.framing : base.framing,
+  };
+}
+
+/**
+ * Whether a stored lock still asks for what its preset now asks for.
+ *
+ * Not an error -- a board keeping its own words is the point -- but worth
+ * telling someone starting chapter twelve that the Anime of chapter eleven is
+ * not today's Anime.
+ */
+export function styleHasMoved(lock: StyleLock): boolean {
+  const current = STYLES.find((s) => s.id === lock.id);
+  if (!current) return true;
+  return current.words !== lock.words || lock.framing !== PANEL_FRAMING;
+}
+
 /**
  * The prompt for one panel.
  *
@@ -69,7 +176,7 @@ export function styleWords(id: string): string {
  * draws her running instead of the tap.
  */
 export function panelPrompt(
-  panel: Panel, style: string, character: string, note?: string
+  panel: Panel, style: StyleLock, character: string, note?: string
 ): string {
   const who = panel.character_in_frame
     ? [character.trim(), panel.subject.trim()].filter(Boolean).join(", ")
@@ -86,7 +193,7 @@ export function panelPrompt(
   // repair for a wrong frame: a sentence in English about that one panel,
   // rather than rolling the dice on a new seed and hoping. It is kept with
   // the panel, so a later redraw is still the panel you asked for.
-  return [styleWords(style), PANEL_FRAMING, `${panel.shot} shot`, ...body,
+  return [style.words, style.framing, `${panel.shot} shot`, ...body,
           (note ?? "").trim()]
     .map((b) => b.trim())
     .filter(Boolean)
@@ -94,14 +201,14 @@ export function panelPrompt(
 }
 
 /** The prompt for the character sheet every panel is drawn against. */
-export function sheetPrompt(style: string, character: string): string {
+export function sheetPrompt(style: StyleLock, character: string): string {
   const cast = character.split("\n").map((line) => line.trim()).filter(Boolean);
   if (cast.length > 1) {
-    return `${styleWords(style)}. Cast reference lineup, each named character `
+    return `${style.words}. Cast reference lineup, each named character `
       + `shown separately, full body, neutral poses, plain background, distinct `
       + `silhouettes and clothing. ${cast.join("; ")}.`;
   }
-  return `${styleWords(style)}. Character reference sheet, full body, neutral `
+  return `${style.words}. Character reference sheet, full body, neutral `
        + `pose, plain background. ${character.trim()}.`;
 }
 
@@ -116,8 +223,8 @@ export function panelSeed(index: number, redraws: number): number {
 }
 
 /** The prompt for a scene's location sheet: the room, empty. */
-export function placePrompt(style: string, place: string): string {
-  return `${styleWords(style)}. Empty interior, no people. ${place.trim()}.`;
+export function placePrompt(style: StyleLock, place: string): string {
+  return `${style.words}. Empty interior, no people. ${place.trim()}.`;
 }
 
 /**

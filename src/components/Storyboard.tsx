@@ -4,8 +4,10 @@ import type { Cast, EngineProgress, ModelStatus, Panel } from "../lib/types";
 import { ImageDrop, JobProgress } from "./shared";
 import { loadPref, savePref } from "../lib/prefs";
 import { loadBoardDraft, type BoardDraft, type Coverage } from "../lib/boardDraft";
-import { STYLES, panelPrompt, panelReferences, panelSeed, placePrompt,
-         sheetPrompt, styleWords } from "../lib/board";
+import { STYLES, isKnownStyle, lockStyle, panelPrompt, panelReferences,
+         panelSeed, placePrompt, reviveLock, sheetPrompt, styleHasMoved,
+         styleLabel } from "../lib/board";
+import type { StyleLock } from "../lib/board";
 
 /**
  * A story, divided into panels, drawn as one consistent character.
@@ -101,7 +103,16 @@ export default function Storyboard({
   const [projectId, setProjectId] = useState<string | null>(null);
 
 
-  const [style, setStyle] = useState(() => loadPref("boardStyle", STYLES[0].id));
+  /**
+   * The words this board is drawn from, not the name of a preset.
+   *
+   * The remembered id is only the starting point for a board that has not
+   * pinned one yet. Once pinned it travels in the encrypted draft, so a board
+   * half-drawn under one build is finished under the same words -- and chapter
+   * eleven can be made to match chapter one however the presets move.
+   */
+  const [style, setStyle] = useState<StyleLock>(
+    () => lockStyle(loadPref("boardStyle", STYLES[0].id)));
   const [character, setCharacter] = useState("");
 
   const [panels, setPanels] = useState<Panel[] | null>(null);
@@ -156,6 +167,19 @@ export default function Storyboard({
 
   /** Which panel the notes rail is showing. The board owns the selection. */
   const [selected, setSelected] = useState(0);
+  /**
+   * Which half of the rail is showing: the selected panel, or the board.
+   *
+   * The rail used to swap to per-panel controls the instant a division
+   * existed, which put the three board-wide decisions -- the look, the cast
+   * sheet, the rooms -- out of reach for the whole rest of the job. The only
+   * way back to them was `Back to the prose`, which throws away the division,
+   * the briefs and every note. So the two failures this tool calls fatal were
+   * the two a person could not fix without losing everything else.
+   */
+  const [railTab, setRailTab] = useState<"panel" | "board">("panel");
+  /** A style change that would discard drawn work, waiting on a second press. */
+  const [confirmStyle, setConfirmStyle] = useState<string | null>(null);
 
   const [stage, setStage] = useState<Stage>("idle");
   const [prog, setProg] = useState<EngineProgress | null>(null);
@@ -226,6 +250,34 @@ export default function Storyboard({
           setOwnSheet(Array.isArray(draft.ownSheet) ? draft.ownSheet : []);
           setPlaceSheets(draft.placeSheets ?? {});
           setCoverage(draft.coverage ?? null);
+          // The style the board was drawn under wins over the remembered
+          // preset. A draft written before the lock existed has none, so it
+          // takes the preset it named -- which is the last moment that
+          // substitution is invisible, and the notice below is why it is not.
+          const locked = reviveLock(draft.style);
+          if (locked) {
+            setStyle(locked);
+            if (styleHasMoved(locked) && (draft.drawn ?? []).some(Boolean)) {
+              notify(
+                `This board is drawn in ${styleLabel(locked.id)} as it was when `
+                + "it was started. The preset has changed since, so a new board "
+                + "will not match it.",
+              );
+            }
+          } else {
+            // The raw remembered id, not `style.id` -- `lockStyle` has already
+            // substituted the first preset by the time it is state, so asking
+            // the state whether the id was known can only ever answer yes.
+            const remembered = loadPref("boardStyle", STYLES[0].id);
+            if (!isKnownStyle(remembered)) {
+              notify(
+                "This board was made in a style this build no longer has "
+                + `("${remembered}"), so it is now set to ${STYLES[0].label}. `
+                + "Anything already drawn was drawn in the old one.",
+                true,
+              );
+            }
+          }
         }
         // Arm the autosave only once the restore has actually succeeded. A
         // draft of `null` counts: that is a good read of a board nobody has
@@ -256,7 +308,7 @@ export default function Storyboard({
   useEffect(() => {
     if (!draftLoaded) return;
     const draft: BoardDraft = {
-      version: 1, story, cast, projectId, character, panels, sheet, drawn,
+      version: 1, story, cast, projectId, style, character, panels, sheet, drawn,
       redraws, notes, pages, ownSheet, placeSheets,
       coverage,
     };
@@ -265,7 +317,7 @@ export default function Storyboard({
         notify(`Could not save the encrypted Board draft: ${errText(e)}`, true));
     }, 350);
     return () => window.clearTimeout(timeout);
-  }, [draftLoaded, story, cast, projectId, character, panels, sheet, drawn,
+  }, [draftLoaded, story, cast, projectId, style, character, panels, sheet, drawn,
       redraws, notes, pages, ownSheet, placeSheets, coverage, notify]);
 
   // An armed reset is disarmed by anything else happening: pressing Escape,
@@ -273,17 +325,19 @@ export default function Storyboard({
   // later, unrelated click deletes something.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setConfirmReset(null);
+      if (e.key === "Escape") { setConfirmReset(null); setConfirmStyle(null); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  useEffect(() => { setConfirmReset(null); }, [stage, drawn, panels]);
+  useEffect(() => {
+    setConfirmReset(null); setConfirmStyle(null);
+  }, [stage, drawn, panels]);
 
   // These are interface choices, not project content, so they remain prefs.
   useEffect(() => { savePref("boardBatch", batch); }, [batch]);
   useEffect(() => { savePref("boardPanelPx", panelPx); }, [panelPx]);
-  useEffect(() => { savePref("boardStyle", style); }, [style]);
+  useEffect(() => { savePref("boardStyle", style.id); }, [style.id]);
   useEffect(() => { savePref("boardLayout", layout); }, [layout]);
 
   const busy = stage !== "idle" || reading;
@@ -296,6 +350,55 @@ export default function Storyboard({
     setCast(null); setPanels(null); setProjectId(null); setSheet(null);
     setDrawn([]); setRedraws([]); setNotes({}); setPages([]);
     setPlaceSheets({}); setCoverage(null); setSelected(0);
+  };
+
+  /** Whether anything has been drawn in the current style. */
+  const drawnInStyle = drawn.some(Boolean) || !!sheet
+    || Object.keys(placeSheets).length > 0;
+
+  /**
+   * Change the look of a board that is already under way.
+   *
+   * The style leads every prompt, so everything already drawn was drawn in the
+   * old one and a half-restyled board is not a board -- the pictures go, and
+   * they are still in the Vault if they were wanted. What stays is everything
+   * that is a reading of the manuscript rather than of the style: the
+   * division, the briefs, the notes and the coverage report. Having to retype
+   * a note to change a look is what made the look uncorrectable in practice.
+   */
+  const changeStyle = (id: string) => {
+    if (id === style.id) return;
+    if (drawnInStyle && confirmStyle !== id) { setConfirmStyle(id); return; }
+    setStyle(lockStyle(id));
+    setSheet(null); setDrawn([]); setRedraws([]);
+    setPlaceSheets({}); setPages([]);
+    setConfirmStyle(null);
+  };
+
+  /**
+   * Throw away the cast sheet so the next draw builds a new one.
+   *
+   * Panels already drawn were drawn against the old sheet and are left alone:
+   * which of them to redraw is a judgement about the pictures, and the board
+   * already has a per-panel redraw for making it. The composed pages go,
+   * because a page is only as current as the panels in it.
+   */
+  const recastSheet = () => {
+    setSheet(null); setPages([]);
+    notify("The cast sheet will be drawn again on the next run. Panels already "
+      + "drawn were drawn against the old one -- redraw the ones that no "
+      + "longer match.");
+  };
+
+  /** The same, for one scene's room. */
+  const rebuildPlace = (scene: number) => {
+    setPlaceSheets((prev) => {
+      const next = { ...prev };
+      delete next[scene];
+      return next;
+    });
+    setPages([]);
+    notify(`Scene ${scene}'s room will be drawn again on the next run.`);
   };
 
   /** Step one: divide the prose. Nothing is drawn yet. */
@@ -656,7 +759,7 @@ export default function Storyboard({
     setStage("enriching"); setJobId(id);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
     try {
-      const r = await api.enrichPanels(id, panels, styleWords(style));
+      const r = await api.enrichPanels(id, panels, style.words);
       setPanels(r.panels);
       const filled = r.panels.filter((p) => (p.description ?? "").trim()).length;
       notify(filled === r.panels.length
@@ -941,10 +1044,23 @@ export default function Storyboard({
         <div className="board-pane">
           <div className="board-pane-head">
             Notes
-            <span className="n">{panels ? `Panel ${selIndex + 1}` : "settings"}</span>
+            {panels ? (
+              <span className="n" style={{ display: "flex", gap: 4 }}>
+                <button className={"pill" + (railTab === "panel" ? " installed" : "")}
+                        style={{ cursor: "pointer" }}
+                        onClick={() => setRailTab("panel")}>
+                  Panel {selIndex + 1}
+                </button>
+                <button className={"pill" + (railTab === "board" ? " installed" : "")}
+                        style={{ cursor: "pointer" }}
+                        onClick={() => setRailTab("board")}>
+                  Board
+                </button>
+              </span>
+            ) : <span className="n">settings</span>}
           </div>
           <div className="inner">
-            {!panels || !sel ? (
+            {!panels || !sel || railTab === "board" ? (
               <>
                 <div className="field">
                   <label>Lead appearance override <em>optional</em></label>
@@ -973,14 +1089,61 @@ export default function Storyboard({
                   <label>Style</label>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                     {STYLES.map(({ id, label }) => (
-                      <button key={id} className={"pill" + (style === id ? " installed" : "")}
-                              style={{ cursor: "pointer" }}
-                              onClick={() => setStyle(id)}>
-                        {label}
+                      <button key={id}
+                              className={"pill" + (style.id === id ? " installed" : "")
+                                + (confirmStyle === id ? " danger" : "")}
+                              style={{ cursor: "pointer" }} disabled={busy}
+                              onClick={() => changeStyle(id)}>
+                        {confirmStyle === id ? `Restyle? ${label}` : label}
                       </button>
                     ))}
                   </div>
+                  {confirmStyle && (
+                    <div style={{ fontSize: 10.5, color: "var(--bad)", marginTop: 5,
+                                  lineHeight: 1.5 }}>
+                      Press again to restyle. The {drawnCount} drawn panel
+                      {drawnCount === 1 ? "" : "s"}, the cast sheet and the rooms
+                      go, because they were drawn in {styleLabel(style.id)}. The
+                      division, the briefs and your notes stay. The old pictures
+                      remain in the Vault.
+                    </div>
+                  )}
+                  {styleHasMoved(style) && (
+                    <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5,
+                                  lineHeight: 1.5 }}>
+                      This board keeps the {styleLabel(style.id)} it was started in.
+                      The preset has changed since, so a new board will look
+                      different -- picking {styleLabel(style.id)} again here takes
+                      the current version.
+                    </div>
+                  )}
                 </div>
+                {panels && (
+                  <div className="field">
+                    <label>References <em>drawn once, reused by every panel</em></label>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5,
+                                  alignItems: "center" }}>
+                      <button className="btn small" disabled={busy || !sheet}
+                              onClick={recastSheet}>
+                        {sheet ? "Draw the cast sheet again" : "No cast sheet yet"}
+                      </button>
+                      {scenes.filter((s) => placeSheets[s]).map((s) => (
+                        <button key={s} className="btn small" disabled={busy}
+                                onClick={() => rebuildPlace(s)}>
+                          Redraw scene {s}&rsquo;s room
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5,
+                                  lineHeight: 1.5 }}>
+                      A reference is drawn once and every panel that needs it is
+                      drawn against the same one -- which is what keeps a face and
+                      a room the same from panel to panel. Throwing one away here
+                      rebuilds it on the next run and leaves the panels alone, so
+                      you choose which of them no longer match.
+                    </div>
+                  </div>
+                )}
                 <div className="field">
                   <label>Model</label>
                   <select value={model?.id ?? ""} disabled={busy}
