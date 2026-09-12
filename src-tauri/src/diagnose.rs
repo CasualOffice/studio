@@ -76,9 +76,30 @@ pub fn humanize(raw: &str) -> String {
     if lower.contains("connection") || lower.contains("timed out") || lower.contains("timeout") {
         return "The network request failed. Check your connection and try again.".into();
     }
-    if lower.contains("gated") || lower.contains("401") || lower.contains("403") {
+    // A licence gate names itself. A bare 401 or 403 does not mean gated: on a
+    // slow connection a presigned CDN link expires before a multi-gigabyte
+    // file finishes and answers 403, and a stale token answers 401. Reading
+    // either as a licence gate sends people off to accept a licence that was
+    // never the problem -- and because the cause is the connection, it happens
+    // to every model in turn, which is exactly how it was reported.
+    if lower.contains("gatedrepoerror")
+        || lower.contains("gated repo")
+        || (lower.contains("gated")
+            && (lower.contains("accept") || lower.contains("licence") || lower.contains("license")))
+    {
         return "That repository is gated. Accept its licence on Hugging Face, \
                 then try again."
+            .into();
+    }
+    if http_status(&lower, 403) {
+        return "The download link expired before the file finished, which \
+                happens on a slow connection. Start it again \u{2014} it resumes \
+                from where it stopped."
+            .into();
+    }
+    if http_status(&lower, 401) {
+        return "Hugging Face rejected the saved access token. Check it under \
+                Security, or clear it if this model needs no token."
             .into();
     }
     if lower.contains("no space left") || lower.contains("enospc") {
@@ -86,6 +107,42 @@ pub fn humanize(raw: &str) -> String {
     }
 
     raw.trim().to_string()
+}
+
+/// True when `code` appears as an HTTP status rather than as digits sitting
+/// inside a larger number.
+///
+/// `403` must match "403 Client Error" and "HTTP 403" but not the byte count
+/// in "Attempting to allocate 14403000000 bytes". Requiring a digit boundary
+/// on both sides rules out the embedded case; requiring a status-ish word
+/// somewhere in the message rules out a bare number that means something else.
+fn http_status(lower: &str, code: u16) -> bool {
+    if ![
+        "error",
+        "http",
+        "status",
+        "forbidden",
+        "unauthorized",
+        "client",
+        "server",
+    ]
+    .iter()
+    .any(|w| lower.contains(w))
+    {
+        return false;
+    }
+    let needle = code.to_string();
+    lower.match_indices(&needle).any(|(i, _)| {
+        let before_ok = !lower[..i]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_digit());
+        let after_ok = !lower[i + needle.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit());
+        before_ok && after_ok
+    })
 }
 
 /// First sentence of a message, for appending to an explanation without
@@ -102,6 +159,55 @@ fn first_sentence(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_expired_download_link_is_not_a_licence_gate() {
+        // The bug this guards: on a slow connection a presigned CDN link
+        // expires partway through a multi-gigabyte file and answers 403. The
+        // old check matched the bare digits "403" and told people the model
+        // was gated -- for every model in turn, since the cause was the link
+        // speed and not the model.
+        let out = humanize(
+            "huggingface_hub.errors.HfHubHTTPError: 403 Forbidden for url: \
+                            https://cdn-lfs.hf.co/repos/ab/cd/model.safetensors?Expires=1",
+        );
+        assert!(out.contains("expired"), "{out}");
+        assert!(
+            out.contains("resumes"),
+            "should say it can be retried: {out}"
+        );
+        assert!(
+            !out.to_lowercase().contains("gated"),
+            "misdiagnosed as gated: {out}"
+        );
+        assert!(
+            !out.to_lowercase().contains("licence"),
+            "misdiagnosed as gated: {out}"
+        );
+    }
+
+    #[test]
+    fn digits_inside_a_byte_count_are_not_an_http_status() {
+        // "14403000000" contains "403"; a substring match called this gated.
+        let raw = "[metal::malloc] Attempting to allocate 14403000000 bytes";
+        let out = humanize(raw);
+        assert!(out.contains("more memory"), "{out}");
+        assert!(!out.to_lowercase().contains("gated"), "{out}");
+        assert!(
+            !http_status(&raw.to_lowercase(), 403),
+            "403 matched inside a number"
+        );
+        assert!(http_status("403 client error", 403));
+        assert!(http_status("http 401 unauthorized", 401));
+    }
+
+    #[test]
+    fn a_rejected_token_is_reported_as_a_token_problem() {
+        let out =
+            humanize("401 Client Error: Unauthorized. Invalid credentials in Authorization header");
+        assert!(out.contains("token"), "{out}");
+        assert!(!out.to_lowercase().contains("gated"), "{out}");
+    }
 
     #[test]
     fn memory_ceiling_becomes_actionable() {

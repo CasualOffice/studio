@@ -52,10 +52,24 @@ export const api = {
     quantize: number | null, family: string | null, backend: string | null
   ) => invoke<void>("add_custom_model",
                     { spec: { repo, name, tasks, bytes, quantize, family, backend } }),
-  shotList: (jobId: string, story: string, panels: number) =>
-    invoke<{ panels: Panel[]; asked: number }>(
-      "shot_list", { jobId, story, panels }
-    ),
+  /** Who is in the story and where it happens. Free of picture time. */
+  storyCast: (jobId: string, story: string) =>
+    invoke<{
+      people: { name: string; description: string; mentions: number; tier: number }[];
+      places: { name: string; description: string; mentions: number }[];
+      words: number;
+    }>("story_cast", { jobId, story }),
+
+  shotList: (jobId: string, story: string, panels: number | null) =>
+    invoke<{
+      panels: Panel[];
+      asked: number | null;
+      derived: boolean;
+      words: number;
+      expected_low?: number;
+      expected_high?: number;
+      out_of_range?: boolean;
+    }>("shot_list", { jobId, story, panels }),
   enrichPanels: (jobId: string, panels: Panel[], style: string) =>
     invoke<{ panels: Panel[] }>("enrich_panels", { jobId, panels, style }),
   composeBoard: (

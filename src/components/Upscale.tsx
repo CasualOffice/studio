@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { api, errText, newJobId, onEngineProgress, vaultUrl } from "../lib/api";
+import { api, errText, newJobId, onEngineProgress, onEnginePreview, vaultUrl } from "../lib/api";
 import type { EngineProgress, ModelStatus } from "../lib/types";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
 import SendTo, { type Destination } from "./SendTo";
@@ -14,6 +14,11 @@ export default function Upscale({
   onImagesChange?: (ids: string[]) => void;
   send?: (dest: Destination, ids: string[]) => void;
 }) {
+  // What the run looks like part-way. A tiled upscale sends one of these per
+  // finished piece, so a multi-minute job shows the picture filling in
+  // instead of a bar over a blank frame.
+  const [preview, setPreview] = useState<string | null>(null);
+
   const usable = useMemo(
     () => models.filter((m) => m.installed && m.fit !== "too_much_memory"
       && m.fit !== "broken" && m.tasks.includes("upscale" as never)),
@@ -74,7 +79,13 @@ export default function Upscale({
     // second run look like nothing was happening.
     setOut(null);
     setRunning(true); setJobId(id); setProg(null);
+    setPreview(null);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
+    // If this subscription throws, the progress listener above would
+    // never be released. Failing to get a preview is not worth leaking one.
+    let unp: (() => void) | undefined;
+    try { unp = await onEnginePreview((f) => { if (f.jobId === id) setPreview(f.src); }); }
+    catch { unp = undefined; }
     try {
       const res = await api.upscale(id, model.id, images[0], resolution, lowRam);
       setOut(res[0] ?? null);
@@ -83,7 +94,7 @@ export default function Upscale({
       const msg = errText(e);
       notify(msg.includes("cancelled") ? "Cancelled." : msg, !msg.includes("cancelled"));
     } finally {
-      un(); setRunning(false); setJobId(null); setProg(null);
+      un(); unp?.(); setPreview(null); setRunning(false); setJobId(null); setProg(null);
     }
   };
 
@@ -144,7 +155,18 @@ export default function Upscale({
       <div>
         <div className="canvas">
           {out ? <img src={vaultUrl(out)} alt="" />
-               : <div className="empty"><span className="big">⤢</span>Restored output appears here.</div>}
+           : preview ? (
+            <div style={{ textAlign: "center" }}>
+              {/* Soft on purpose: pieces are still landing, and this should
+                  not be mistaken for the finished picture. */}
+              <img src={preview} alt="" style={{
+                maxWidth: "100%", maxHeight: "58vh", borderRadius: 6, opacity: 0.92,
+              }} />
+              <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 8 }}>
+                {prog?.message ?? "Working\u2026"}
+              </div>
+            </div>
+           ) : <div className="empty"><span className="big">⤢</span>Restored output appears here.</div>}
         </div>
         {out && (
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>

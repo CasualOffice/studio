@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, errText, fmtBytes, fmtDuration, vaultUrl } from "../lib/api";
 import type { ModelStatus, VaultItem } from "../lib/types";
-import { exportItem } from "./shared";
+import { exportItem, exportMany } from "./shared";
 import SendTo, { type Destination } from "./SendTo";
 
 export default function Gallery({
@@ -19,6 +19,27 @@ export default function Gallery({
   const [open, setOpen] = useState<VaultItem | null>(null);
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<string>("all");
+  // Selection is by id, not by index: filtering and searching reorder the
+  // grid underneath, and a selection that survives a search is the point.
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [anchor, setAnchor] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  // Bulk delete is irreversible and the vault is the only copy, so the button
+  // asks once before it does it. The single-item delete is one item in front
+  // of you; twelve selected across a filtered grid is not.
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // Escape clears a selection the way it does everywhere else. This is
+  // registered above the early returns because hooks cannot be conditional.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setPicked(new Set()); setAnchor(null); setConfirmDelete(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Painted masks live in the vault so they are never written in the clear,
   // but they are working data and would only clutter the library.
@@ -57,6 +78,89 @@ export default function Gallery({
     generate: "Generated", edit: "Edited", upscale: "Enlarged",
     video: "Animated", import: "Imported", doc: "Document",
     recovered: "Recovered", mask: "Mask",
+  };
+
+  /**
+   * Collapse a board into one entry.
+   *
+   * A picture board writes a character sheet, a room reference per scene and
+   * one picture per panel. Left flat that is seventeen items in the library
+   * for one comic, which is what made the vault unusable after a board run.
+   * Members are folded into their first panel, and the card says how many are
+   * inside; opening it still reaches every one.
+   */
+  const groups = useMemo(() => {
+    const byProject = new Map<string, VaultItem[]>();
+    const flat: VaultItem[] = [];
+    for (const it of items) {
+      if (it.project) {
+        const g = byProject.get(it.project);
+        if (g) g.push(it); else byProject.set(it.project, [it]);
+      } else {
+        flat.push(it);
+      }
+    }
+    const heads: { item: VaultItem; members: VaultItem[] }[] = [];
+    for (const [, members] of byProject) {
+      members.sort((a, b) =>
+        (a.project_index ?? 1e9) - (b.project_index ?? 1e9) ||
+        a.created_at.localeCompare(b.created_at));
+      heads.push({ item: members[0], members });
+    }
+    for (const it of flat) heads.push({ item: it, members: [it] });
+    heads.sort((a, b) => b.item.created_at.localeCompare(a.item.created_at));
+    return heads;
+  }, [items]);
+
+  const shown = groups.map((g) => g.item);
+
+  const togglePick = (id: string, range: boolean) => {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (range && anchor) {
+        const a = shown.findIndex((i) => i.id === anchor);
+        const b = shown.findIndex((i) => i.id === id);
+        if (a >= 0 && b >= 0) {
+          for (let k = Math.min(a, b); k <= Math.max(a, b); k++) next.add(shown[k].id);
+          return next;
+        }
+      }
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+    setAnchor(id);
+    setConfirmDelete(false);
+  };
+
+  const clearPicks = () => {
+    setPicked(new Set()); setAnchor(null); setConfirmDelete(false);
+  };
+
+  const pickedItems = () => all.filter((i) => picked.has(i.id));
+
+  const exportPicked = async () => {
+    setBusy(true);
+    try { await exportMany(pickedItems(), notify); clearPicks(); }
+    finally { setBusy(false); }
+  };
+
+  const deletePicked = async () => {
+    const chosen = pickedItems();
+    setBusy(true);
+    let failed = 0;
+    for (const it of chosen) {
+      try { await api.vaultDelete(it.id); } catch { failed++; }
+    }
+    setBusy(false);
+    clearPicks();
+    if (open && chosen.some((c) => c.id === open.id)) setOpen(null);
+    onChanged();
+    notify(
+      failed
+        ? `Deleted ${chosen.length - failed} of ${chosen.length}; ${failed} could not be removed.`
+        : `Deleted ${chosen.length} from the vault.`,
+      failed > 0
+    );
   };
 
   if (items.length === 0) {
@@ -218,6 +322,31 @@ export default function Gallery({
           ))}
         </select>
       </div>
+      {picked.size > 0 && (
+        <div className="bulk-bar">
+          <b>{picked.size} selected</b>
+          <button className="btn small" disabled={busy} onClick={exportPicked}>
+            {busy ? "Working…" : picked.size === 1 ? "Export" : `Export ${picked.size}`}
+          </button>
+          {send && pickedItems().every((i) => i.mime.startsWith("image/")) && (
+            <SendTo ids={[...picked]} send={send} models={models} compact />
+          )}
+          <button
+            className="btn small danger"
+            disabled={busy}
+            onClick={() => {
+              if (confirmDelete) { void deletePicked(); return; }
+              setConfirmDelete(true);
+            }}
+          >
+            {confirmDelete
+              ? `Really delete ${picked.size}? This cannot be undone`
+              : `Delete ${picked.size}`}
+          </button>
+          <button className="btn small" style={{ marginLeft: "auto" }}
+            onClick={clearPicks}>Clear</button>
+        </div>
+      )}
       {items.length === 0 ? (
         <div className="empty-state">
           <span className="big">⌕</span>
@@ -225,8 +354,30 @@ export default function Gallery({
         </div>
       ) : (
       <div className="gallery-grid">
-      {items.map((it) => (
-        <div className="gallery-card" key={it.id} onClick={() => setOpen(it)}>
+      {groups.map(({ item: it, members }) => (
+        <div
+          className={"gallery-card" + (picked.has(it.id) ? " picked" : "")}
+          key={it.id}
+          onClick={(e) => {
+            // The tick selects; a modifier selects; anything else opens. Once
+            // something is selected a plain click keeps selecting, because
+            // that is what a file list does and opening would lose the set.
+            if ((e.target as HTMLElement).closest(".pick") || e.shiftKey || e.metaKey) {
+              e.preventDefault();
+              togglePick(it.id, e.shiftKey);
+            } else if (picked.size > 0) {
+              togglePick(it.id, false);
+            } else {
+              setOpen(it);
+            }
+          }}
+        >
+          <button
+            className="pick"
+            aria-pressed={picked.has(it.id)}
+            aria-label={picked.has(it.id) ? "Deselect" : "Select"}
+            onClick={(e) => { e.stopPropagation(); togglePick(it.id, e.shiftKey); }}
+          >✓</button>
           {isImage(it)
             ? <img src={vaultUrl(it.id)} alt="" loading="lazy" />
             : isVideo(it)
@@ -240,12 +391,24 @@ export default function Gallery({
                 justifyContent: "center", fontSize: 28, color: "var(--text-faint)",
                 background: "#0b0d12",
               }}>▤</div>}
+          {members.length > 1 && (
+            <span className="count" title={`${members.length} pictures in this board`}>
+              {members.length}
+            </span>
+          )}
           <div className="meta">
-            <div className="p">{it.prompt || it.name}</div>
+            <div className="p">
+              {members.length > 1
+                ? (it.project_name || "Picture board")
+                : (it.prompt || it.name)}
+            </div>
             <div className="sub">
-              {KIND_LABEL[it.kind] ?? it.kind}
-              {it.inputs.length > 0 ? " · from another" : ""}
-              {it.duration_ms ? ` · ${fmtDuration(it.duration_ms)}` : ""}
+              {members.length > 1
+                ? `board \u00b7 ${members.length} pictures`
+                : (KIND_LABEL[it.kind] ?? it.kind)}
+              {members.length === 1 && it.inputs.length > 0 ? " · from another" : ""}
+              {members.length === 1 && it.duration_ms
+                ? ` · ${fmtDuration(it.duration_ms)}` : ""}
             </div>
             {isImage(it) && send && (
               <div style={{ display: "flex", gap: 5, marginTop: 7, flexWrap: "wrap" }}>

@@ -25,6 +25,7 @@ import contextlib
 import gc
 import io
 import json
+import math
 import os
 import queue
 import re
@@ -1070,13 +1071,24 @@ def _stem(word: str) -> str:
 
 
 def _clarified(original: str, raw: str) -> str | None:
+    """The rewrite, or None. Callers that need to know why use the pair."""
+    return _clarified_with_reason(original, raw)[0]
+
+
+def _clarified_with_reason(original: str, raw: str) -> tuple[str | None, str]:
     """Take the model's rewrite, or reject it.
 
-    Returns None when the request names nothing that could be drawn. The old
-    version answered such requests by inventing a subject -- "make it look
-    better" produced a painting in a dark room with a large window, none of
-    which the user had asked for -- and with a T5 encoder every invented noun
-    is something the image actually contains.
+    Returns the rewrite and why it was or was not accepted. The reason
+    matters to the caller: "unclear" is a fact about the request and the user
+    can act on it, while every other rejection is a fact about the *rewrite* --
+    the request was fine and the model's answer was not. Reporting those as
+    "this does not say what to draw yet" tells people their prompt is broken
+    when it is not, which is worse than saying nothing at all.
+
+    The old version answered vague requests by inventing a subject -- "make it
+    look better" produced a painting in a dark room with a large window, none
+    of which the user had asked for -- and with a T5 encoder every invented
+    noun is something the image actually contains.
     """
     line = ""
     for candidate in raw.strip().splitlines():
@@ -1087,9 +1099,9 @@ def _clarified(original: str, raw: str) -> str | None:
         line = candidate
         break
     if not line:
-        return None
+        return None, "empty"
     if line.strip().upper().startswith("UNCLEAR"):
-        return None
+        return None, "unclear"
 
     # Deliberately not trimmed to a sentence. The model was asked for one
     # line, and that trim falls back to the last clause when there is no full
@@ -1097,7 +1109,7 @@ def _clarified(original: str, raw: str) -> str | None:
     # comma, deleting the chair and failing the retention check below.
     line = line.rstrip(" .,;") + "."
     if not _keeps_intent(original, line):
-        return None
+        return None, "lost_intent"
 
     # Every thing the request named has to still be there. `_keeps_intent` only
     # asks whether *any* of it survived, which let "an old bicycle against a
@@ -1109,14 +1121,14 @@ def _clarified(original: str, raw: str) -> str | None:
                           or _stem(w).startswith(k)
                           for k in kept)]
     if missing:
-        return None
+        return None, "dropped"
 
     # A rewrite far longer than the request is inventing, not clarifying.
     # The floor matters as much as the ratio: "a teapot" is one significant
     # word, and naming its glaze, its spout and its wear is a legitimate
     # clarification that a ratio alone would reject.
     if len(_significant(line)) > max(24, _MAX_EXPANSION * len(_significant(original))):
-        return None
+        return None, "too_long"
 
     # Length alone cannot tell a described teapot from a list of furniture.
     # Each "a ..." is another thing in the picture, so counting them catches
@@ -1126,8 +1138,8 @@ def _clarified(original: str, raw: str) -> str | None:
         return len(re.findall(r"\b(?:a|an|the)\s+[a-z]", text.lower()))
 
     if things(line) - things(original) > _MAX_NEW_THINGS:
-        return None
-    return line
+        return None, "rejected"
+    return line, "ok"
 
 
 def _keeps_intent(original: str, rewritten: str) -> bool:
@@ -2037,6 +2049,212 @@ def _clean_dialogue(raw: Any) -> list[dict[str, str]]:
     return out
 
 
+CAST_SYSTEM = (
+    "You are a script supervisor. You read a story and list who is in it and "
+    "where it happens. You do not interpret, summarise or invent.\n\n"
+    "Rules:\n"
+    "1. Only name people the story actually names or clearly describes. If a "
+    "person is never named, use the phrase the story itself uses for them "
+    "(\"the conductor\", \"her sister\"). Never invent a name.\n"
+    "2. Describe each person only from what the story says about them. If it "
+    "never says what they look like, say so with an empty description rather "
+    "than filling the gap. A face invented here is drawn into every panel.\n"
+    "3. A place is somewhere a scene happens, not every noun. A room, a "
+    "street, a station platform. Not \"the armchair\".\n"
+    "4. List people in the order they first appear.\n"
+)
+
+
+def _cast_instruction(story: str) -> str:
+    return (
+        "List the people and places in this story.\n\n"
+        "Reply with only a JSON object with two keys:\n"
+        '  "people": an array of {"name": how the story refers to them, '
+        '"description": what the story says they look like or wear, empty '
+        'string if it never says}\n'
+        '  "places": an array of {"name": the place, "description": what the '
+        'story says it looks like, empty string if it never says}\n\n'
+        "Story:\n" + story
+    )
+
+
+def _json_block(raw: str, opener: str = "[", closer: str = "]") -> Any:
+    """Locate the JSON in a reply that was asked not to wrap it in prose.
+
+    Models fence JSON in backticks and preface it with a sentence however
+    firmly they are told not to, so it is found rather than assumed.
+    """
+    body = raw.strip()
+    if "```" in body:
+        parts = body.split("```")
+        if len(parts) > 1:
+            body = parts[1]
+            if body.lstrip().lower().startswith("json"):
+                body = body.lstrip()[4:]
+    start, end = body.find(opener), body.rfind(closer)
+    if start < 0 or end <= start:
+        raise ValueError("no JSON found in the reply")
+    return json.loads(body[start:end + 1])
+
+
+def _mentions(story: str, name: str) -> int:
+    """How often the story refers to this person or place.
+
+    Counts the full name and each distinct word of it, so "Mrs. Mallard",
+    "Louise" and "Louise Mallard" all count toward the same person. Pronouns
+    are deliberately not counted: they cannot be attributed without resolving
+    them, and a wrong attribution here changes who the story is about.
+    """
+    if not name.strip():
+        return 0
+    low = story.lower()
+    total = low.count(name.lower())
+    for word in re.findall(r"[A-Za-z][A-Za-z'-]{2,}", name):
+        if word.lower() in ("the", "her", "his", "mrs", "mr", "miss"):
+            continue
+        total = max(total, len(re.findall(
+            r"\b" + re.escape(word.lower()) + r"\b", low)))
+    return total
+
+
+def _tier(count: int, top: int) -> int:
+    """Which of three tiers a character belongs to.
+
+    Mention counts in a story are roughly Zipf-distributed: one or two people
+    dominate and the rest fall away fast. The tier decides how much work each
+    one is worth -- a full character sheet, a lighter reference, or a name
+    only -- so it is set by share of the leader rather than an absolute count,
+    which would misjudge both a vignette and a novel chapter.
+    """
+    if top <= 0:
+        return 3
+    share = count / top
+    if share >= 0.25:
+        return 1
+    if share >= 0.08:
+        return 2
+    return 3
+
+
+# Roughly how much prose one panel carries. Derived from the panel counts the
+# writer produces when asked to divide by beat rather than to a target: it
+# lands near seventy words a panel across short fiction. Used only to bound
+# the answer and to size the token budget, never to force a count.
+_WORDS_PER_PANEL = 70
+
+
+def _panel_bounds(words: int) -> tuple[int, int]:
+    """The range a division of this much prose should fall in.
+
+    Not a target. It exists so a writer that returns three panels for three
+    thousand words, or ninety for three hundred, is recognised as having
+    failed rather than believed.
+    """
+    mid = max(2, round(words / _WORDS_PER_PANEL))
+    return max(2, int(mid * 0.5)), max(4, min(60, int(mid * 2.0)))
+
+
+def _shotlist_instruction_derived(story: str, low: int, high: int) -> str:
+    return (
+        "Break this story into panels, one panel per beat.\n\n"
+        "Do not aim for a particular number. The number of panels is whatever "
+        "the story turns out to need, and you will be judged on covering it "
+        "evenly, not on hitting a count. As a sanity check only, a story this "
+        f"length usually lands between {low} and {high} panels.\n\n"
+        "How many panels a beat is worth:\n"
+        "  an action, or anything with a before and an after -- two to four, "
+        "so the change is visible rather than asserted\n"
+        "  a passage of dialogue -- one panel each time a speaker changes what "
+        "they are trying to do, not one per line\n"
+        "  a description, or a statement of fact -- one\n"
+        "  a beat that happens off the page, or is only thought -- none, "
+        "unless something visible goes with it\n\n"
+        "Reply with only a JSON array of objects, each with:\n"
+        '  "shot": one of "wide", "medium", "close-up"\n'
+        '  "subject": who or what is in frame\n'
+        '  "action": what is happening, as a short phrase\n'
+        '  "setting": where it takes place\n'
+        '  "character_in_frame": true if the person we follow is visible in '
+        'this panel, false if it shows something else\n'
+        '  "caption": one short line to sit under the panel, in the voice of '
+        'the story. Narration, not description. Six to fourteen words, or an '
+        'empty string if the panel needs no words. It must belong to THIS '
+        'panel, never to a later one.\n'
+        '  "scene": the number of the scene this panel belongs to, from 1\n'
+        '  "scene_title": a short name for that scene, the same on every panel '
+        'of it\n'
+        '  "dialogue": an array of what is spoken aloud, each {"speaker": who '
+        'says it, "text": the words}. The story\'s own words where it has '
+        'them. Empty array when nobody speaks -- most panels. At most two '
+        'lines, each under twelve words.\n\n'
+        "Story:\n" + story
+    )
+
+
+def op_cast(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
+    """Read a story and report who is in it and where it happens.
+
+    This runs on its own the moment a story arrives, because it costs a couple
+    of minutes of the text model and no picture time at all. Everything that
+    costs image time is asked for; this is not.
+
+    Every name the writer returns is checked against the story before it is
+    kept. A model asked to list characters will confidently add one that is
+    not there, and an invented person becomes an invented character sheet and
+    then appears, drawn, in panels of a story they were never in.
+    """
+    story = (req.get("story") or "").strip()
+    if not story:
+        raise ValueError("paste a story first, then it can be read")
+
+    if is_cancelled(req_id):
+        raise Cancelled()
+    emit({"id": req_id, "type": "progress", "phase": "denoise",
+          "progress": None, "message": "Reading the cast"})
+    raw = _write(req_id, CAST_SYSTEM, _cast_instruction(story),
+                 max_tokens=900, temperature=0.2, repo=req.get("writer"))
+    try:
+        found = _json_block(raw, "{", "}")
+    except Exception as exc:
+        raise ValueError(f"could not read the cast from the story: {exc}")
+
+    def collect(key: str) -> list[dict[str, Any]]:
+        out = []
+        seen = set()
+        for item in (found.get(key) or []):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if not name or name.lower() in seen:
+                continue
+            count = _mentions(story, name)
+            if count == 0:
+                # Not in the story. Dropped rather than drawn.
+                log(req_id, f"dropping {key[:-1]} {name!r}: not in the story",
+                    "warn")
+                continue
+            seen.add(name.lower())
+            out.append({"name": name,
+                        "description": str(item.get("description", "")).strip(),
+                        "mentions": count})
+        return out
+
+    people = collect("people")
+    places = collect("places")
+    people.sort(key=lambda p: -p["mentions"])
+    top = people[0]["mentions"] if people else 0
+    for p in people:
+        p["tier"] = _tier(p["mentions"], top)
+
+    log(req_id,
+        f"cast: {len(people)} people ("
+        + ", ".join(f"{p['name']} x{p['mentions']} t{p['tier']}"
+                    for p in people[:6])
+        + f"), {len(places)} places")
+    return {"people": people, "places": places,
+            "words": len(re.findall(r"\S+", story))}
+
+
 def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     """Turn a story into an ordered list of panels.
 
@@ -2049,16 +2267,39 @@ def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     if not story:
         raise ValueError("write the story first, then break it into panels")
 
-    count = max(2, min(int(req.get("panels", 6)), 24))
+    words = len(re.findall(r"\S+", story))
+    asked = req.get("panels")
+
+    if asked is None:
+        # Derived, not set. A number chosen before anyone read the story is a
+        # guess, and a slider capped at twelve is why a whole chapter came
+        # back as twelve panels regardless of what was in it.
+        low, high = _panel_bounds(words)
+        emit({"id": req_id, "type": "progress", "phase": "denoise",
+              "progress": None, "message": "Dividing the story into beats"})
+        raw = _write(req_id, SHOTLIST_SYSTEM,
+                     _shotlist_instruction_derived(story, low, high),
+                     max_tokens=min(6000, 180 * high), temperature=0.3,
+                     repo=req.get("writer"))
+        panels = _parse_shotlist(raw, high)
+        log(req_id, f"{words} words divided into {len(panels)} panels "
+                    f"(expected {low}-{high})")
+        return {"panels": panels, "asked": None, "derived": True,
+                "words": words, "expected_low": low, "expected_high": high,
+                "out_of_range": not (low <= len(panels) <= high)}
+
+    count = max(2, min(int(asked), 60))
     emit({"id": req_id, "type": "progress", "phase": "denoise",
           "progress": None, "message": f"Breaking the story into {count} panels"})
 
     raw = _write(req_id, SHOTLIST_SYSTEM, _shotlist_instruction(story, count),
-                 max_tokens=180 * count, temperature=0.3, repo=req.get("writer"))
+                 max_tokens=min(6000, 180 * count), temperature=0.3,
+                 repo=req.get("writer"))
     panels = _parse_shotlist(raw, count)
     if len(panels) < count:
         log(req_id, f"asked for {count} panels, got {len(panels)}", "warn")
-    return {"panels": panels, "asked": count}
+    return {"panels": panels, "asked": count, "derived": False,
+            "words": words}
 
 
 def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
@@ -2066,20 +2307,40 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     from mlx_vlm import generate as vlm_generate
     from mlx_vlm.prompt_utils import apply_chat_template
 
-    repo = req.get("assistant") or "mlx-community/Qwen2-VL-2B-Instruct-4bit"
+    # An explicit null means the reader is not installed. Absent means the
+    # caller did not care and the default applies. The distinction matters:
+    # without it, a missing reader would fall back to the default repo and
+    # fail at load time instead of degrading to a text-only rewrite.
+    repo = req.get("assistant", "mlx-community/Qwen2-VL-2B-Instruct-4bit")
     user_prompt = (req.get("prompt") or "").strip()
     if not user_prompt:
         raise ValueError("write something first, then ask for help improving it")
 
     mode = req.get("mode", "generate")
+    # Sources normally arrive sealed as `vault_inputs`, which are decrypted to
+    # temporary files this function owns and deletes. `images` carries a
+    # plaintext path the caller owns, so it is kept apart: everything in
+    # `raw_staged` is deleted on the way out, and a caller's own file must
+    # never end up in that list.
+    direct = list(req.get("images") or [])
     raw_staged = _stage_vault_inputs(req.get("vault_inputs") or [])
-    staged = _downscale_for_assist(raw_staged)
+    staged = _downscale_for_assist(direct + raw_staged)
+    # The downscaler returns the path it was given when the image is already
+    # small enough, so `staged` can contain a caller's own file. Only the
+    # files this function actually created may be deleted on the way out.
+    derived = [p for p in staged if p not in direct and p not in raw_staged]
     try:
         # Both of these read the picture first. An edit needs to know which
         # jacket is meant; a clip starting from a photograph needs to know
         # what is in it before it can say how it moves.
-        editing = mode == "edit" and bool(staged)
-        animating = mode == "video" and bool(staged)
+        # The writer is text-only -- Qwen3 has no vision encoder at all -- so
+        # reading a picture is the reader's job and nothing else can stand in
+        # for it. When the reader is absent the rewrite still happens, just
+        # from the words alone, which is far more use than refusing.
+        can_read = bool(repo)
+        editing = mode == "edit" and bool(staged) and can_read
+        animating = mode == "video" and bool(staged) and can_read
+        blind = bool(staged) and not can_read
 
         def ask(text: str, images: list[str], max_tokens: int, temperature: float) -> str:
             # Only the picture-reading path needs the vision model, and it is
@@ -2126,30 +2387,66 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                          (f"The picture shows: {seen}\n" if seen else "")
                          + f"Request: {user_prompt}",
                          repo=req.get("writer"))
-            improved = _clarified(user_prompt, raw)
-            description = ""
+            improved, why = _clarified_with_reason(user_prompt, raw)
+            if improved is None and why not in ("unclear", "empty"):
+                # The rewrite was rejected, not the request. These checks are
+                # deliberately literal -- they are what stops "an old bicycle
+                # against a brick wall" coming back as a bicycle -- so a good
+                # paraphrase gets caught too: "a rainy street" rendered as
+                # "wet" and "slick" loses the word "rainy" while keeping the
+                # picture. Sampling is the difference, so it is worth one more
+                # draw at a lower temperature before giving up.
+                log(req_id, f"rewrite rejected ({why}); trying once more",
+                    "warn")
+                raw = _write(req_id, system,
+                             (f"The picture shows: {seen}\n" if seen else "")
+                             + f"Request: {user_prompt}",
+                             temperature=0.15, repo=req.get("writer"))
+                improved, why = _clarified_with_reason(user_prompt, raw)
             if improved is None:
-                # The request names nothing that could be drawn, so there is
-                # nothing to make precise. Inventing a subject to fill the gap
-                # is what made this useless before.
+                if why == "unclear":
+                    # A fact about the request: it names nothing that could be
+                    # drawn. Inventing a subject to fill the gap is what made
+                    # this useless before.
+                    return {
+                        "prompt": user_prompt, "original": user_prompt,
+                        "saw_image": bool(staged) and not blind,
+                        "unclear": True, "description": description,
+                        "note": ("This does not say what to draw yet. Name "
+                                 "the thing you want and I can make it "
+                                 "specific."),
+                    }
+                # Everything else is a fact about the *rewrite*, not the
+                # request: it drifted, dropped something, or ran long. The
+                # request was fine, so it is kept as written rather than the
+                # user being told their prompt is the problem.
+                log(req_id, f"rewrite rejected ({why}); keeping the request",
+                    "warn")
                 return {
                     "prompt": user_prompt, "original": user_prompt,
-                    "saw_image": False, "unclear": True, "description": "",
-                    "note": ("This does not say what to draw yet. Name the "
-                             "thing you want and I can make it specific."),
+                    "saw_image": bool(staged) and not blind,
+                    "description": description, "rejected_because": why,
+                    "note": ("Your words were kept: the rewrite drifted from "
+                             "them. Try again, or add a detail yourself."),
                 }
 
         if not _keeps_intent(user_prompt, improved):
             log(req_id, f"discarding rewrite {improved!r}: it lost the request", "warn")
             return {"prompt": user_prompt, "original": user_prompt,
-                    "saw_image": bool(staged), "rejected": improved,
-                    "description": description}
+                    "saw_image": bool(staged) and not blind,
+                    "rejected": improved, "description": description}
     finally:
-        _discard_staged(staged)
+        # Never `staged`: it may hold a path the caller owns.
+        _discard_staged(derived)
         _discard_staged(raw_staged)
 
-    return {"prompt": improved, "original": user_prompt,
-            "saw_image": bool(staged), "description": description}
+    out = {"prompt": improved, "original": user_prompt,
+           "saw_image": bool(staged) and not blind, "description": description}
+    if blind:
+        out["note"] = ("Rewritten from your words only. Install the prompt "
+                       "assistant (1.2 GiB) if you want it to look at the "
+                       "picture as well.")
+    return out
 
 
 def op_unload_assistant(req_id: str, _req: dict[str, Any]) -> dict[str, Any]:
@@ -2673,6 +2970,34 @@ def _resolve_latent_creator(model: Any) -> Any:
     return None
 
 
+def _emit_preview_image(req_id: str, img: Any, step: int | None = None,
+                        total: int | None = None) -> None:
+    """Send a finished picture as a preview frame.
+
+    The step-wise preview decodes latents mid-denoise, which only exists for
+    routes that expose a step callback. Work that produces whole pictures in
+    stages -- a tiled upscale, a clip's first frame -- has nothing to decode
+    but plenty to show, and the receiving end is the same either way.
+    """
+    import base64
+    import io
+
+    try:
+        out = img.convert("RGB")
+        if max(out.size) > PREVIEW_MAX_EDGE:
+            scale = PREVIEW_MAX_EDGE / max(out.size)
+            out = out.resize((max(1, int(out.width * scale)),
+                              max(1, int(out.height * scale))))
+        buf = io.BytesIO()
+        out.save(buf, format="JPEG", quality=PREVIEW_QUALITY)
+        emit({"id": req_id, "type": "preview", "step": step,
+              "total_steps": total,
+              "jpeg": base64.b64encode(buf.getvalue()).decode("ascii")})
+    except Exception as exc:
+        # A preview is a convenience and must never take the run down with it.
+        log(req_id, f"preview frame skipped: {exc}", "warn")
+
+
 def _attach_live_preview(req_id: str, loaded: Any) -> Any:
     """Emit a JPEG of the partial image after each denoise step.
 
@@ -3145,6 +3470,242 @@ def op_edit(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     return _run_generation(req_id, req, "image-to-image", image_count=count)
 
 
+# Measured on this 16 GB machine, SeedVR2 3B q4, MLX cache limit 1 GiB:
+#
+#     output        peak
+#     512x512     6.43 GiB
+#     768x768    10.44 GiB
+#    1024x1024   16.57 GiB
+#
+# Peak tracks output area almost exactly linearly over that range, which fits
+# peak = 3.06 + 12.88 * output-megapixels to within 0.25 GiB. The constants are
+# from those three points and nothing else; re-measure before trusting them for
+# another model or another quantisation.
+_UPSCALE_BASE_GIB = 3.06
+_UPSCALE_GIB_PER_MPX = 12.88
+
+
+def _upscale_peak_gib(width: int, height: int) -> float:
+    """Estimated peak for producing an image this size."""
+    return _UPSCALE_BASE_GIB + _UPSCALE_GIB_PER_MPX * (width * height) / 1e6
+
+
+def _upscale_budget_gib() -> float:
+    raw = os.environ.get("MODELSTUDIO_MEMORY_BUDGET_GIB")
+    try:
+        return float(raw) if raw else 12.0
+    except ValueError:
+        return 12.0
+
+
+def _largest_upscale_edge(width: int, height: int, budget_gib: float) -> int:
+    """The longest output edge that fits, keeping this image's proportions."""
+    room = budget_gib - _UPSCALE_BASE_GIB
+    if room <= 0:
+        return 0
+    max_px = room / _UPSCALE_GIB_PER_MPX * 1e6
+    scale = math.sqrt(max_px / max(1, width * height))
+    return int(max(width, height) * scale)
+
+
+def _check_upscale_fits(req_id: str, src: str, resolution: Any) -> tuple[int, int]:
+    """Refuse an upscale that cannot fit, before anything is dispatched.
+
+    This has to happen up front. MLX reports a Metal out-of-memory from a
+    command-buffer completion handler, which is a context that cannot raise
+    into Python: the C++ exception reaches std::terminate and aborts the
+    whole engine. There is no except clause that catches it, and the user
+    sees "the engine stopped unexpectedly" with no idea which knob was wrong.
+    So the size is checked here, where a refusal is still possible.
+    """
+    from PIL import Image
+
+    with Image.open(src) as im:
+        in_w, in_h = im.size
+
+    if isinstance(resolution, (int, float)):
+        # An absolute target for the shortest edge.
+        factor = float(resolution) / max(1, min(in_w, in_h))
+    else:
+        factor = float(getattr(resolution, "value", 0) or
+                       getattr(resolution, "factor", 0) or 0)
+        if not factor:
+            # Unrecognised: run it in one pass rather than guessing a factor
+            # and tiling a request that would have been fine.
+            return in_w, in_h, in_w, in_h, 1.0, True
+    out_w, out_h = int(in_w * factor), int(in_h * factor)
+
+    need = _upscale_peak_gib(out_w, out_h)
+    budget = _upscale_budget_gib()
+    log(req_id,
+        f"upscale {in_w}x{in_h} -> {out_w}x{out_h}, "
+        f"needs about {need:.1f} GiB of {budget:.1f} GiB")
+    return in_w, in_h, out_w, out_h, factor, need <= budget * _UPSCALE_SAFETY
+
+
+# Leave a margin under the budget: the estimate is a fit through three points,
+# and being 10% optimistic here costs the whole engine, not just the request.
+_UPSCALE_SAFETY = 0.85
+# Overlap between neighbouring tiles, in output pixels. Wide enough that the
+# feathered blend has somewhere to happen and narrow enough not to double the
+# work; at 2x this is 32 source pixels.
+_TILE_OVERLAP = 64
+
+
+def _tile_spans(total: int, tile: int, overlap: int) -> list[tuple[int, int]]:
+    """Cover 0..total with windows of `tile`, overlapping by `overlap`.
+
+    The last window is pulled back to end exactly at `total` rather than
+    running past it, so no tile is padded and the edges stay real pixels.
+    """
+    if total <= tile:
+        return [(0, total)]
+    step = max(1, tile - overlap)
+    spans = []
+    start = 0
+    while True:
+        end = start + tile
+        if end >= total:
+            spans.append((max(0, total - tile), total))
+            return spans
+        spans.append((start, end))
+        start += step
+
+
+def _upscale_tiled(req_id: str, model: Any, src: str, factor: float,
+                   budget_gib: float, seed: int = 0,
+                   preview: bool = True) -> Any:
+    """Enlarge an image in overlapping pieces, each small enough to fit.
+
+    A single pass is bounded by memory, not by the picture: on a 16 GB machine
+    SeedVR2 tops out near 833 pixels on the longest edge, which is not an
+    upscale of anything worth upscaling. Tiling trades time for size -- each
+    tile is a separate pass, so the cost is linear in area -- and the seams are
+    handled by overlapping the tiles and blending them with a feathered
+    weight, so no join lands on a hard edge.
+    """
+    from PIL import Image
+    import numpy as np
+
+    with Image.open(src) as im:
+        source = im.convert("RGB")
+    in_w, in_h = source.size
+    out_w, out_h = round(in_w * factor), round(in_h * factor)
+
+    # Largest tile whose *output* fits, expressed back in source pixels.
+    room = (budget_gib * _UPSCALE_SAFETY) - _UPSCALE_BASE_GIB
+    if room <= 0:
+        raise ValueError(
+            f"There is not enough memory to enlarge anything here: the "
+            f"upscaler needs about {_UPSCALE_BASE_GIB:.0f} GiB before it "
+            f"looks at the picture."
+        )
+    tile_out_px = room / _UPSCALE_GIB_PER_MPX * 1e6
+    tile_out = int(math.sqrt(tile_out_px))
+    tile_src = max(64, int(tile_out / factor))
+
+    xs = _tile_spans(in_w, min(tile_src, in_w), int(_TILE_OVERLAP / factor))
+    ys = _tile_spans(in_h, min(tile_src, in_h), int(_TILE_OVERLAP / factor))
+    total = len(xs) * len(ys)
+    log(req_id,
+        f"tiling {in_w}x{in_h} -> {out_w}x{out_h} as {len(xs)}x{len(ys)} "
+        f"tiles of up to {tile_src}px source ({tile_out}px out)")
+
+    acc = np.zeros((out_h, out_w, 3), dtype=np.float32)
+    wsum = np.zeros((out_h, out_w, 1), dtype=np.float32)
+
+    import vaultcrypto as vc
+
+    done = 0
+    for (y0, y1) in ys:
+        for (x0, x1) in xs:
+            # Between pieces is the only place this loop can be stopped. Each
+            # piece is a single opaque call into the model, so without a check
+            # here Cancel marks the job cancelled, the interface stops showing
+            # it, and the engine grinds on through every remaining tile at
+            # fifteen seconds each -- which reads, correctly, as a hang.
+            if is_cancelled(req_id):
+                raise Cancelled()
+            done += 1
+            emit({"id": req_id, "type": "progress", "phase": "denoise",
+                  "progress": (done - 1) / total,
+                  "message": f"Enlarging piece {done} of {total}"})
+            crop = source.crop((x0, y0, x1, y1))
+            tmp = os.path.join(_stage_dir(), f"tile_{req_id}_{done}.png")
+            crop.save(tmp)
+            try:
+                shortest = int(min(crop.size) * factor)
+                # One seed for every tile: a different seed per tile would
+                # make neighbouring pieces disagree about texture, and the
+                # blend cannot hide that.
+                art = model.generate_image(seed=seed, image_path=tmp,
+                                           resolution=shortest)
+                piece = Image.open(io.BytesIO(vc.artifact_to_png_bytes(art)))
+                piece = piece.convert("RGB")
+            finally:
+                _discard_staged([tmp])
+
+            # Place tiles on an exact grid derived from the same rounding as
+            # the canvas, and make each piece fit its cell exactly. The model
+            # rounds its own output to whatever its resolution target implied,
+            # and trusting that left a one-pixel column at the far edge that
+            # no tile covered -- which divides by ~0 in the blend and paints a
+            # black line down the side of the finished picture.
+            px0, px1 = round(x0 * factor), round(x1 * factor)
+            py0, py1 = round(y0 * factor), round(y1 * factor)
+            px1, py1 = min(px1, out_w), min(py1, out_h)
+            pw, ph = px1 - px0, py1 - py0
+            if pw <= 0 or ph <= 0:
+                continue
+            if piece.size != (pw, ph):
+                piece = piece.resize((pw, ph), Image.LANCZOS)
+            arr = np.asarray(piece, dtype=np.float32)
+
+            # Feather towards every edge that has a neighbour, so the blend
+            # happens inside the overlap and never at the picture's border.
+            wx = np.ones(pw, dtype=np.float32)
+            wy = np.ones(ph, dtype=np.float32)
+            fade = max(1, int(_TILE_OVERLAP))
+            if x0 > 0:
+                wx[:fade] = np.linspace(0.0, 1.0, min(fade, pw), dtype=np.float32)[:fade]
+            if x1 < in_w:
+                wx[-fade:] = np.linspace(1.0, 0.0, min(fade, pw), dtype=np.float32)[-fade:]
+            if y0 > 0:
+                wy[:fade] = np.linspace(0.0, 1.0, min(fade, ph), dtype=np.float32)[:fade]
+            if y1 < in_h:
+                wy[-fade:] = np.linspace(1.0, 0.0, min(fade, ph), dtype=np.float32)[-fade:]
+            w = (wy[:, None] * wx[None, :])[:, :, None]
+
+            acc[py0:py0 + ph, px0:px0 + pw] += arr * w
+            wsum[py0:py0 + ph, px0:px0 + pw] += w
+
+            # Show the picture so far. Tiling is the slow path -- minutes for a
+            # large image -- and without this it is a counter and a blank
+            # frame. Dividing by the running weight makes finished tiles look
+            # finished instead of dark.
+            if preview:
+                so_far = np.divide(acc, np.maximum(wsum, 1e-6))
+                _emit_preview_image(
+                    req_id,
+                    Image.fromarray(np.clip(so_far, 0, 255).astype(np.uint8)),
+                    step=done, total=total)
+                del so_far
+            gc.collect()
+
+    # Every pixel must have been written by at least one tile. With the exact
+    # grid above that holds by construction, so a gap here means the geometry
+    # is wrong and the picture would carry a black seam -- better to say so
+    # than to hand back a spoiled image.
+    uncovered = int((wsum <= 0).sum())
+    if uncovered:
+        raise RuntimeError(
+            f"tiling left {uncovered} pixels uncovered; refusing to return a "
+            "picture with a seam in it"
+        )
+    blended = np.divide(acc, wsum)
+    return Image.fromarray(np.clip(blended, 0, 255).astype(np.uint8))
+
+
 def op_upscale(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     """Restore or enlarge one image with SeedVR2.
 
@@ -3197,24 +3758,44 @@ def op_upscale(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         else:
             resolution = int(raw)
 
-        unsubscribe = _subscribe(req_id, model, "image-to-image")
-        try:
-            artifact = call_tolerant(
-                req_id,
-                model.generate_image,
-                {
-                    "seed": int(req.get("seed", 0)),
-                    "image_path": sources[0],
-                    "resolution": resolution,
-                },
-                {"low_ram": True} if req.get("low_ram") else {},
-            )
-        finally:
-            unsubscribe()
+        _in_w, _in_h, out_w, out_h, factor, fits = _check_upscale_fits(
+            req_id, sources[0], resolution)
 
         import vaultcrypto as vc
 
-        png = vc.artifact_to_png_bytes(artifact)
+        if fits:
+            unsubscribe = _subscribe(req_id, model, "image-to-image")
+            preview = (_attach_live_preview(req_id, model)
+                       if req.get("preview", True) else None)
+            try:
+                artifact = call_tolerant(
+                    req_id,
+                    model.generate_image,
+                    {
+                        "seed": int(req.get("seed", 0)),
+                        "image_path": sources[0],
+                        "resolution": resolution,
+                    },
+                    {},
+                )
+            finally:
+                _detach_live_preview(model, preview)
+                unsubscribe()
+            png = vc.artifact_to_png_bytes(artifact)
+        else:
+            # Too big for one pass. Tiling is slower but it is the difference
+            # between an enlarged picture and an aborted engine.
+            emit({"id": req_id, "type": "progress", "phase": "denoise",
+                  "progress": 0.0,
+                  "message": f"Too large for one pass \u2014 enlarging to "
+                             f"{out_w}x{out_h} in pieces"})
+            image = _upscale_tiled(req_id, model, sources[0], factor,
+                                   _upscale_budget_gib(),
+                                   seed=int(req.get("seed", 0)),
+                                   preview=bool(req.get("preview", True)))
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            png = buf.getvalue()
         slot = slots[0]
         vc.write_sealed(
             slot["path"], bytes.fromhex(slot["key"]),
@@ -3318,12 +3899,16 @@ def op_video(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             else:
                 plan_kw["image_count"] = len(staged)
 
+        # image_count has to be passed exactly once. It was being set inside
+        # plan_kw above *and* passed explicitly as 0 here, which is a
+        # TypeError before any work starts -- so animating a still has never
+        # reached the model on a first-frame route, whatever model was chosen.
         loaded, load_ms = _load_model(
             req_id,
             req["model"],
             req.get("quantize"),
             req.get("model_path"),
-            image_count=0,
+            image_count=int(plan_kw.pop("image_count", 0)),
             release_text_encoder=True,
             **plan_kw,
         )
@@ -3363,8 +3948,17 @@ def op_video(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             optional["reference_guidance"] = req["guidance"]
 
         target = getattr(loaded, "model", loaded)
+        # A clip is the longest wait in the app -- minutes, for a result that
+        # may be wrong from the first step. If the route exposes a step
+        # callback this shows it forming; if not, it logs once and stays out
+        # of the way.
+        preview = (_attach_live_preview(req_id, loaded)
+                   if req.get("preview", True) else None)
         gen_started = time.time()
-        video = call_tolerant(req_id, target.generate_video, base, optional)
+        try:
+            video = call_tolerant(req_id, target.generate_video, base, optional)
+        finally:
+            _detach_live_preview(loaded, preview)
         generate_ms = (time.time() - gen_started) * 1000.0
 
         # `call_tolerant` drops what a route refuses, which is right for a
@@ -3437,6 +4031,7 @@ OPS = {
     "video": op_video,
     "unload": op_unload,
     "assist": op_assist,
+    "cast": op_cast,
     "shotlist": op_shotlist,
     "enrich_panels": op_enrich_panels,
     "compose_board": op_compose_board,

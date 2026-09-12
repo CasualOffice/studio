@@ -94,6 +94,22 @@ export default function Models({
             {m.low_ram_may_help && !m.hopeless ? "Needs low-RAM mode" : fit.label}
           </span>
           {m.tasks_str.map((t) => <span className="pill" key={t}>{t}</span>)}
+          {/* For a video model this is the fact that decides whether the
+              download is worth starting, and it was only ever shown after
+              installing the model and selecting it. A model that cannot
+              animate a still is a different tool from one that can. */}
+          {m.tasks_str.some((t) => t.toLowerCase().includes("video")) && (
+            <span
+              className={"pill " + (m.video_from_image ? "good" : "warn")}
+              title={
+                m.video_from_image
+                  ? "Takes a starting picture and animates it"
+                  : "Makes clips from a description only \u2014 it cannot animate a picture you supply"
+              }
+            >
+              {m.video_from_image ? "image to video" : "text to video only"}
+            </span>
+          )}
         </div>
         <div className="repo">{m.repo}</div>
         <div className="notes">{m.notes}</div>

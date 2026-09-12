@@ -771,6 +771,257 @@ class Pagination(unittest.TestCase):
         self.assertTrue(all(len(p) <= worker.PAGE_MAX for p in pages), pages)
 
 
+class TileGeometry(unittest.TestCase):
+    """Tiles must cover the output canvas exactly.
+
+    Placement used int(x * factor) while each piece was sized by the model's
+    own rounding, so the far edge could be left a pixel short. Nothing covers
+    that column, the blend divides it by ~0, and a black line appears down the
+    side of the finished picture. This checks the grid arithmetic directly,
+    across sizes and scales, without needing a model.
+    """
+
+    def _cells(self, in_w, in_h, factor, tile_src, overlap_src):
+        xs = worker._tile_spans(in_w, min(tile_src, in_w), overlap_src)
+        ys = worker._tile_spans(in_h, min(tile_src, in_h), overlap_src)
+        out_w, out_h = round(in_w * factor), round(in_h * factor)
+        cells = []
+        for (y0, y1) in ys:
+            for (x0, x1) in xs:
+                px0, px1 = round(x0 * factor), round(x1 * factor)
+                py0, py1 = round(y0 * factor), round(y1 * factor)
+                px1, py1 = min(px1, out_w), min(py1, out_h)
+                if px1 > px0 and py1 > py0:
+                    cells.append((px0, py0, px1, py1))
+        return out_w, out_h, cells
+
+    def test_every_output_pixel_is_covered(self):
+        import numpy as np
+
+        cases = [
+            (512, 512, 2.0), (1024, 1024, 2.0), (1000, 667, 2.0),
+            (513, 397, 2.0), (640, 480, 4.0), (777, 1013, 3.0),
+            (256, 256, 2.0), (1920, 1080, 2.0),
+        ]
+        for in_w, in_h, factor in cases:
+            tile_src = max(64, int(744 / factor))
+            out_w, out_h, cells = self._cells(
+                in_w, in_h, factor, tile_src, int(64 / factor))
+            cover = np.zeros((out_h, out_w), dtype=np.int32)
+            for (px0, py0, px1, py1) in cells:
+                cover[py0:py1, px0:px1] += 1
+            missing = int((cover == 0).sum())
+            self.assertEqual(
+                missing, 0,
+                f"{in_w}x{in_h} @{factor}x leaves {missing} pixels uncovered "
+                f"-- those become a black seam")
+
+    def test_neighbouring_cells_overlap_so_the_blend_has_room(self):
+        out_w, out_h, cells = self._cells(1000, 667, 2.0, 372, 32)
+        self.assertGreater(len(cells), 1, "expected more than one tile")
+        xs = sorted({(c[0], c[2]) for c in cells})
+        for (a0, a1), (b0, b1) in zip(xs, xs[1:]):
+            self.assertLess(b0, a1, "columns must overlap to blend")
+
+
+class TiledUpscaleCancels(unittest.TestCase):
+    """Cancel must stop a tiled upscale.
+
+    Each tile is one opaque call into the model, so the loop is the only place
+    it can stop. Without a check there, Cancel marked the job cancelled, the
+    interface stopped showing it, and the engine kept working through every
+    remaining tile -- which is indistinguishable from a hang.
+    """
+
+    def test_the_tile_loop_checks_for_cancellation(self):
+        import ast
+
+        src = open(os.path.join(HERE, "worker.py")).read()
+        tree = ast.parse(src)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "_upscale_tiled")
+        body = ast.get_source_segment(src, fn) or ""
+        self.assertIn("is_cancelled", body,
+                      "_upscale_tiled must check cancellation between tiles")
+        # and it must actually raise, not merely look
+        self.assertIn("raise Cancelled()", body)
+
+    def test_every_loop_over_model_calls_can_be_stopped(self):
+        import ast
+
+        src = open(os.path.join(HERE, "worker.py")).read()
+        tree = ast.parse(src)
+        for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+            if not any(isinstance(n, (ast.For, ast.While)) for n in ast.walk(fn)):
+                continue
+            body = ast.get_source_segment(src, fn) or ""
+            if not any(k in body for k in ("generate_image", "generate_video")):
+                continue
+            # Either an explicit check, or the progress handler that raises.
+            self.assertTrue(
+                "is_cancelled" in body or "_make_progress_handler" in body,
+                f"{fn.name} loops over model calls with no way to stop it")
+
+
+class ClarifyReasons(unittest.TestCase):
+    """A rejected rewrite is not a vague request.
+
+    `_clarified` collapsed six different outcomes into None, and op_assist
+    reported all of them as "this does not say what to draw yet". So a request
+    that named a subject perfectly well was blamed for the model's bad answer.
+    """
+
+    def test_unclear_is_reported_as_unclear(self):
+        _, why = worker._clarified_with_reason("make it better", "UNCLEAR")
+        self.assertEqual(why, "unclear")
+
+    def test_a_dropped_noun_is_blamed_on_the_rewrite(self):
+        # The request names a wall; the rewrite loses it.
+        out, why = worker._clarified_with_reason(
+            "an old bicycle against a brick wall",
+            "a rusted old bicycle leaning on its kickstand.")
+        self.assertIsNone(out)
+        self.assertNotEqual(why, "unclear",
+                            "a dropped noun must not be called a vague request")
+
+    def test_a_good_rewrite_is_accepted(self):
+        out, why = worker._clarified_with_reason(
+            "a tabby cat on a chair",
+            "a tabby cat curled on a worn oak chair.")
+        self.assertEqual(why, "ok")
+        self.assertIsNotNone(out)
+        self.assertIn("cat", out)
+        self.assertIn("chair", out)
+
+    def test_the_old_name_still_returns_just_the_text(self):
+        self.assertIsNone(worker._clarified("make it better", "UNCLEAR"))
+        self.assertIsInstance(
+            worker._clarified("a tabby cat on a chair",
+                              "a tabby cat curled on a worn oak chair."), str)
+
+
+class AssistOwnsOnlyWhatItMade(unittest.TestCase):
+    """op_assist must never delete a file the caller owns.
+
+    It decrypts vault inputs into temporary files and deletes them on the way
+    out, which is right. When it also learned to accept a plaintext `images`
+    path, that path briefly joined the same list -- and the downscaler returns
+    its input unchanged when the picture is already small, so a caller's own
+    file could end up in the delete list. This checks the source survives.
+    """
+
+    def test_a_plaintext_source_survives(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "source.png")
+            Image.new("RGB", (64, 64), (10, 20, 30)).save(src)
+
+            # Exercise the ownership split without loading a vision model.
+            direct = [src]
+            raw_staged = []
+            staged = worker._downscale_for_assist(direct + raw_staged)
+            derived = [p for p in staged
+                       if p not in direct and p not in raw_staged]
+            worker._discard_staged(derived)
+            worker._discard_staged(raw_staged)
+
+            self.assertTrue(os.path.exists(src),
+                            "op_assist deleted the caller's own image")
+
+    def test_a_large_source_survives_and_its_copy_does_not(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "big.png")
+            Image.new("RGB", (worker.ASSIST_MAX_EDGE * 2,
+                              worker.ASSIST_MAX_EDGE * 2), (5, 5, 5)).save(src)
+            direct = [src]
+            staged = worker._downscale_for_assist(direct)
+            derived = [p for p in staged if p not in direct]
+            self.assertEqual(len(derived), 1, "expected a downscaled copy")
+            worker._discard_staged(derived)
+            self.assertTrue(os.path.exists(src), "deleted the caller's image")
+            self.assertFalse(os.path.exists(derived[0]),
+                             "left its own temporary behind")
+
+
+class UpscaleFits(unittest.TestCase):
+    """The upscale size guard.
+
+    Going over the memory budget here does not raise -- MLX reports the Metal
+    failure from a command-buffer completion handler, which reaches
+    std::terminate and aborts the engine. So the arithmetic that decides
+    whether to tile is the only thing standing between a large picture and a
+    dead process, and it is worth testing directly.
+    """
+
+    def test_matches_the_measurements(self):
+        # Measured on a 16 GB M4, SeedVR2 3B q4. See docs/measurements.md.
+        for w, h, measured in ((512, 512, 6.43), (768, 768, 10.44),
+                               (1024, 1024, 16.57)):
+            got = worker._upscale_peak_gib(w, h)
+            self.assertLess(abs(got - measured), 0.3,
+                            f"{w}x{h}: predicted {got:.2f}, measured {measured}")
+
+    def test_one_pass_is_refused_when_it_would_abort(self):
+        budget = 12.0
+        self.assertGreater(worker._upscale_peak_gib(1024, 1024), budget)
+        self.assertLess(worker._upscale_peak_gib(768, 768), budget)
+
+    def test_largest_edge_keeps_proportions_and_fits(self):
+        for w, h in ((1024, 1024), (1600, 900), (640, 480)):
+            edge = worker._largest_upscale_edge(w, h, 12.0)
+            scale = edge / max(w, h)
+            self.assertLessEqual(worker._upscale_peak_gib(int(w * scale),
+                                                          int(h * scale)),
+                                 12.0 + 0.05)
+
+    def test_tile_spans_cover_everything_and_overlap(self):
+        for total, tile, overlap in ((1000, 372, 32), (512, 372, 32),
+                                     (300, 372, 32), (2048, 400, 64)):
+            spans = worker._tile_spans(total, min(tile, total), overlap)
+            self.assertEqual(spans[0][0], 0)
+            self.assertEqual(spans[-1][1], total, f"{total}/{tile} leaves a gap")
+            for (a0, a1), (b0, b1) in zip(spans, spans[1:]):
+                self.assertLess(b0, a1, "neighbouring tiles must overlap")
+            covered = set()
+            for a, b in spans:
+                covered |= set(range(a, b))
+            self.assertEqual(len(covered), total, "every pixel must be covered")
+
+
+class VideoLoadArguments(unittest.TestCase):
+    """`op_video` must pass image_count exactly once.
+
+    It used to set it inside plan_kw and also pass it positionally as 0, which
+    is a TypeError raised before any work starts -- so animating a still never
+    reached a model on a first-frame route, whatever model was selected. The
+    failure needs real weights to reproduce, so it is checked statically.
+    """
+
+    def test_image_count_is_not_passed_twice(self):
+        import ast
+
+        src = open(os.path.join(HERE, "worker.py")).read()
+        tree = ast.parse(src)
+        checked = 0
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and getattr(node.func, "id", "") == "_load_model"):
+                continue
+            explicit = [k.arg for k in node.keywords if k.arg]
+            has_star = any(k.arg is None for k in node.keywords)
+            if has_star and "image_count" in explicit:
+                segment = ast.get_source_segment(src, node) or ""
+                self.assertIn("pop(", segment,
+                              f"line {node.lineno}: image_count is passed "
+                              "explicitly next to **kwargs that may also "
+                              "carry it; pop it from the dict first")
+                checked += 1
+        self.assertGreater(checked, 0, "expected op_video's call to be covered")
+
+
 class ModuleIntegrity(unittest.TestCase):
     """Names the module uses must exist.
 

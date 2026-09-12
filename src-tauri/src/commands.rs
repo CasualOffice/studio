@@ -252,6 +252,9 @@ pub fn vault_import_bytes(
         inputs: vec![],
         created_at: chrono::Local::now().to_rfc3339(),
         duration_ms: 0,
+        project: None,
+        project_name: None,
+        project_index: None,
     };
     Ok(state.vault.put(&data, item)?)
 }
@@ -303,6 +306,9 @@ pub fn vault_import(state: State<'_, AppState>, source: String, kind: String) ->
         inputs: vec![],
         created_at: chrono::Local::now().to_rfc3339(),
         duration_ms: 0,
+        project: None,
+        project_name: None,
+        project_index: None,
     };
     let before = state.vault.list()?.len();
     let id = state.vault.put(&bytes, item)?;
@@ -728,6 +734,17 @@ pub struct GenerateArgs {
     /// Show the picture forming, step by step.
     #[serde(default = "default_true")]
     pub preview: bool,
+    /// The project this output belongs to, if any.
+    ///
+    /// A picture board sets this on every panel it draws, so the library shows
+    /// one comic rather than seventeen loose pictures with the same timestamp.
+    /// Absent for an ordinary one-off generation.
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub project_name: Option<String>,
+    #[serde(default)]
+    pub project_index: Option<u32>,
     /// Adapter handles with their strengths.
     #[serde(default)]
     pub loras: Vec<(String, f32)>,
@@ -942,6 +959,11 @@ async fn run_job(
             inputs: args.images.clone(),
             created_at: chrono::Local::now().to_rfc3339(),
             duration_ms: elapsed,
+            project: args.project.clone(),
+            project_name: args.project_name.clone(),
+            // One request can produce several pictures, so the index walks
+            // from whatever the caller said this batch starts at.
+            project_index: args.project_index.map(|n| n + i as u32),
         })?;
     }
 
@@ -1085,6 +1107,9 @@ pub async fn upscale(
             inputs: vec![image.clone()],
             created_at: chrono::Local::now().to_rfc3339(),
             duration_ms: started.elapsed().as_millis() as u64,
+            project: None,
+            project_name: None,
+            project_index: None,
         })?;
     }
     Ok(produced)
@@ -1117,16 +1142,13 @@ pub async fn assist_prompt(
              \u{2014} it is a 2.3 GiB download and runs entirely on this Mac.",
         ));
     }
-    if !images.is_empty() {
-        let reader = models::find(&state.paths(), &host, "qwen2-vl-2b-4bit")
-            .ok_or_else(|| AppError::msg("the prompt assistant is missing from the catalog"))?;
-        if !reader.installed {
-            return Err(AppError::msg(
-                "Reading your picture needs the prompt assistant as well. Add it \
-                 from the Models tab \u{2014} it is a 1.2 GiB download.",
-            ));
-        }
-    }
+    // The reader is what looks at the picture; the writer cannot, because
+    // Qwen3 has no vision encoder. But a missing reader is no reason to refuse
+    // the whole request: the rewrite still works from the words alone, and the
+    // engine says so in its reply. Refusing outright was the worse trade --
+    // it left people with a writer they could not use and no way to proceed.
+    let can_read = !images.is_empty()
+        && models::find(&state.paths(), &host, "qwen2-vl-2b-4bit").is_some_and(|r| r.installed);
 
     // Hand over per-image keys only, exactly as generation does.
     let mut vault_inputs = Vec::new();
@@ -1146,8 +1168,10 @@ pub async fn assist_prompt(
             &job_id,
             "assist",
             json!({
-                // The reader, used only when there is a picture.
-                "assistant": "mlx-community/Qwen2-VL-2B-Instruct-4bit",
+                // The reader, used only when there is a picture and it is
+                // installed. Null tells the engine to rewrite from the words.
+                "assistant": can_read
+                    .then_some("mlx-community/Qwen2-VL-2B-Instruct-4bit"),
                 "writer": writer.repo,
                 "prompt": prompt,
                 "mode": mode,
@@ -1287,6 +1311,9 @@ pub async fn generate_video(
             inputs: first_frame.clone().into_iter().collect(),
             created_at: chrono::Local::now().to_rfc3339(),
             duration_ms: started.elapsed().as_millis() as u64,
+            project: None,
+            project_name: None,
+            project_index: None,
         })?;
     }
     Ok(produced)
@@ -1623,6 +1650,9 @@ pub async fn compose_board(
             inputs: panels.clone(),
             created_at: chrono::Local::now().to_rfc3339(),
             duration_ms: started.elapsed().as_millis() as u64,
+            project: None,
+            project_name: None,
+            project_index: None,
         })?;
     }
 
@@ -1649,7 +1679,11 @@ pub async fn shot_list(
     state: State<'_, AppState>,
     job_id: String,
     story: String,
-    panels: u32,
+    // `panels: None` lets the engine divide by beat and report what the story
+    // needed. A number picked before anyone read the story is a guess, and a
+    // slider capped at twelve is why a whole chapter came back as twelve
+    // panels regardless of what was in it.
+    panels: Option<u32>,
 ) -> Result<serde_json::Value> {
     state.require_unlocked()?;
 
@@ -1670,6 +1704,41 @@ pub async fn shot_list(
             &job_id,
             "shotlist",
             json!({ "story": story, "panels": panels, "writer": writer.repo }),
+        )
+        .await
+}
+
+/// Read a story and report who is in it and where it happens.
+///
+/// Runs on its own as soon as a story is pasted: it costs a little of the
+/// text model and no picture time at all, and everything downstream — which
+/// character sheet a panel is drawn against, which room it is set in — is only
+/// as good as this. Every name it returns has been checked against the story.
+#[tauri::command]
+pub async fn story_cast(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+    story: String,
+) -> Result<serde_json::Value> {
+    state.require_unlocked()?;
+
+    let host = HostInfo::probe(&state.paths());
+    let writer = models::find(&state.paths(), &host, "qwen3-4b-instruct-4bit")
+        .ok_or_else(|| AppError::msg("the prompt writer is missing from the catalog"))?;
+    if !writer.installed {
+        return Err(AppError::msg(
+            "Reading a story needs the prompt writer. Add it from the Models \
+             tab \u{2014} it is a 2.1 GiB download and runs entirely on this Mac.",
+        ));
+    }
+
+    let engine = state.engine(&app).await?;
+    engine
+        .request(
+            &job_id,
+            "cast",
+            json!({ "story": story, "writer": writer.repo }),
         )
         .await
 }

@@ -128,6 +128,10 @@ export interface VaultItem {
   inputs: string[];
   created_at: string;
   duration_ms: number;
+  /** The board this belongs to. Members are one entry in the library. */
+  project?: string | null;
+  project_name?: string | null;
+  project_index?: number | null;
 }
 
 export interface GenerateArgs {
@@ -145,6 +149,10 @@ export interface GenerateArgs {
   image_strength: number | null;
   i2i_mode: string | null;
   low_ram: boolean;
+  /** The board this output belongs to, if any. */
+  project?: string | null;
+  project_name?: string | null;
+  project_index?: number | null;
   /** Show the picture forming, step by step. */
   preview: boolean;
   cache_limit_gb: number | null;
@@ -273,4 +281,26 @@ export interface Orphans {
   files: number;
   /** Which repositories hold them, largest first. */
   repos: [string, number][];
+}
+
+/** Who is in a story and where it happens, read out of the prose itself. */
+export interface CastMember {
+  name: string;
+  description: string;
+  /** How often the story refers to them. Drives the tier. */
+  mentions: number;
+  /** 1 gets a full character sheet, 2 a lighter reference, 3 a name only. */
+  tier: number;
+}
+
+export interface CastPlace {
+  name: string;
+  description: string;
+  mentions: number;
+}
+
+export interface Cast {
+  people: CastMember[];
+  places: CastPlace[];
+  words: number;
 }

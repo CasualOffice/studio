@@ -291,6 +291,44 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   overflow: hidden; background: var(--bg-raised); cursor: pointer;
 }
 .gallery-card:hover { border-color: var(--border-strong); }
+.gallery-card { position: relative; }
+.gallery-card.picked { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+/* The tick appears on hover, and stays put once the card is selected, so a
+   grid at rest is pictures rather than chrome. */
+.gallery-card .pick {
+  position: absolute; left: 7px; top: 7px; z-index: 2;
+  width: 20px; height: 20px; padding: 0; border-radius: 5px;
+  display: none; align-items: center; justify-content: center;
+  font-size: 12px; line-height: 1; font-weight: 700;
+  color: #fff; background: rgba(8, 10, 14, .55);
+  border: 1.5px solid rgba(255, 255, 255, .85); cursor: pointer;
+  backdrop-filter: blur(2px);
+}
+.gallery-card:hover .pick,
+.gallery-card.picked .pick { display: flex; }
+.gallery-card .pick[aria-pressed="true"] {
+  background: var(--accent); border-color: var(--accent);
+}
+.gallery-card .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.bulk-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 9px 11px; margin-bottom: 12px;
+  background: var(--bg-raised); border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}
+.bulk-bar b { font-size: 12.5px; margin-right: 2px; font-variant-numeric: tabular-nums; }
+
+/* How many pictures a board holds, on its one card in the library. */
+.gallery-card .count {
+  position: absolute; right: 7px; top: 7px; z-index: 2;
+  min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: #fff; background: rgba(8, 10, 14, .62);
+  border: 1px solid rgba(255, 255, 255, .28); backdrop-filter: blur(2px);
+}
 .gallery-card img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: #0b0d12; }
 .gallery-card .meta { padding: 8px 10px; }
 .gallery-card .meta .p {
@@ -336,3 +374,19 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 ::-webkit-scrollbar-thumb { background: #2b303c; border-radius: 5px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-thumb:hover { background: #3a4152; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* Panels per press, on the board. */
+.stepper {
+  display: inline-flex; align-items: center; vertical-align: middle;
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden;
+}
+.stepper button {
+  background: none; border: 0; color: var(--text-dim); cursor: pointer;
+  font-size: 13px; font-weight: 600; line-height: 1; padding: 5px 8px;
+}
+.stepper button:hover { color: var(--text); background: rgba(255,255,255,.05); }
+.stepper span {
+  font-size: 11px; padding: 0 7px; color: var(--text-dim); white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}

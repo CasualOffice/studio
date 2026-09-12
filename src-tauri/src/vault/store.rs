@@ -167,6 +167,23 @@ pub struct VaultItem {
     pub inputs: Vec<String>,
     pub created_at: String,
     pub duration_ms: u64,
+    /// The project this item belongs to, if any.
+    ///
+    /// A picture board is one thing a person made, not seventeen loose
+    /// pictures that happen to share a timestamp. Items that carry the same
+    /// project id are shown as a single entry in the library and are acted on
+    /// together. Optional and defaulted so every index written before projects
+    /// existed still loads, and so a one-off generation carries nothing.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Human-readable name for the project. Carried on every member so the
+    /// library can title the group without a second lookup.
+    #[serde(default)]
+    pub project_name: Option<String>,
+    /// Position within the project: panel number, page number. Sorts the
+    /// members back into the order they were meant to be read in.
+    #[serde(default)]
+    pub project_index: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -720,6 +737,12 @@ impl Vault {
                             inputs: vec![],
                             created_at: chrono::Local::now().to_rfc3339(),
                             duration_ms: 0,
+                            // Recovery reads blobs off disk with no index, so
+                            // there is nothing left that says which project a
+                            // file belonged to. Left unset rather than guessed.
+                            project: None,
+                            project_name: None,
+                            project_index: None,
                         });
                     }
                     // Not ours, or corrupt. Left alone rather than deleted:

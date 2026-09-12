@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, errText, fmtDuration, newJobId, onEngineProgress, vaultUrl } from "../lib/api";
+import { api, errText, fmtDuration, newJobId, onEngineProgress, onEnginePreview, vaultUrl } from "../lib/api";
 import type { EngineProgress, ModelStatus } from "../lib/types";
 import { humanDuration } from "../lib/presets";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
@@ -68,6 +68,10 @@ export default function Video({
   const [prog, setProg] = useState<EngineProgress | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [out, setOut] = useState<string | null>(null);
+  // A clip is the longest wait in the app. If the route exposes a step
+  // callback this shows it forming, so a wrong composition can be abandoned
+  // at step two instead of at the end.
+  const [preview, setPreview] = useState<string | null>(null);
   const [took, setTook] = useState<number | null>(null);
 
   const model = usable.find((m) => m.id === modelId) ?? usable[0];
@@ -171,6 +175,11 @@ export default function Video({
     setOut(null); setTook(null);
     setRunning(true); setJobId(id); setProg(null); setTook(null);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
+    // If this subscription throws, the progress listener above would
+    // never be released. Failing to get a preview is not worth leaking one.
+    let unp: (() => void) | undefined;
+    try { unp = await onEnginePreview((f) => { if (f.jobId === id) setPreview(f.src); }); }
+    catch { unp = undefined; }
     const t0 = performance.now();
     try {
       const res = await api.generateVideo({
@@ -187,7 +196,8 @@ export default function Video({
       const msg = errText(e);
       notify(msg.includes("cancelled") ? "Cancelled." : msg, !msg.includes("cancelled"));
     } finally {
-      un(); setRunning(false); setJobId(null); setProg(null);
+      un(); unp?.(); setRunning(false); setJobId(null); setProg(null);
+      setPreview(null);
     }
   };
 
@@ -367,6 +377,16 @@ export default function Video({
               muted
               style={{ maxWidth: "100%", maxHeight: "64vh", borderRadius: 6 }}
             />
+          ) : preview ? (
+            <div style={{ textAlign: "center" }}>
+              <img src={preview} alt="" style={{
+                maxWidth: "100%", maxHeight: "64vh", borderRadius: 6, opacity: 0.92,
+              }} />
+              <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 8 }}>
+                Taking shape{prog?.step && prog?.total_steps
+                  ? ` \u2014 step ${prog.step} of ${prog.total_steps}` : "\u2026"}
+              </div>
+            </div>
           ) : (
             <div className="empty">
               <span className="big">▷</span>

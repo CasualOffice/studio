@@ -263,6 +263,58 @@ export function Toast({ msg, bad, onDone }: { msg: string; bad?: boolean; onDone
  * Decrypt one item to a location the user picks. This is the only way content
  * leaves the vault in readable form, and it is always an explicit choice.
  */
+/**
+ * Export several items into one folder.
+ *
+ * Exporting one at a time asks for a destination per file, which for eight
+ * pictures is eight dialogs. This asks once for a folder and writes every
+ * selection into it, keeping each item's own name and disambiguating the
+ * collisions that follow from two runs of the same prompt.
+ */
+export async function exportMany(
+  items: Pick<VaultItem, "id" | "name">[],
+  notify: (m: string, bad?: boolean) => void
+): Promise<void> {
+  if (items.length === 0) return;
+  if (items.length === 1) return exportItem(items[0], notify);
+  try {
+    const dir = await open({ directory: true, multiple: false,
+                             title: `Export ${items.length} items` });
+    if (typeof dir !== "string") return;
+    const used = new Set<string>();
+    let bytes = 0;
+    let failed = 0;
+    for (const it of items) {
+      let name = it.name || `${it.id}.png`;
+      if (used.has(name)) {
+        // Two runs of one prompt produce two files with one name. Numbering
+        // the later one keeps both rather than silently overwriting.
+        const dot = name.lastIndexOf(".");
+        const stem = dot > 0 ? name.slice(0, dot) : name;
+        const ext = dot > 0 ? name.slice(dot) : "";
+        let n = 2;
+        while (used.has(`${stem} ${n}${ext}`)) n++;
+        name = `${stem} ${n}${ext}`;
+      }
+      used.add(name);
+      try {
+        bytes += await api.vaultExport(it.id, `${dir}/${name}`);
+      } catch {
+        failed++;
+      }
+    }
+    const ok = items.length - failed;
+    notify(
+      `Exported ${ok} of ${items.length} — ${(bytes / 1024 / 1024).toFixed(1)} MB, ` +
+      "and these copies are not encrypted." +
+      (failed ? ` ${failed} could not be written.` : ""),
+      failed > 0
+    );
+  } catch (e) {
+    notify(errText(e), true);
+  }
+}
+
 export async function exportItem(
   item: Pick<VaultItem, "id" | "name">,
   notify: (m: string, bad?: boolean) => void

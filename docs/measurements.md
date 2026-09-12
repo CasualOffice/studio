@@ -13,6 +13,69 @@ argued from intuition a second time.
 | Upscale 2× | SeedVR2 3B q4 | 256×160 → 512×320 | 6.2 s |
 | Model load | FLUX.2 Klein 4B q4 | — | 2.4 s |
 
+## Image to video
+
+Wan 2.2 TI2V-5B q8, `AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit`, on this
+16 GB machine, starting from a still:
+
+| Clip | Steps | Peak | Load | Generate | Wall |
+|---|---|---|---|---|---|
+| 320x192, 9 frames | 8 | 9.72 GiB | 3.1 s | 24.2 s | 34 s |
+| 480x320, 17 frames | 12 | did not complete | 3.2 s | ~90 s/step, paging | stopped at step 10 |
+
+9.72 GiB against a 12 GiB budget, so the small size fits with room. The larger
+one reached step 10 of 12 while paging heavily and was stopped; it is not known
+whether it completes.
+
+The catalog previously claimed **103.7 GiB** for this model with
+`peak_estimated: false`, which marked it hopeless and hid the only working
+image-to-video model on this machine. That figure was for the model's
+recommended 1280x704x81 and had never been measured here. Attention is
+quadratic in sequence length and the latent sequence at 320x192x9 is roughly
+sixty times shorter, so almost all of it disappears.
+
+The text encoder is the largest single component at 10.58 GiB, against a 5.03
+GiB transformer and a 1.31 GiB VAE. It is released before denoising --
+`keep_text_encoder_resident` defaults to `False`, which is what makes the model
+fit. `release_text_encoder`, which the engine passes, is not a parameter this
+route accepts and is dropped with a warning; the default already does the right
+thing.
+
+## Upscale memory, and why it crashed the engine
+
+SeedVR2 3B q4, MLX cache limit 1 GiB, one pass, on this 16 GB machine:
+
+| Output | Peak memory | Time | Fits in the 12 GiB budget? |
+|---|---|---|---|
+| 512×512 | 6.43 GiB | 27 s | yes |
+| 768×768 | 10.44 GiB | 64 s | yes |
+| 1024×1024 | 16.57 GiB | 173 s | **no** |
+
+Peak tracks output area linearly across that range:
+
+    peak GiB = 3.06 + 12.88 x output-megapixels
+
+which holds to within 0.25 GiB at all three points. At a 12 GiB budget that
+caps a single pass near **833 pixels on the longest edge** — less than the
+source for any picture worth enlarging, which is why one pass is not enough.
+
+Going over does not raise a Python error. MLX reports the Metal failure from a
+command-buffer completion handler, which cannot raise into Python: the C++
+exception reaches `std::terminate` and aborts the whole engine, so the app only
+sees "the engine stopped unexpectedly". It has to be refused before dispatch.
+
+Tiled, the same work fits and finishes:
+
+| Output | Tiles | Peak memory | Time |
+|---|---|---|---|
+| 1024×1024 | 2×2 at 372 px source | 10.11 GiB | 85–118 s |
+
+Seams were checked on a smooth source, where any gradient spike can only be a
+join: worst 2.73 against a median of 0.63, about 1% of the 0–255 range. Not
+visible. The earlier measurement in the generation table (256×160 → 512×320,
+6.2 s) was the only one ever taken, and being that small is exactly why the
+ceiling went unnoticed.
+
 Photoreal panels came out roughly three times slower than stylised ones in the
 same session, but the machine had been downloading and building for hours by
 then, so treat that ratio as unconfirmed rather than a property of the style.

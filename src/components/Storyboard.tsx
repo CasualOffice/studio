@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errText, newJobId, onEngineProgress, vaultUrl } from "../lib/api";
-import type { EngineProgress, ModelStatus, Panel } from "../lib/types";
+import type { Cast, EngineProgress, ModelStatus, Panel } from "../lib/types";
 import { ImageDrop, JobProgress } from "./shared";
 import { loadPref, savePref } from "../lib/prefs";
 import { STYLES, panelPrompt, panelReferences, panelSeed, placePrompt,
@@ -46,7 +46,31 @@ export default function Storyboard({
   const model = usable.find((m) => m.id === modelId) ?? usable[0];
 
   const [story, setStory] = useState(() => loadPref("boardStory", ""));
-  const [count, setCount] = useState(() => loadPref("boardCount", 6));
+  // The cast, read out of the story rather than typed in. `null` means the
+  // story has not been read yet.
+  const [cast, setCast] = useState<Cast | null>(
+    () => loadPref<Cast | null>("boardCast", null));
+  const [reading, setReading] = useState(false);
+  /**
+   * How many panels one press draws.
+   *
+   * Drawing a whole board is twenty to sixty minutes, and the style is either
+   * right or wrong within the first two panels. Committing to all of it before
+   * seeing any of it is the expensive way to find out. A batch is the unit of
+   * commitment: draw four, look, fix what is wrong, draw four more.
+   */
+  const [batch, setBatch] = useState(() => loadPref("boardBatch", 4));
+  /**
+   * The id every panel of this board is stamped with.
+   *
+   * It is what makes the board one entry in the library instead of a pile of
+   * loose pictures sharing a timestamp. Kept across restarts with the rest of
+   * the board, and replaced when a new story is divided.
+   */
+  const [projectId, setProjectId] = useState<string | null>(
+    () => loadPref<string | null>("boardProject", null));
+
+
   const [style, setStyle] = useState(() => loadPref("boardStyle", STYLES[0].id));
   const [character, setCharacter] = useState(() => loadPref("boardCharacter", ""));
 
@@ -56,6 +80,37 @@ export default function Storyboard({
     () => loadPref<string | null>("boardSheet", null));
   const [drawn, setDrawn] = useState<(string | null)[]>(
     () => loadPref<(string | null)[]>("boardDrawn", []));
+  /** The distinct scenes the panels fall into, in order. */
+  const scenes = useMemo(() => {
+    const seen: number[] = [];
+    for (const p of panels ?? []) {
+      const n = Number(p.scene ?? 1) || 1;
+      if (!seen.includes(n)) seen.push(n);
+    }
+    return seen;
+  }, [panels]);
+
+  /**
+   * Who the panels are drawn against.
+   *
+   * What you typed wins, because it is the most direct statement of intent.
+   * Failing that, the story's own lead -- the most-mentioned person, with the
+   * description the story gave them. Failing that, nothing, and the panels are
+   * drawn from their own subjects. Shared by the run and by redraw, so a
+   * redrawn panel is cast exactly like the one it replaces.
+   */
+  const who = useMemo(() => {
+    const lead = cast?.people.find((p) => p.tier === 1);
+    return character.trim() || lead?.description || lead?.name || "";
+  }, [character, cast]);
+
+  /** What to call this board in the library: the story's own opening. */
+  const projectName = useMemo(() => {
+    const first = story.trim().split(/\s+/).slice(0, 7).join(" ");
+    return first ? (story.trim().length > first.length ? first + "\u2026" : first)
+                 : "Picture board";
+  }, [story]);
+
   const [stage, setStage] = useState<Stage>("idle");
   const [prog, setProg] = useState<EngineProgress | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -85,7 +140,9 @@ export default function Storyboard({
   // A board is minutes of work, so it survives a quit. Only the text and the
   // vault ids are stored; the pictures themselves stay sealed in the vault.
   useEffect(() => { savePref("boardStory", story); }, [story]);
-  useEffect(() => { savePref("boardCount", count); }, [count]);
+  useEffect(() => { savePref("boardCast", cast); }, [cast]);
+  useEffect(() => { savePref("boardProject", projectId); }, [projectId]);
+  useEffect(() => { savePref("boardBatch", batch); }, [batch]);
   useEffect(() => { savePref("boardStyle", style); }, [style]);
   useEffect(() => { savePref("boardCharacter", character); }, [character]);
   useEffect(() => { savePref("boardPanels", panels); }, [panels]);
@@ -97,16 +154,53 @@ export default function Storyboard({
   const busy = stage !== "idle";
 
   /** Step one: divide the prose. Nothing is drawn yet. */
+  /**
+   * Read the story: who is in it, where it happens.
+   *
+   * This runs on its own, because it costs a little of the text model and no
+   * picture time at all. Everything that costs picture time is asked for
+   * explicitly; this is not. It is also what makes pasting a story *do*
+   * something, instead of sitting there until you type a character in.
+   */
+  const read = async () => {
+    if (!story.trim()) { notify("Paste a story first.", true); return; }
+    const id = newJobId();
+    setReading(true); setJobId(id);
+    const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
+    try {
+      const c = await api.storyCast(id, story);
+      setCast(c);
+      if (c.people.length === 0) {
+        notify("No one named in that story could be verified against the text.");
+      }
+    } catch (e) {
+      notify(errText(e), true);
+    } finally {
+      un(); setReading(false); setProg(null); setJobId(null);
+    }
+  };
+
   const divide = async () => {
     if (!story.trim()) { notify("Write the story first.", true); return; }
     const id = newJobId();
     setStage("dividing"); setJobId(id); setPanels(null); setDrawn([]); setSheet(null);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
     try {
-      const r = await api.shotList(id, story, count);
+      const r = await api.shotList(id, story, null);
       setPanels(r.panels);
-      if (r.panels.length < r.asked) {
-        notify(`Divided into ${r.panels.length} panels rather than ${r.asked}.`);
+      // A fresh division is a different comic, so it gets its own identity
+      // rather than adding panels to whatever was in the library before.
+      setProjectId(newJobId());
+      setDrawn(new Array(r.panels.length).fill(null));
+      if (r.out_of_range) {
+        // Say it rather than hide it: a division far outside what this much
+        // prose should produce usually means the story was cut short or the
+        // writer lost the thread, and the panels are worth a look before any
+        // of them are drawn.
+        notify(
+          `Divided into ${r.panels.length} panels; ${r.words} words usually ` +
+          `makes ${r.expected_low}\u2013${r.expected_high}. Worth checking.`
+        );
       }
     } catch (e) {
       notify(errText(e), true);
@@ -115,14 +209,38 @@ export default function Storyboard({
     }
   };
 
+  /** Which panels have a picture, and which are still waiting. */
+  const drawnCount = useMemo(
+    () => drawn.filter(Boolean).length, [drawn]);
+  const remaining = Math.max(0, (panels?.length ?? 0) - drawnCount);
+
+  /**
+   * The indices this press will draw: the next `batch` panels with no picture.
+   *
+   * Skipping ones that already have a picture is what makes a second press
+   * continue rather than start over, and what lets a redrawn panel keep the
+   * version you accepted.
+   */
+  const nextBatch = (): number[] => {
+    const want = Math.max(1, Math.min(batch, panels?.length ?? 1));
+    const out: number[] = [];
+    for (let i = 0; i < (panels?.length ?? 0) && out.length < want; i++) {
+      if (!drawn[i]) out.push(i);
+    }
+    return out;
+  };
+
   /** Step two: cast the character once, then draw every panel against it. */
   const draw = async () => {
     if (!model) { notify("No model that can both generate and edit is installed.", true); return; }
     if (!panels) return;
-    if (!character.trim() && ownSheet.length === 0) {
-      notify("Describe the character, or bring a picture of them.", true);
-      return;
-    }
+    // No hard stop for a missing character. The cast is read out of the story,
+    // so the common case is that the person is already known; and a story with
+    // no one in it -- a place, a mood, a sequence of weather -- is still a
+    // board worth drawing. Refusing to start until you had typed a character
+    // in was the single thing that made pasting a story feel like it did
+    // nothing at all.
+
 
     stop.current = false;
     setDone(0);
@@ -132,7 +250,13 @@ export default function Storyboard({
     if (timer.current) window.clearInterval(timer.current);
     timer.current = window.setInterval(
       () => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
-    setDrawn(new Array(panels.length).fill(null));
+    // Only a first run starts from nothing. A later batch adds to what is
+    // already there, which is the whole point of drawing in batches.
+    setDrawn((d) => {
+      const n = new Array(panels.length).fill(null);
+      for (let i = 0; i < Math.min(d.length, n.length); i++) n[i] = d[i];
+      return n;
+    });
 
     // The sheet is the anchor. Every panel references it, which is the whole
     // reason the character survives from one shot to the next -- so if the
@@ -141,8 +265,8 @@ export default function Storyboard({
       setSheet(ownSheet[0]);
       const places = await buildPlaces();
       setStage("drawing");
-      for (let i = 0; i < panels.length; i++) {
-        if (stop.current) { notify(`Stopped after ${i} panels.`); break; }
+      for (const i of nextBatch()) {
+        if (stop.current) { notify("Stopped."); break; }
         const ok = await drawOne(i, ownSheet[0], places);
         if (!ok && stop.current) break;
       }
@@ -158,7 +282,7 @@ export default function Storyboard({
     try {
       const res = await api.generate({
         job_id: castId, model_id: model.id,
-        prompt: sheetPrompt(style, character),
+        prompt: sheetPrompt(style, who),
         negative_prompt: null,
         width: PANEL_W, height: PANEL_H,
         steps: model.steps_default || 4,
@@ -167,6 +291,9 @@ export default function Storyboard({
         low_ram: true, preview: false, cache_limit_gb: null,
         allow_over_budget: false, loras: [], mask: null,
         outpaint_padding: null, outpaint_fill: null,
+        // Reference material for this board, not a loose picture:
+        // the sheets live inside the comic they were drawn for.
+        project: projectId, project_name: projectName,
       });
       if (!res.length) throw new Error("the character sheet came back empty");
       sheetId = res[0];
@@ -184,8 +311,8 @@ export default function Storyboard({
     // and a board of six is minutes of work either way.
     const places = await buildPlaces();
     setStage("drawing");
-    for (let i = 0; i < panels.length; i++) {
-      if (stop.current) { notify(`Stopped after ${i} panels.`); break; }
+    for (const i of nextBatch()) {
+      if (stop.current) { notify("Stopped."); break; }
       const ok = await drawOne(i, sheetId, places);
       if (!ok && stop.current) break;
     }
@@ -227,6 +354,9 @@ export default function Storyboard({
           i2i_mode: null, low_ram: true, preview: false, cache_limit_gb: null,
           allow_over_budget: false, loras: [], mask: null,
           outpaint_padding: null, outpaint_fill: null,
+          // Reference material for this board, not a loose picture:
+          // the sheets live inside the comic they were drawn for.
+          project: projectId, project_name: projectName,
         });
         if (res[0]) made[scene] = res[0];
         onProduced();
@@ -253,7 +383,7 @@ export default function Storyboard({
     try {
       const res = await api.editImage({
         job_id: id, model_id: model.id,
-        prompt: panelPrompt(panels[i], style, character),
+        prompt: panelPrompt(panels[i], style, who),
         negative_prompt: null,
         width: PANEL_W, height: PANEL_H,
         steps: model.steps_default || 4,
@@ -271,6 +401,10 @@ export default function Storyboard({
         low_ram: true, preview: false, cache_limit_gb: null,
         allow_over_budget: false, loras: [], mask: null,
         outpaint_padding: null, outpaint_fill: null,
+        // Every panel is stamped with the board it belongs to, so the library
+        // shows one comic instead of a pile of pictures that happen to share
+        // a timestamp. The index keeps them in reading order.
+        project: projectId, project_name: projectName, project_index: i,
       });
       setDrawn((d) => { const n = [...d]; n[i] = res[0] ?? null; return n; });
       setDone((v) => Math.max(v, i + 1));
@@ -407,7 +541,66 @@ export default function Storyboard({
               Prose, not prompts. It is divided into panels for you, and nothing
               is invented that the story does not contain.
             </div>
+            {/* Reading costs a little of the text model and no picture time,
+                so it is offered the moment there is a story -- rather than the
+                tab sitting inert until you type a character in yourself. */}
+            {story.trim() && !cast && (
+              <button
+                className="btn small"
+                style={{ marginTop: 8 }}
+                disabled={reading || busy}
+                onClick={read}
+              >
+                {reading ? "Reading the story\u2026" : "Read the story"}
+              </button>
+            )}
           </div>
+
+          {cast && (
+            <div className="field">
+              <label>
+                The cast <em>read from your story</em>
+              </label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {cast.people.map((p) => (
+                  <button
+                    key={p.name}
+                    className="pill"
+                    title={
+                      (p.description || "The story never says what they look like.")
+                      + `  \u00b7 ${p.mentions} mentions`
+                    }
+                    style={{
+                      cursor: "pointer",
+                      opacity: p.tier === 1 ? 1 : p.tier === 2 ? 0.8 : 0.6,
+                    }}
+                    onClick={() => setCharacter(p.description || p.name)}
+                  >
+                    {p.name}
+                  </button>
+                ))}
+                {cast.people.length === 0 && (
+                  <span style={{ fontSize: 11, color: "var(--text-faint)" }}>
+                    No one the story names could be verified in the text.
+                  </span>
+                )}
+              </div>
+              {cast.places.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+                  {cast.places.map((pl) => (
+                    <span key={pl.name} className="pill" style={{ opacity: 0.7 }}
+                          title={pl.description || "The story never describes it."}>
+                      {pl.name}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 6 }}>
+                Click a name to cast them as the one we follow. Names the story
+                never actually uses are dropped rather than drawn.
+              </div>
+            </div>
+          )}
 
           <div className="field">
             <label>Who we follow <em>every panel holds this</em></label>
@@ -455,13 +648,22 @@ export default function Storyboard({
             </div>
           </div>
 
-          <div className="field">
-            <label>Panels <em>{count}</em></label>
-            <input
-              type="range" min={2} max={12} value={count} disabled={busy}
-              onChange={(e) => setCount(Number(e.target.value))}
-            />
-          </div>
+          {/* No slider. The number of panels is whatever the story turns out
+              to need, worked out by dividing it into beats, and reported after
+              the fact. A count chosen before the story is read is a guess --
+              and a slider capped at twelve is why a whole chapter came back as
+              twelve panels no matter what was in it. */}
+          {panels && (
+            <div className="field">
+              <label>Panels</label>
+              <div style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.6 }}>
+                <b style={{ color: "var(--text)" }}>{panels.length}</b>
+                {" panels, from "}
+                <b style={{ color: "var(--text)" }}>{scenes.length}</b>
+                {scenes.length === 1 ? " scene" : " scenes"}
+              </div>
+            </div>
+          )}
 
           <div className="field">
             <label>Model</label>
@@ -492,13 +694,39 @@ export default function Storyboard({
                 {stage === "enriching" ? "Working up…" : "Add detail"}
               </button>
             )}
-            {panels && (
-              <button className="btn primary small" disabled={busy} onClick={draw}>
-                {stage === "drawing" ? `Drawing ${done}/${panels.length}…`
-                  : stage === "building" ? "Building the rooms…"
-                  : stage === "casting" ? "Casting…"
-                  : `Draw ${panels.length} panels`}
-              </button>
+            {panels && remaining > 0 && (
+              <>
+                {/* How much you are committing to, before you commit. The
+                    button carries its own cost, so a wrong style costs one
+                    batch to discover instead of the whole board. */}
+                {!busy && (
+                  <span className="stepper" title="Panels per press">
+                    <button type="button"
+                            onClick={() => setBatch((n) => Math.max(1, n - 1))}>
+                      &minus;
+                    </button>
+                    <span>{Math.min(batch, remaining)} at a time</span>
+                    <button type="button"
+                            onClick={() => setBatch((n) => Math.min(24, n + 1))}>
+                      +
+                    </button>
+                  </span>
+                )}
+                <button className="btn primary small" disabled={busy} onClick={draw}>
+                  {stage === "drawing"
+                    ? `Drawing ${done}/${panels.length}\u2026`
+                    : stage === "building" ? "Building the rooms\u2026"
+                    : stage === "casting" ? "Casting\u2026"
+                    : drawnCount === 0
+                      ? `Draw ${Math.min(batch, remaining)} of ${panels.length}`
+                      : `Draw next ${Math.min(batch, remaining)}`}
+                </button>
+              </>
+            )}
+            {panels && remaining === 0 && drawnCount > 0 && !busy && (
+              <span style={{ fontSize: 11, color: "var(--good)" }}>
+                All {panels.length} drawn
+              </span>
             )}
             {busy && <button className="btn small" onClick={cancel}>Cancel</button>}
             {!busy && panels && drawn.some(Boolean) && (
@@ -522,13 +750,20 @@ export default function Storyboard({
             stage === "dividing" ? "Dividing the story"
               : stage === "casting" ? "Casting the character"
               : `Panel ${done + 1} of ${panels?.length ?? 0}`} />}
+        {panels && !busy && drawnCount > 0 && remaining > 0 && (
+          <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 8 }}>
+            <b style={{ color: "var(--text)" }}>{drawnCount}</b> of {panels.length} drawn.
+            {" "}Look at them before drawing more \u2014 a note on a wrong panel
+            costs one redraw, and a wrong style caught now costs one batch.
+          </div>
+        )}
 
           {panels && stage === "idle" && drawn.every((d) => !d) && (
             <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 9,
                           lineHeight: 1.55 }}>
-              Expect roughly {Math.ceil((panels.length + (ownSheet.length ? 0 : 1)) * 0.6)}–
-              {Math.ceil((panels.length + (ownSheet.length ? 0 : 1)) * 2)} minutes for
-              {" "}{panels.length} panels{ownSheet.length ? "" : " and the character sheet"}. The range is
+              Expect roughly {Math.ceil((Math.min(batch, remaining) + (ownSheet.length ? 0 : 1)) * 0.6)}–
+              {Math.ceil((Math.min(batch, remaining) + (ownSheet.length ? 0 : 1)) * 2)} minutes for
+              {" "}{Math.min(batch, remaining)} of {panels.length} panels{ownSheet.length ? "" : " and the character sheet"}. The range is
               wide because this Mac slows as it warms: measured panels ran 34
               seconds cold and 123 seconds after a few minutes of work.
             </div>
