@@ -863,6 +863,43 @@ class TiledUpscaleCancels(unittest.TestCase):
                 f"{fn.name} loops over model calls with no way to stop it")
 
 
+class RepairDroppedWords(unittest.TestCase):
+    """A paraphrase is repaired; a deletion is not.
+
+    Rejecting a rewrite because it said "wet" instead of "rainy" hands the
+    user back their own prompt unchanged, and they reasonably conclude the
+    feature does nothing. Pasting a whole missing clause back on, though,
+    papers over the failure the retention check exists to catch.
+    """
+
+    def test_one_paraphrased_word_is_put_back(self):
+        out = worker._repair_dropped(
+            "a woman on a rainy street",
+            "a woman in a navy coat walking on a wet city street.")
+        self.assertIsNotNone(out)
+        self.assertIn("rainy", out)
+        self.assertIn("navy coat", out, "the description must survive the repair")
+        self.assertEqual(worker._dropped_words("a woman on a rainy street", out), [])
+
+    def test_a_dropped_clause_is_still_rejected(self):
+        # The rewrite lost the wall entirely. Three words is not a paraphrase.
+        out = worker._repair_dropped(
+            "an old bicycle against a brick wall",
+            "an old bicycle with a rusted steel frame and cracked tires.")
+        self.assertIsNone(out, "a deleted clause must not be pasted back on")
+
+    def test_nothing_missing_is_not_a_repair(self):
+        self.assertIsNone(worker._repair_dropped(
+            "a tabby cat on a chair",
+            "a tabby cat curled on a worn oak chair."))
+
+    def test_dropped_words_understands_inflection(self):
+        self.assertEqual(
+            worker._dropped_words("the sun rises", "the sun rising over water."), [])
+        self.assertEqual(
+            worker._dropped_words("a rainy street", "rain falling on the street."), [])
+
+
 class ClarifyReasons(unittest.TestCase):
     """A rejected rewrite is not a vague request.
 

@@ -534,6 +534,71 @@ def _looks_like_adapter(info: Any) -> bool:
     )
 
 
+def _free_ram_gib() -> float:
+    """Memory actually available right now, in GiB.
+
+    Free pages plus everything the OS can reclaim without swapping: inactive
+    pages and the compressor's own purgeable pages. Wired and active memory is
+    genuinely spoken for and is not counted.
+
+    Returns -1.0 when it cannot be determined, which callers treat as "do not
+    block" -- a guard that guesses wrong and refuses real work is worse than
+    no guard.
+    """
+    try:
+        out = subprocess.run(["vm_stat"], capture_output=True, text=True,
+                             timeout=3).stdout
+    except Exception:
+        return -1.0
+    page = 4096
+    m = re.search(r"page size of (\d+) bytes", out)
+    if m:
+        page = int(m.group(1))
+    vals = {}
+    for line in out.splitlines():
+        mm = re.match(r'"?([A-Za-z][A-Za-z \-]+?)"?:\s+(\d+)\.', line)
+        if mm:
+            vals[mm.group(1).strip().lower()] = int(mm.group(2))
+    if "pages free" not in vals:
+        return -1.0
+    # Free plus inactive, and nothing else. "File-backed" and "anonymous"
+    # pages are subsets of active and inactive, so adding them double-counts:
+    # an earlier version reported 10.1 GiB on a machine with 5.9 GiB really
+    # available, which is exactly the direction that makes the guard useless.
+    reclaimable = vals.get("pages free", 0) + vals.get("pages inactive", 0)
+    return reclaimable * page / (1024 ** 3)
+
+
+def _check_headroom(req_id: str, need_gib: float) -> None:
+    """Refuse before dispatch when the memory plainly is not there.
+
+    A Metal out-of-memory is not an exception this process can survive: MLX
+    reports it from a command-buffer completion handler, the C++ exception
+    reaches std::terminate, and the engine aborts. The app then says "the
+    engine stopped unexpectedly", which tells nobody anything.
+
+    The catalog's peak says whether a model fits an *empty* machine. It cannot
+    know that something else is using the memory right now -- another app, a
+    browser, or a second copy of this one -- and contention is what actually
+    kills these runs. So this asks the machine.
+    """
+    if need_gib <= 0:
+        return
+    free = _free_ram_gib()
+    if free < 0:
+        return
+    if free >= need_gib:
+        log(req_id, f"{free:.1f} GiB available, this run needs about "
+                    f"{need_gib:.1f} GiB")
+        return
+    raise ValueError(
+        f"This run needs about {need_gib:.0f} GiB and only {free:.1f} GiB is "
+        f"free right now, so nothing was started. Something else on this Mac "
+        f"is holding the memory \u2014 closing it, or waiting for it to "
+        f"finish, will let this run."
+    )
+
+
 def _load_model(req_id: str, model: str, quantize: int | None,
                 model_path: str | None, image_count: int,
                 release_text_encoder: bool = False,
@@ -1070,6 +1135,56 @@ def _stem(word: str) -> str:
     return w[:-1] + "y" if w.endswith("i") else w
 
 
+def _first_line(raw: str) -> str:
+    """The line of a reply that is the answer, not the preamble."""
+    for candidate in raw.strip().splitlines():
+        candidate = candidate.strip().strip("`").strip()
+        if not candidate or candidate.lower().startswith(("request:", "here", "sure")):
+            continue
+        return candidate.rstrip(" .,;") + "."
+    return ""
+
+
+def _dropped_words(original: str, line: str) -> list[str]:
+    """Significant words in the request that the rewrite does not carry.
+
+    The comparison is by stem and by prefix in both directions, so "rise" and
+    "rises" agree, and "rainy" is satisfied by "rain".
+    """
+    kept = {_stem(g) for g in _significant(line)}
+    return [w for w in _significant(original)
+            if not any(_stem(w) == k or k.startswith(_stem(w))
+                       or _stem(w).startswith(k)
+                       for k in kept)]
+
+
+def _repair_dropped(original: str, line: str) -> str | None:
+    """Put back what the rewrite left out, rather than throwing it away.
+
+    A rewrite that drops a word is usually a paraphrase, not a deletion: asked
+    for "a rainy street" the writer returns wet asphalt and slick pavement and
+    never says rain. Rejecting that loses a good description over a word that
+    is arguably still there, and the user sees their prompt come back
+    unchanged and concludes the feature does nothing.
+
+    So the missing words are appended and the result re-checked. The wording
+    is plainer than the model's own, which is the right trade: the picture has
+    to contain what was asked for, and no amount of better prose is worth
+    losing it.
+    """
+    missing = _dropped_words(original, line)
+    if not missing or len(missing) > 2:
+        # One word missing is a paraphrase; two is a paraphrase with a
+        # compound in it. Three or more is the rewrite ignoring a clause --
+        # "an old bicycle against a brick wall" coming back as a bicycle --
+        # and pasting the clause on the end would paper over exactly the
+        # failure this check exists to catch. Those are still rejected, and
+        # the caller draws again instead.
+        return None
+    fixed = line.rstrip(" .,;") + ", " + " ".join(missing) + "."
+    return fixed if not _dropped_words(original, fixed) else None
+
+
 def _clarified(original: str, raw: str) -> str | None:
     """The rewrite, or None. Callers that need to know why use the pair."""
     return _clarified_with_reason(original, raw)[0]
@@ -1115,12 +1230,7 @@ def _clarified_with_reason(original: str, raw: str) -> tuple[str | None, str]:
     # asks whether *any* of it survived, which let "an old bicycle against a
     # brick wall" come back as a bicycle with no wall -- the clarification
     # quietly deleting half the request.
-    kept = {_stem(g) for g in _significant(line)}
-    missing = [w for w in _significant(original)
-               if not any(_stem(w) == k or k.startswith(_stem(w))
-                          or _stem(w).startswith(k)
-                          for k in kept)]
-    if missing:
+    if _dropped_words(original, line):
         return None, "dropped"
 
     # A rewrite far longer than the request is inventing, not clarifying.
@@ -2388,6 +2498,13 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                          + f"Request: {user_prompt}",
                          repo=req.get("writer"))
             improved, why = _clarified_with_reason(user_prompt, raw)
+            if improved is None and why == "dropped":
+                # A paraphrase, most likely. Put the missing words back rather
+                # than discarding a good description over one of them.
+                repaired = _repair_dropped(user_prompt, _first_line(raw))
+                if repaired:
+                    log(req_id, f"rewrite dropped a word; repaired to {repaired!r}")
+                    improved, why = repaired, "repaired"
             if improved is None and why not in ("unclear", "empty"):
                 # The rewrite was rejected, not the request. These checks are
                 # deliberately literal -- they are what stops "an old bicycle
@@ -3161,6 +3278,10 @@ def _run_generation(req_id: str, req: dict[str, Any], task: str,
         log(req_id, "adapters: " + ", ".join(
             f"{l['path']} @ {l.get('scale', 1.0)}" for l in loras))
 
+    # The board draws every panel through here, and a Metal out-of-memory takes
+    # the whole engine with it rather than raising. Ask the machine first.
+    _check_headroom(req_id, float(req.get("peak_gib") or 0))
+
     loaded, load_ms = _load_model(
         req_id, model, quantize, model_path, image_count,
         release_text_encoder=bool(req.get("release_text_encoder")) or low_ram,
@@ -3734,6 +3855,8 @@ def op_upscale(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         if cache_limit is not None:
             log(req_id, f"MLX cache limit: {set_cache_limit(float(cache_limit))}")
 
+        _check_headroom(req_id, float(req.get("peak_gib") or 0))
+
         repo = req["model"]
         quantize = req.get("quantize")
         key = f"seedvr2::{repo}::{quantize}"
@@ -3903,6 +4026,7 @@ def op_video(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         # plan_kw above *and* passed explicitly as 0 here, which is a
         # TypeError before any work starts -- so animating a still has never
         # reached the model on a first-frame route, whatever model was chosen.
+        _check_headroom(req_id, float(req.get("peak_gib") or 0))
         loaded, load_ms = _load_model(
             req_id,
             req["model"],

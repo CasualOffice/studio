@@ -879,6 +879,11 @@ async fn run_job(
         params["low_ram"] = json!(true);
     }
     params["preview"] = json!(args.preview);
+    // What this run is expected to need. The engine compares it against the
+    // memory actually free, which the catalog cannot know: a model that fits
+    // an empty machine still dies when something else is holding the memory,
+    // and a Metal out-of-memory aborts the engine rather than raising.
+    params["peak_gib"] = json!(entry.peak_gib);
     if !args.loras.is_empty() {
         params["loras"] = json!(args
             .loras
@@ -1053,6 +1058,7 @@ pub async fn upscale(
                 "resolution": resolution,
                 "low_ram": low_ram,
                 "seed": 0,
+                "peak_gib": entry.peak_gib,
                 "vault_slots": [{
                     "id": slot_id, "file_id": hex(&file_id),
                     "key": hex(&key), "path": path.to_string_lossy(),
@@ -1250,6 +1256,7 @@ pub async fn generate_video(
         "model": entry.repo.clone(),
         "quantize": entry.quantize,
         "family": entry.family.clone(),
+        "peak_gib": entry.peak_gib,
         "prompt": prompt,
         "width": width,
         "height": height,

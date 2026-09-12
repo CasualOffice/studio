@@ -367,6 +367,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   background: var(--bg-input); border: 1px solid var(--border-strong);
   border-radius: 8px; padding: 9px 15px; font-size: 12px; z-index: 50;
   box-shadow: 0 8px 28px rgba(0,0,0,.5); max-width: 620px; user-select: text;
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
 }
 .toast.bad { border-color: #5a3236; color: #ffb4b4; }
 

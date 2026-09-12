@@ -198,6 +198,17 @@ export default function Storyboard({
     if (!story.trim()) { notify("Write the story first.", true); return; }
     const id = newJobId();
     setStage("dividing"); setJobId(id); setPanels(null); setDrawn([]); setSheet(null);
+    // Everything keyed by panel index has to go with the panels. A note is a
+    // correction to one moment in the story; carried across a fresh division
+    // it silently attaches to a different moment, and the panel it was written
+    // for is drawn without it. Same for the redraw counters, which move the
+    // seed on, and for the selection, which can now point past the end.
+    setNotes({}); setRedraws([]); setSelected(0); setPages([]);
+    // Rooms are keyed by scene number, and scene 1 of a new story is not scene
+    // 1 of the last one. Kept, they would be reused: buildPlaces skips any
+    // scene that already has a sheet, so the new comic would quietly inherit
+    // the previous comic's rooms.
+    setPlaceSheets({});
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
     try {
       const r = await api.shotList(id, story, null);
@@ -535,7 +546,10 @@ export default function Storyboard({
     );
   }
 
-  const sel = panels?.[selected] ?? null;
+  // Clamp rather than trust: any path that shortens the board would otherwise
+  // leave the inspector pointing at a panel that no longer exists.
+  const selIndex = panels ? Math.min(selected, panels.length - 1) : 0;
+  const sel = panels?.[selIndex] ?? null;
 
   return (
     <div style={{ padding: 14 }}>
@@ -638,6 +652,19 @@ export default function Storyboard({
               </div>
             )}
 
+            {sheet && (
+              <div style={{ marginTop: 18 }}>
+                <div className="sub-head">Character sheet</div>
+                <img src={vaultUrl(sheet)} alt="Character sheet"
+                     style={{ width: "100%", maxWidth: 260, borderRadius: 6 }} />
+                <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5,
+                              lineHeight: 1.5 }}>
+                  Every panel is drawn against this, which is what keeps the same
+                  person on the page from one shot to the next.
+                </div>
+              </div>
+            )}
+
             {pages.length > 0 && (
               <div style={{ marginTop: 18 }}>
                 <div className="sub-head">
@@ -656,7 +683,7 @@ export default function Storyboard({
         <div className="board-pane">
           <div className="board-pane-head">
             Notes
-            <span className="n">{panels ? `Panel ${selected + 1}` : "settings"}</span>
+            <span className="n">{panels ? `Panel ${selIndex + 1}` : "settings"}</span>
           </div>
           <div className="inner">
             {!panels || !sel ? (
@@ -675,6 +702,14 @@ export default function Storyboard({
                   <label>Or bring a picture of them</label>
                   <ImageDrop images={ownSheet} onChange={setOwnSheet} max={1}
                              onError={(m) => notify(m, true)} />
+                  <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 5,
+                                lineHeight: 1.5 }}>
+                    {ownSheet.length > 0
+                      ? "Every panel is drawn against this picture, and no character "
+                        + "sheet is made \u2014 it anchors them better than a description can."
+                      : "A photo, a drawing, or a sheet from an earlier board. Given one, "
+                        + "the board skips casting and draws against it directly."}
+                  </div>
                 </div>
                 <div className="field">
                   <label>Style</label>
@@ -701,7 +736,7 @@ export default function Storyboard({
                 <div className="field">
                   <label>Shot</label>
                   <select value={sel.shot} disabled={busy}
-                          onChange={(e) => edit(selected, { shot: e.target.value as Panel["shot"] })}>
+                          onChange={(e) => edit(selIndex, { shot: e.target.value as Panel["shot"] })}>
                     <option value="wide">wide</option>
                     <option value="medium">medium</option>
                     <option value="close-up">close-up</option>
@@ -712,53 +747,94 @@ export default function Storyboard({
                                   cursor: "pointer" }}>
                     <input type="checkbox" checked={sel.character_in_frame} disabled={busy}
                            style={{ width: "auto", margin: 0 }}
-                           onChange={(e) => edit(selected, { character_in_frame: e.target.checked })} />
+                           onChange={(e) => edit(selIndex, { character_in_frame: e.target.checked })} />
                     the one we follow is in this frame
                   </label>
                 </div>
                 <div className="field">
                   <label>Subject</label>
                   <input type="text" value={sel.subject} disabled={busy}
-                         onChange={(e) => edit(selected, { subject: e.target.value })} />
+                         onChange={(e) => edit(selIndex, { subject: e.target.value })} />
                 </div>
                 <div className="field">
                   <label>Action</label>
                   <input type="text" value={sel.action} disabled={busy}
-                         onChange={(e) => edit(selected, { action: e.target.value })} />
+                         onChange={(e) => edit(selIndex, { action: e.target.value })} />
                 </div>
                 <div className="field">
                   <label>Setting</label>
                   <input type="text" value={sel.setting} disabled={busy}
-                         onChange={(e) => edit(selected, { setting: e.target.value })} />
+                         onChange={(e) => edit(selIndex, { setting: e.target.value })} />
                 </div>
                 <div className="field">
                   <label>Caption <em>what the picture cannot say</em></label>
                   <input type="text" value={sel.caption} disabled={busy}
-                         onChange={(e) => edit(selected, { caption: e.target.value })} />
+                         onChange={(e) => edit(selIndex, { caption: e.target.value })} />
                 </div>
+                <div className="field">
+                  <label>Dialogue <em>spoken aloud in this frame</em></label>
+                  <input
+                    type="text"
+                    value={(sel.dialogue ?? []).map(
+                      (d) => (d.speaker ? `${d.speaker}: ` : "") + d.text).join(" / ")}
+                    disabled={busy}
+                    placeholder="Name: what they say / Name: what they say"
+                    onChange={(e) => edit(selIndex, {
+                      // "Name: line / Name: line" is quicker to correct than a
+                      // pair of fields per speaker, and matches how the writer
+                      // returns it.
+                      dialogue: e.target.value.split("/").map((raw) => {
+                        const [a, ...rest] = raw.split(":");
+                        return rest.length
+                          ? { speaker: a.trim(), text: rest.join(":").trim() }
+                          : { speaker: "", text: a.trim() };
+                      }).filter((d) => d.text),
+                    })}
+                  />
+                </div>
+                {(sel.description ?? "").trim() && (
+                  <div className="field">
+                    <label>The worked-up scene <em>replaces the terse fields</em></label>
+                    <textarea
+                      value={sel.description} disabled={busy} rows={3}
+                      style={{ fontSize: 11.5, color: "var(--text-dim)" }}
+                      onChange={(e) => edit(selIndex, { description: e.target.value })}
+                    />
+                  </div>
+                )}
+                {(sel.place ?? "").trim() && (
+                  <div className="field">
+                    <label>This scene's place <em>every panel here shares it</em></label>
+                    <div style={{ fontSize: 11, lineHeight: 1.55, color: "var(--text-dim)",
+                                  background: "var(--bg-sunk)", borderRadius: 5,
+                                  padding: "6px 8px" }}>
+                      {sel.place}
+                    </div>
+                  </div>
+                )}
                 <div className="field">
                   <label>The brief <em>the exact words asked for</em></label>
                   <div style={{ fontSize: 11, lineHeight: 1.6, color: "var(--text-dim)",
                                 background: "var(--bg-sunk)", borderRadius: 5,
                                 padding: "7px 9px", userSelect: "text" }}>
-                    {panelPrompt(sel, style, who, notes[selected])}
+                    {panelPrompt(sel, style, who, notes[selIndex])}
                   </div>
                 </div>
-                {drawn[selected] && (
+                {drawn[selIndex] && (
                   <div className="field">
                     <label>Your note <em>redraws just this frame</em></label>
                     <input
                       type="text"
-                      value={notes[selected] ?? ""}
+                      value={notes[selIndex] ?? ""}
                       disabled={busy}
                       placeholder="older, grey at the temples"
-                      style={{ borderStyle: notes[selected]?.trim() ? "solid" : "dashed" }}
+                      style={{ borderStyle: notes[selIndex]?.trim() ? "solid" : "dashed" }}
                       onChange={(e) =>
-                        setNotes((n) => ({ ...n, [selected]: e.target.value }))}
+                        setNotes((n) => ({ ...n, [selIndex]: e.target.value }))}
                     />
                     <button className="btn small full" style={{ marginTop: 6 }}
-                            disabled={busy} onClick={() => void redraw(selected)}>
-                      {notes[selected]?.trim() ? "Redraw with note" : "Redraw this panel"}
+                            disabled={busy} onClick={() => void redraw(selIndex)}>
+                      {notes[selIndex]?.trim() ? "Redraw with note" : "Redraw this panel"}
                     </button>
                   </div>
                 )}

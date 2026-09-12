@@ -251,18 +251,45 @@ export function ImageDrop({
   );
 }
 
+/**
+ * A message at the bottom of the window.
+ *
+ * An error stays until it is dismissed, and clicking it does not dismiss it.
+ * Both of those were wrong before: a failure vanished after eight seconds and
+ * the click you made to select the text closed it, so the one thing a person
+ * needs from an error -- to copy it and send it to someone -- was impossible.
+ * Good news still fades on its own, because nobody needs to keep it.
+ */
 export function Toast({ msg, bad, onDone }: { msg: string; bad?: boolean; onDone: () => void }) {
+  const [copied, setCopied] = useState(false);
   useEffect(() => {
-    const t = setTimeout(onDone, bad ? 8000 : 3200);
+    if (bad) return;               // a failure waits for the reader
+    const t = setTimeout(onDone, 3200);
     return () => clearTimeout(t);
   }, [msg, bad, onDone]);
-  return <div className={"toast" + (bad ? " bad" : "")} onClick={onDone}>{msg}</div>;
+  useEffect(() => setCopied(false), [msg]);
+  return (
+    <div className={"toast" + (bad ? " bad" : "")}>
+      <span style={{ userSelect: "text", WebkitUserSelect: "text" }}>{msg}</span>
+      {bad && (
+        <span style={{ display: "inline-flex", gap: 6, marginLeft: 10 }}>
+          <button
+            className="btn small"
+            onClick={() => {
+              void navigator.clipboard.writeText(msg)
+                .then(() => setCopied(true))
+                .catch(() => setCopied(false));
+            }}
+          >
+            {copied ? "Copied" : "Copy"}
+          </button>
+          <button className="btn small" onClick={onDone}>Dismiss</button>
+        </span>
+      )}
+    </div>
+  );
 }
 
-/**
- * Decrypt one item to a location the user picks. This is the only way content
- * leaves the vault in readable form, and it is always an explicit choice.
- */
 /**
  * Export several items into one folder.
  *

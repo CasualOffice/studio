@@ -136,7 +136,22 @@ export default function Gallery({
     setPicked(new Set()); setAnchor(null); setConfirmDelete(false);
   };
 
-  const pickedItems = () => all.filter((i) => picked.has(i.id));
+  /**
+   * Everything a selection actually refers to.
+   *
+   * The grid shows one card per board, and that card is the board's first
+   * panel. Selecting it and pressing Delete must delete the board, not strip
+   * one picture out of it and leave the rest orphaned -- which is what
+   * matching on picked ids alone would do. So a picked head expands to every
+   * member of its project.
+   */
+  const pickedItems = () => {
+    const ids = new Set(picked);
+    const projects = new Set(
+      all.filter((i) => ids.has(i.id) && i.project).map((i) => i.project));
+    return all.filter((i) => ids.has(i.id)
+      || (i.project != null && projects.has(i.project)));
+  };
 
   const exportPicked = async () => {
     setBusy(true);
@@ -416,7 +431,14 @@ export default function Gallery({
       </div>
       {picked.size > 0 && (
         <div className="bulk-bar">
-          <b>{picked.size} selected</b>
+          <b>
+            {(() => {
+              const n = pickedItems().length;
+              return n === picked.size
+                ? `${n} selected`
+                : `${picked.size} selected \u00b7 ${n} pictures`;
+            })()}
+          </b>
           <button className="btn small" disabled={busy} onClick={exportPicked}>
             {busy ? "Working…" : picked.size === 1 ? "Export" : `Export ${picked.size}`}
           </button>
@@ -432,8 +454,8 @@ export default function Gallery({
             }}
           >
             {confirmDelete
-              ? `Really delete ${picked.size}? This cannot be undone`
-              : `Delete ${picked.size}`}
+              ? `Really delete ${pickedItems().length}? This cannot be undone`
+              : `Delete ${pickedItems().length}`}
           </button>
           <button className="btn small" style={{ marginLeft: "auto" }}
             onClick={clearPicks}>Clear</button>
