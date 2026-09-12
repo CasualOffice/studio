@@ -35,7 +35,7 @@ export function styleWords(id: string): string {
  * draws her running instead of the tap.
  */
 export function panelPrompt(
-  panel: Panel, style: string, character: string
+  panel: Panel, style: string, character: string, note?: string
 ): string {
   const who = panel.character_in_frame
     ? [character.trim(), panel.subject.trim()].filter(Boolean).join(", ")
@@ -48,7 +48,11 @@ export function panelPrompt(
   const body = described
     ? [who, described]
     : [who, panel.action, panel.setting];
-  return [styleWords(style), `${panel.shot} shot`, ...body]
+  // A note goes last, where it can correct what came before it. This is the
+  // repair for a wrong frame: a sentence in English about that one panel,
+  // rather than rolling the dice on a new seed and hoping. It is kept with
+  // the panel, so a later redraw is still the panel you asked for.
+  return [styleWords(style), `${panel.shot} shot`, ...body, (note ?? "").trim()]
     .map((b) => b.trim())
     .filter(Boolean)
     .join(". ") + ".";

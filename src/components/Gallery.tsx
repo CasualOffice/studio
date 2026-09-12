@@ -189,6 +189,98 @@ export default function Gallery({
   const isImage = (i: VaultItem) => i.mime.startsWith("image/");
   const isVideo = (i: VaultItem) => i.mime.startsWith("video/");
 
+  // Opening a board shows the comic, not the first panel's metadata. A board
+  // is a thing someone made; its parts are pages and sheets, and the actions
+  // that matter are on the whole of it.
+  const openProject = open?.project
+    ? all.filter((i) => i.project === open.project)
+        .sort((a, b) => (a.project_index ?? 1e9) - (b.project_index ?? 1e9) ||
+                        a.created_at.localeCompare(b.created_at))
+    : null;
+
+  if (open && openProject && openProject.length > 1) {
+    const panelsOf = openProject.filter((i) => i.project_index != null);
+    const sheets = openProject.filter((i) => i.project_index == null);
+    const total = openProject.reduce((n, i) => n + i.bytes, 0);
+    return (
+      <div>
+        <button className="btn small" onClick={() => setOpen(null)} style={{ marginBottom: 14 }}>
+          ← Back to vault
+        </button>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+          <h2 style={{ margin: 0 }}>{open.project_name || "Picture board"}</h2>
+          <span style={{ fontSize: 12, color: "var(--text-faint)" }}>
+            {panelsOf.length} panels
+            {sheets.length ? ` · ${sheets.length} reference sheets` : ""}
+            {" · "}{fmtBytes(total)}
+            {" · "}{new Date(open.created_at).toLocaleDateString()}
+          </span>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, margin: "14px 0", flexWrap: "wrap" }}>
+          <button className="btn small" disabled={busy}
+                  onClick={() => void exportMany(openProject, notify)}>
+            Export all {openProject.length}
+          </button>
+          {send && (
+            <SendTo ids={openProject.filter((i) => i.mime.startsWith("image/")).map((i) => i.id)}
+                    send={send} models={models} compact />
+          )}
+          <button
+            className="btn small danger"
+            disabled={busy}
+            onClick={async () => {
+              if (!confirmDelete) { setConfirmDelete(true); return; }
+              setBusy(true);
+              let failed = 0;
+              for (const it of openProject) {
+                try { await api.vaultDelete(it.id); } catch { failed++; }
+              }
+              setBusy(false); setConfirmDelete(false); setOpen(null); onChanged();
+              notify(failed
+                ? `Deleted ${openProject.length - failed} of ${openProject.length}.`
+                : `Deleted the board and all ${openProject.length} pictures.`,
+                failed > 0);
+            }}
+          >
+            {confirmDelete
+              ? "Really delete this whole board? This cannot be undone"
+              : "Delete board"}
+          </button>
+        </div>
+
+        {sheets.length > 0 && (
+          <>
+            <div className="sub-head">Reference sheets</div>
+            <div className="gallery-grid" style={{ marginBottom: 18 }}>
+              {sheets.map((it) => (
+                <div className="gallery-card" key={it.id}
+                     onClick={() => setOpen({ ...it, project: null })}>
+                  <img src={vaultUrl(it.id)} alt="" loading="lazy" />
+                  <div className="meta"><div className="sub">{it.prompt.slice(0, 48)}</div></div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        <div className="sub-head">The comic, in order</div>
+        <div className="gallery-grid">
+          {panelsOf.map((it) => (
+            <div className="gallery-card" key={it.id}
+                 onClick={() => setOpen({ ...it, project: null })}>
+              <span className="count">{(it.project_index ?? 0) + 1}</span>
+              <img src={vaultUrl(it.id)} alt="" loading="lazy" />
+              <div className="meta">
+                <div className="sub">{it.prompt.slice(0, 60)}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   if (open) {
     return (
       <div>

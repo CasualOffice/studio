@@ -23,6 +23,28 @@ describe("panelPrompt", () => {
     expect(out).toContain("a kitchen tap");
   });
 
+  it("carries a note, and puts it last so it can correct what came before", () => {
+    // The repair for a wrong frame is a sentence about that frame, not a new
+    // seed. It goes at the end because a correction has to follow the thing
+    // it corrects.
+    const out = panelPrompt(panel(), "anime", CHAR, "older, grey at the temples");
+    expect(out).toContain("older, grey at the temples");
+    const noteAt = out.indexOf("older, grey");
+    expect(noteAt).toBeGreaterThan(out.indexOf("red scarf"));
+    expect(out.trimEnd().endsWith("temples.")).toBe(true);
+  });
+
+  it("is unchanged when there is no note", () => {
+    // A panel nobody has complained about must produce exactly what it did
+    // before notes existed, or every undrawn panel changes the day this ships.
+    expect(panelPrompt(panel(), "anime", CHAR, "")).toBe(
+      panelPrompt(panel(), "anime", CHAR));
+    expect(panelPrompt(panel(), "anime", CHAR, "   ")).toBe(
+      panelPrompt(panel(), "anime", CHAR));
+    expect(panelPrompt(panel(), "anime", CHAR, undefined)).toBe(
+      panelPrompt(panel(), "anime", CHAR));
+  });
+
   it("names the character when they are in frame", () => {
     expect(panelPrompt(panel(), "anime", CHAR)).toContain("red scarf");
   });

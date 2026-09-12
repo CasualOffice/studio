@@ -120,6 +120,16 @@ export default function Storyboard({
   const stop = useRef(false);
   /** How many times each panel has been redrawn, so a retry gets a new seed. */
   const [redraws, setRedraws] = useState<number[]>([]);
+  /**
+   * A written correction for one panel, kept with it.
+   *
+   * The repair for a wrong frame is a sentence about what is wrong with it --
+   * "older, grey at the temples", "pull back so the window is in frame" --
+   * not another roll of the dice. It is appended to that panel's brief and
+   * survives every later redraw, so the panel stays the one you asked for.
+   */
+  const [notes, setNotes] = useState<Record<number, string>>(
+    () => loadPref<Record<number, string>>("boardNotes", {}));
   const [elapsed, setElapsed] = useState(0);
   const [composing, setComposing] = useState(false);
   const [pages, setPages] = useState<string[]>([]);
@@ -143,6 +153,7 @@ export default function Storyboard({
   useEffect(() => { savePref("boardCast", cast); }, [cast]);
   useEffect(() => { savePref("boardProject", projectId); }, [projectId]);
   useEffect(() => { savePref("boardBatch", batch); }, [batch]);
+  useEffect(() => { savePref("boardNotes", notes); }, [notes]);
   useEffect(() => { savePref("boardStyle", style); }, [style]);
   useEffect(() => { savePref("boardCharacter", character); }, [character]);
   useEffect(() => { savePref("boardPanels", panels); }, [panels]);
@@ -383,7 +394,7 @@ export default function Storyboard({
     try {
       const res = await api.editImage({
         job_id: id, model_id: model.id,
-        prompt: panelPrompt(panels[i], style, who),
+        prompt: panelPrompt(panels[i], style, who, notes[i]),
         negative_prompt: null,
         width: PANEL_W, height: PANEL_H,
         steps: model.steps_default || 4,
@@ -842,10 +853,27 @@ export default function Storyboard({
                       <button className="btn small" disabled={busy}
                               style={{ fontSize: 10.5, padding: "2px 8px" }}
                               onClick={() => void redraw(i)}>
-                        Redraw
+                        {notes[i]?.trim() ? "Redraw with note" : "Redraw"}
                       </button>
                     )}
                   </div>
+                  {/* The repair for a wrong frame. A sentence about what is
+                      wrong beats another roll of the dice, and it stays with
+                      the panel so later redraws keep the correction. */}
+                  {drawn[i] && (
+                    <input
+                      type="text"
+                      value={notes[i] ?? ""}
+                      disabled={busy}
+                      placeholder="what is wrong with this one — older, grey at the temples"
+                      style={{
+                        fontSize: 12, padding: "4px 6px", marginBottom: 3,
+                        borderStyle: notes[i]?.trim() ? "solid" : "dashed",
+                      }}
+                      onChange={(e) =>
+                        setNotes((n) => ({ ...n, [i]: e.target.value }))}
+                    />
+                  )}
                   <input
                     type="text" value={p.subject} disabled={busy}
                     placeholder="who or what is in frame"
