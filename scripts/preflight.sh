@@ -64,7 +64,21 @@ step "vite build"
 npx vite build >/dev/null 2>&1 && ok || bad "frontend build"
 
 step "no volumes left mounted (a stale mount breaks bundle_dmg.sh)"
-if ls -d /Volumes/Model* >/dev/null 2>&1; then bad "a Model Studio volume is still mounted"; else ok; fi
+# Two kinds, and this only looked for one. A finished DMG mounts as
+# /Volumes/Model Studio; an interrupted build leaves its read-write staging
+# image mounted as /Volumes/dmg.XXXXXX instead, which is what actually
+# accumulates -- three of them were sitting there from earlier builds while
+# this check reported clean.
+stale=""
+ls -d /Volumes/Model* >/dev/null 2>&1 && stale="a Model Studio volume"
+if hdiutil info 2>/dev/null | grep -q "/Volumes/dmg\."; then
+  stale="${stale:+$stale and }a DMG staging volume"
+fi
+if [ -n "$stale" ]; then
+  bad "$stale is still mounted -- detach it with: hdiutil info | grep /Volumes/dmg"
+else
+  ok
+fi
 
 printf '\n'
 if [ $fail -eq 0 ]; then echo "preflight clean"; else echo "preflight FAILED - do not push"; fi
