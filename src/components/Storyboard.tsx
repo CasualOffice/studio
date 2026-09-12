@@ -297,7 +297,14 @@ export default function Storyboard({
     () => drawn.filter(Boolean).length, [drawn]);
   const remaining = Math.max(0, (panels?.length ?? 0) - drawnCount);
   const preparedCount = panels?.filter((p) => (p.description ?? "").trim()).length ?? 0;
-  const workflow = !cast ? "read" : !panels ? "plan" : preparedCount === 0
+  // Every panel still waiting for a picture has to be worked up first. Gating
+  // on "at least one" let a single prepared panel unlock drawing all of them,
+  // and the rest were drawn from the terse fields -- which is the difference
+  // between a scene and a caption, and costs a minute of drawing each to find
+  // out.
+  const unpreparedRemaining = panels?.filter(
+    (p, i) => !drawn[i] && !(p.description ?? "").trim()).length ?? 0;
+  const workflow = !cast ? "read" : !panels ? "plan" : unpreparedRemaining > 0
     ? "prepare" : remaining > 0 ? "draw" : "compose";
 
   /**

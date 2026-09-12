@@ -246,6 +246,11 @@ impl Engine {
             Ok(Err(_)) => Err(AppError::EngineDown),
             Err(_) => {
                 self.pending.lock().await.remove(job_id);
+                // Dropping the request only stops the host waiting. The worker
+                // is still holding the model and still working, so the next
+                // job queues behind a run nobody is listening to. Tell it to
+                // stop as well.
+                let _ = self.cancel(job_id).await;
                 Err(AppError::Engine(
                     "the engine did not finish the job within six hours".into(),
                 ))

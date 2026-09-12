@@ -312,6 +312,7 @@ export async function exportMany(
                              title: `Export ${items.length} items` });
     if (typeof dir !== "string") return;
     const used = new Set<string>();
+    const failures: string[] = [];
     let bytes = 0;
     let failed = 0;
     for (const it of items) {
@@ -328,6 +329,7 @@ export async function exportMany(
       }
       used.add(name);
       let written = false;
+      let lastError = "";
       for (let attempt = 1; attempt <= 100 && !written; attempt++) {
         const dot = name.lastIndexOf(".");
         const stem = dot > 0 ? name.slice(0, dot) : name;
@@ -337,15 +339,28 @@ export async function exportMany(
           bytes += await api.vaultExport(it.id, `${dir}/${candidate}`, false);
           used.add(candidate);
           written = true;
-        } catch { /* existing file or a destination failure; try a suffix */ }
+        } catch (e) {
+          // Only a name that is already taken is worth another attempt. A
+          // read-only folder or a full disk fails identically every time, and
+          // treating it as a collision meant a hundred silent retries and then
+          // a count of failures with no reason attached -- the one thing the
+          // person needed in order to fix it.
+          lastError = errText(e);
+          if (!/exists|file exists|already|in use/i.test(lastError)) break;
+        }
       }
-      if (!written) failed++;
+      if (!written) {
+        failed++;
+        if (lastError && !failures.includes(lastError)) failures.push(lastError);
+      }
     }
     const ok = items.length - failed;
     notify(
       `Exported ${ok} of ${items.length} — ${(bytes / 1024 / 1024).toFixed(1)} MB, ` +
       "and these copies are not encrypted." +
-      (failed ? ` ${failed} could not be written.` : ""),
+      (failed
+        ? ` ${failed} could not be written${failures.length ? `: ${failures[0]}` : "."}`
+        : ""),
       failed > 0
     );
   } catch (e) {

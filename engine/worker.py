@@ -1558,10 +1558,21 @@ def _enrich_edit_instruction(user_prompt: str, facts: dict[str, str]) -> str:
 # Words that promise quality without describing anything. They survive from
 # Stable Diffusion prompting, where they acted as style tokens; on a T5 encoder
 # they consume attention and contribute nothing.
+# Words that describe a wish rather than a picture. Removing them before the
+# rewrite keeps the intent guard honest: it should judge whether the subject
+# survived, not whether "8k" did.
+#
+# Deliberately narrow. "beautiful", "professional" and "perfect" were in this
+# list and are not folklore -- they modify the subject. "a professional
+# kitchen" is a kind of kitchen, "a beautiful ruin" is a judgement the picture
+# has to carry, and deleting them changed what was asked for while reporting
+# that nothing had been removed. Only terms that name a rendering target, an
+# award, or a resolution belong here.
 _EMPTY_MODIFIERS = (
-    "beautiful", "stunning", "gorgeous", "amazing", "masterpiece", "best quality",
-    "high quality", "highly detailed", "ultra detailed", "8k", "4k", "hdr",
-    "award winning", "trending on artstation", "professional", "perfect",
+    "masterpiece", "best quality", "high quality", "highly detailed",
+    "ultra detailed", "ultra realistic", "8k", "4k", "uhd", "hdr",
+    "award winning", "award-winning", "trending on artstation",
+    "artstation", "unreal engine", "octane render",
 )
 
 

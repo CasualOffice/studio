@@ -465,6 +465,20 @@ pub async fn set_models_location(
         }
     }
 
+    // Check everything that can be checked before stopping anything. The
+    // engine used to be shut down first, so choosing a folder that turned out
+    // to be non-empty left the app with no engine and nothing moved -- a
+    // rejected request that still cost the user their running session.
+    if move_existing
+        && current.exists()
+        && current_cmp != dest_cmp
+        && std::fs::read_dir(&dest)?.next().is_some()
+    {
+        return Err(AppError::msg(
+            "Choose an empty destination folder so existing files cannot be overwritten.",
+        ));
+    }
+
     // The engine holds the old location in its environment.
     {
         let mut guard = state.engine.lock().await;
@@ -474,11 +488,6 @@ pub async fn set_models_location(
     }
 
     if move_existing && current.exists() && current_cmp != dest_cmp {
-        if std::fs::read_dir(&dest)?.next().is_some() {
-            return Err(AppError::msg(
-                "Choose an empty destination folder so existing files cannot be overwritten.",
-            ));
-        }
         let from = current.clone();
         let parent = dest
             .parent()

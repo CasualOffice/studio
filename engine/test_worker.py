@@ -937,6 +937,47 @@ class MemoryHeadroom(unittest.TestCase):
             self.assertLess(worker._free_ram_gib(), worker._MIN_FREE_GIB, str(e))
 
 
+class CleanPromptRequest(unittest.TestCase):
+    """The cleaner must remove folklore, not meaning.
+
+    It removed "beautiful", "professional" and "perfect", which modify the
+    subject: "a professional kitchen" is a kind of kitchen and "a beautiful
+    ruin" is a judgement the picture has to carry. Worse, the removal happened
+    before the intent guard, so the guard never saw the words and the reply
+    said nothing had been taken out. Video prompts go through the same path.
+    """
+
+    def test_folklore_goes(self):
+        for text, gone in (
+            ("a harbour at dawn, 8k, masterpiece", {"8k", "masterpiece"}),
+            ("a fox, trending on artstation", {"trending on artstation"}),
+            ("a street, ultra detailed, unreal engine",
+             {"ultra detailed", "unreal engine"}),
+        ):
+            cleaned, removed = worker._clean_prompt_request(text)
+            self.assertEqual(set(removed), gone, text)
+            for g in gone:
+                self.assertNotIn(g, cleaned.lower())
+
+    def test_words_that_modify_the_subject_stay(self):
+        for text in (
+            "a professional kitchen",
+            "a beautiful ruin at dusk",
+            "perfect symmetry in a stairwell",
+            "a stunning view over the bay",
+            "an amazing race through the market",
+            "a gorgeous tiled floor",
+        ):
+            cleaned, removed = worker._clean_prompt_request(text)
+            self.assertEqual(cleaned, text, f"{text!r} was altered")
+            self.assertEqual(removed, [], f"{text!r} reported removals")
+
+    def test_a_prompt_of_pure_folklore_is_left_for_the_caller(self):
+        cleaned, removed = worker._clean_prompt_request("masterpiece, 8k, hdr")
+        self.assertEqual(cleaned, "")
+        self.assertTrue(removed)
+
+
 class RepairDroppedWords(unittest.TestCase):
     """A paraphrase is repaired; a deletion is not.
 

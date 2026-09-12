@@ -346,9 +346,19 @@ async fn provision_venv(report: Reporter<'_>, paths: &AppPaths, force: bool) -> 
         return Ok(());
     }
     report("venv", "Creating virtual environment", Some(0.25));
-    let _ = std::fs::remove_dir_all(paths.venv());
+
+    // A virtual environment cannot be built elsewhere and moved into place:
+    // pyvenv.cfg and every console script hold the absolute path it was
+    // created at. So the old one is set aside rather than deleted, and the
+    // caller puts it back if anything later in the install fails.
+    let target = paths.venv();
+    let kept = target.with_extension("previous");
+    let _ = std::fs::remove_dir_all(&kept);
+    if target.exists() {
+        std::fs::rename(&target, &kept)?;
+    }
     let mut cmd = Command::new(paths.python_bin());
-    cmd.arg("-m").arg("venv").arg(paths.venv());
+    cmd.arg("-m").arg("venv").arg(&target);
     run_streaming(report, "venv", cmd, (0.25, 0.28)).await
 }
 
@@ -364,75 +374,105 @@ pub async fn bootstrap(report: Reporter<'_>, paths: &AppPaths, force: bool) -> R
 
     // ---- 2. Virtual environment -----------------------------------------
     provision_venv(report, paths, force).await?;
-
-    // ---- 3. Engine ------------------------------------------------------
-    report("engine", "Installing pinned packaging tools", Some(0.30));
-    let mut up = Command::new(paths.venv_python());
-    up.args([
-        "-m",
-        "pip",
-        "install",
-        "pip==26.2.1",
-        "wheel==0.48.0",
-        "--no-input",
-    ]);
-    run_streaming(report, "engine", up, (0.30, 0.34)).await?;
-
-    report(
-        "engine",
-        "Installing mlx-gen and PyTorch — this is the long part (~3 GB)",
-        Some(0.35),
-    );
-    let requirements = paths.runtime().join("requirements.lock");
-    std::fs::write(&requirements, ENGINE_REQUIREMENTS)?;
-    let mut pip = Command::new(paths.venv_python());
-    pip.args([
-        "-m",
-        "pip",
-        "install",
-        "--no-input",
-        "--only-binary=:all:",
-        // The lock names every package including every transitive one, so
-        // there is nothing left to resolve. Letting pip resolve anyway makes
-        // it enforce constraints between the pinned versions, and two of them
-        // genuinely disagree: mlx-gen asks for mlx below 0.32 and mlx-vlm for
-        // 0.32.2 or above. No version satisfies both. The set installs and
-        // runs -- it has been running all along -- because the reader and the
-        // generator never share a process. Resolution turned a working
-        // arrangement into a refusal to install anything at all.
-        "--no-deps",
-        "--requirement",
-    ]);
-    pip.arg(&requirements);
-    // Keep pip's own cache inside our root so the disk meter stays honest.
-    pip.env("PIP_CACHE_DIR", paths.root.join("pipcache"));
-    run_streaming(report, "engine", pip, (0.35, 0.95)).await?;
-
-    // ---- 4. Verify and stamp --------------------------------------------
-    report("verify", "Verifying installation", Some(0.96));
-    let probe = Command::new(paths.venv_python())
-        .args([
-            "-c",
-            "import json,sys,mlx.core as mx,mlxgen,cryptography,mlx_lm;from importlib.metadata import version;print(json.dumps({'py':sys.version.split()[0],'mlxgen':version('mlx-gen'),'mlx':getattr(mx,'__version__','unknown'),'mlx_lm':version('mlx-lm')}))",
-        ])
-        .output()
-        .await?;
-    if !probe.status.success() {
-        return Err(AppError::msg(format!(
-            "verification failed:\n{}",
-            String::from_utf8_lossy(&probe.stderr)
-        )));
-    }
-    let v: serde_json::Value = serde_json::from_slice(&probe.stdout)
-        .map_err(|e| AppError::msg(format!("could not parse verification output: {e}")))?;
-
-    let stamp = InstallStamp {
-        python_version: v["py"].as_str().unwrap_or("?").into(),
-        mlxgen_version: v["mlxgen"].as_str().unwrap_or("?").into(),
-        installed_at: chrono::Utc::now().to_rfc3339(),
+    // From here on, a failure must leave the machine no worse than it found
+    // it. The previous environment is still on disk under .previous; it goes
+    // back if any of what follows fails, and is removed once the new one has
+    // been verified.
+    let kept = paths.venv().with_extension("previous");
+    let restore = |kept: &std::path::Path, target: &std::path::Path| {
+        if kept.exists() {
+            let _ = std::fs::remove_dir_all(target);
+            let _ = std::fs::rename(kept, target);
+        }
     };
-    std::fs::write(paths.stamp(), serde_json::to_vec_pretty(&stamp)?)?;
-    Ok(())
+
+    let rest = async {
+        // ---- 3. Engine ------------------------------------------------------
+        report("engine", "Installing pinned packaging tools", Some(0.30));
+        let mut up = Command::new(paths.venv_python());
+        up.args([
+            "-m",
+            "pip",
+            "install",
+            "pip==26.2.1",
+            "wheel==0.48.0",
+            "--no-input",
+        ]);
+        run_streaming(report, "engine", up, (0.30, 0.34)).await?;
+
+        report(
+            "engine",
+            "Installing mlx-gen and PyTorch — this is the long part (~3 GB)",
+            Some(0.35),
+        );
+        let requirements = paths.runtime().join("requirements.lock");
+        std::fs::write(&requirements, ENGINE_REQUIREMENTS)?;
+        let mut pip = Command::new(paths.venv_python());
+        pip.args([
+            "-m",
+            "pip",
+            "install",
+            "--no-input",
+            "--only-binary=:all:",
+            // The lock names every package including every transitive one, so
+            // there is nothing left to resolve. Letting pip resolve anyway makes
+            // it enforce constraints between the pinned versions, and two of them
+            // genuinely disagree: mlx-gen asks for mlx below 0.32 and mlx-vlm for
+            // 0.32.2 or above. No version satisfies both. The set installs and
+            // runs -- it has been running all along -- because the reader and the
+            // generator never share a process. Resolution turned a working
+            // arrangement into a refusal to install anything at all.
+            "--no-deps",
+            "--requirement",
+        ]);
+        pip.arg(&requirements);
+        // Keep pip's own cache inside our root so the disk meter stays honest.
+        pip.env("PIP_CACHE_DIR", paths.root.join("pipcache"));
+        run_streaming(report, "engine", pip, (0.35, 0.95)).await?;
+
+        // ---- 4. Verify and stamp --------------------------------------------
+        report("verify", "Verifying installation", Some(0.96));
+        let probe = Command::new(paths.venv_python())
+            .args([
+                "-c",
+                "import json,sys,mlx.core as mx,mlxgen,cryptography,mlx_lm;from importlib.metadata import version;print(json.dumps({'py':sys.version.split()[0],'mlxgen':version('mlx-gen'),'mlx':getattr(mx,'__version__','unknown'),'mlx_lm':version('mlx-lm')}))",
+            ])
+            .output()
+            .await?;
+        if !probe.status.success() {
+            return Err(AppError::msg(format!(
+                "verification failed:\n{}",
+                String::from_utf8_lossy(&probe.stderr)
+            )));
+        }
+        let v: serde_json::Value = serde_json::from_slice(&probe.stdout)
+            .map_err(|e| AppError::msg(format!("could not parse verification output: {e}")))?;
+
+        let stamp = InstallStamp {
+            python_version: v["py"].as_str().unwrap_or("?").into(),
+            mlxgen_version: v["mlxgen"].as_str().unwrap_or("?").into(),
+            installed_at: chrono::Utc::now().to_rfc3339(),
+        };
+        std::fs::write(paths.stamp(), serde_json::to_vec_pretty(&stamp)?)?;
+        Ok::<(), AppError>(())
+    };
+
+    let outcome = rest.await;
+    match outcome {
+        Ok(()) => {
+            // The new environment is verified and stamped; the old one is
+            // no longer needed.
+            let _ = std::fs::remove_dir_all(&kept);
+            Ok(())
+        }
+        Err(e) => {
+            // Put back what was working. Before this, a failure here left no
+            // environment at all -- the app could not start and the only way
+            // out was a reinstall that hit the same failure.
+            restore(&kept, &paths.venv());
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]

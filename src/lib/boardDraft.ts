@@ -34,7 +34,14 @@ const LEGACY_PREFS = [
 /** Move pre-vault Board data out of plaintext localStorage exactly once. */
 export async function loadBoardDraft(): Promise<Partial<BoardDraft> | null> {
   const encrypted = await api.boardStateGet();
-  if (encrypted) return JSON.parse(encrypted) as Partial<BoardDraft>;
+  if (encrypted) {
+    // The migration has already run, but an earlier one may have left the
+    // plaintext copies behind -- and a story sitting in localStorage is the
+    // thing the encrypted draft exists to avoid. Clearing them here means it
+    // is cleaned up on the next launch rather than never.
+    for (const key of LEGACY_PREFS) removePref(key);
+    return JSON.parse(encrypted) as Partial<BoardDraft>;
+  }
 
   const story = loadPref("boardStory", "");
   const panels = loadPref<Panel[] | null>("boardPanels", null);
