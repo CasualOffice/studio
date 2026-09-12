@@ -77,8 +77,15 @@ jobs:
           cp "$OUT"/dmg/*.dmg "dist-release/ModelStudio-${VERSION}-AppleSilicon.dmg"
           ditto -c -k --keepParent "$OUT/macos/Model Studio.app" \
             "dist-release/ModelStudio-${VERSION}-AppleSilicon.app.zip"
-          shasum -a 256 dist-release/* > dist-release/SHA256SUMS.txt
+          # From inside the directory, so the file names in SHA256SUMS.txt are
+          # bare. Hashing `dist-release/*` from the repository root embeds that
+          # prefix, and then the command in the release notes --
+          # `shasum -a 256 -c SHA256SUMS.txt` -- fails for everyone who
+          # downloads the assets into a folder of their own.
+          ( cd dist-release && shasum -a 256 ./*.dmg ./*.zip | sed 's| \./| |' > SHA256SUMS.txt )
           cat dist-release/SHA256SUMS.txt
+          # Prove the instructions work before publishing them.
+          ( cd dist-release && shasum -a 256 -c SHA256SUMS.txt )
 
       - uses: softprops/action-gh-release@v2
         with:
