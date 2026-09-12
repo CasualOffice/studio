@@ -1232,7 +1232,12 @@ _MAX_NEW_THINGS = 12
 
 # Endings English adds to a word that is still the same word. Ordered longest
 # first so "running" loses "ing" rather than "g".
-_INFLECTIONS = ("ing", "ies", "ed", "es", "s")
+# No "ies": the trailing-i rule below is what handles it, and stripping all
+# three letters defeated that rule. "carries" became "carr" while "carrying"
+# became "carry", so the two inflections of one verb did not agree -- which is
+# the single thing this function exists to make happen, and the docstring's own
+# worked example ("carries" -> "carri" -> "carry") describes stripping "es".
+_INFLECTIONS = ("ing", "ed", "es", "s")
 
 
 def _stem(word: str) -> str:
@@ -1419,6 +1424,25 @@ def _clarified_with_reason(original: str, raw: str) -> tuple[str | None, str]:
     if things(line) - things(original) > _MAX_NEW_THINGS:
         return None, "rejected"
     return line, "ok"
+
+
+def _carries(part: str, text: str) -> bool:
+    """Whether `text` still says what `part` said.
+
+    Every content word of `part` has to be represented in `text`, allowing for
+    inflection -- "pours the tea" is carried by "pouring tea into a white cup"
+    but not by "a narrow kitchen, dark green walls". Used on the one field at a
+    time, because that is the grain at which a brief loses the story: it keeps
+    the room and drops the thing happening in it.
+
+    Deliberately not `_keeps_intent`, which asks whether *any* word survived
+    and so can never fail on a real paragraph.
+    """
+    wanted = [_stem(w) for w in _significant(part)]
+    if not wanted:
+        return True
+    got = {_stem(w) for w in _significant(text)}
+    return all(stem in got for stem in wanted)
 
 
 def _keeps_intent(original: str, rewritten: str) -> bool:
@@ -1897,7 +1921,21 @@ def _clean_panel(p: dict[str, Any], story: str) -> dict[str, Any]:
                 characters.append(name)
     source = " ".join(str(p.get("source", "")).split())[:240]
     if story and source and not _quotes_story(source, story):
-        source = ""
+        # Not a quote. Match the paraphrase back onto the prose rather than
+        # dropping the anchor: the sentence exists in what the user pasted, and
+        # storing their words instead of the writer's is the whole point of
+        # anchoring. Empty only when nothing in the story matches, which means
+        # the beat was invented and is worth seeing.
+        source = _snap_source(source, story)
+    if story and source:
+        # Too short to anchor anything. A bare name is a substring of the
+        # prose, so it passes as a quote -- and then credits a whole sentence
+        # in the coverage figure while telling the reader nothing about which
+        # moment the panel came from. A whole sentence of the story is kept
+        # however short it is; a fragment has to carry two content words.
+        if (len(_significant(source)) < 2
+                and source not in _story_units(story)):
+            source = ""
     return {
         "shot": shot,
         "subject": str(p.get("subject", "")).strip(),
@@ -1923,6 +1961,66 @@ def _clean_panel(p: dict[str, Any], story: str) -> dict[str, Any]:
     }
 
 
+def _story_units(story: str) -> list[str]:
+    """The story as the sentences coverage and anchoring are measured in."""
+    return [" ".join(s.split())
+            for s in re.split(r"(?<=[.!?])\s+|\n+", story) if s.strip()]
+
+
+def _snap_source(source: str, story: str) -> str:
+    """The passage of the story a panel is really about, in the story's words.
+
+    The writer is told to quote the prose exactly and often does, but it also
+    paraphrases -- "Marta pours tea and sits" for "She poured the tea and sat
+    down without drinking it." That used to be thrown away: `_clean_panel`
+    blanked any source that did not quote the story, so the panel arrived with
+    no anchor, the rail said "No exact source quote was returned", and coverage
+    counted the sentence as unanchored even though a panel was about it. The
+    stricter the quote check got, the more often that happened.
+
+    Blanking is the wrong repair, because the information is not missing -- the
+    sentence is right there in what the user pasted. So the paraphrase is
+    matched back onto the prose and the prose wins. What the board stores is
+    always the user's own words, which is what makes the anchor worth showing
+    and the coverage figure worth trusting.
+
+    Returns "" only when nothing in the story is a plausible match, which is
+    the case worth surfacing: the writer invented a beat.
+    """
+    if not source or not story:
+        return ""
+    units = _story_units(story)
+    if not units:
+        return ""
+    # Stems, because a paraphrase is mostly the same words in another tense:
+    # "pours" for "poured", "opens" for "opened".
+    wanted = {_stem(w) for w in _significant(source)}
+    if not wanted:
+        return ""
+
+    best, best_shared = "", 0
+    best_score = 0.0
+    for unit in units:
+        got = {_stem(w) for w in _significant(unit)}
+        if not got:
+            continue
+        shared = len(wanted & got)
+        score = shared / len(wanted)
+        if score > best_score or (score == best_score and shared > best_shared):
+            best, best_score, best_shared = unit, score, shared
+
+    # Content words in common, not characters in common. Scoring by character
+    # similarity anchored "Marta boarded a train to Leeds" -- a beat that is
+    # nowhere in the story -- onto "Marta opened the kitchen door.", because
+    # the two strings look alike. Fabricating an anchor is worse than having
+    # none: it is the failure this whole mechanism exists to make visible.
+    #
+    # Half the paraphrase's content words, and at least two of them, so a
+    # single shared name cannot carry a match on its own.
+    enough = best_shared >= min(2, len(wanted))
+    return best if best_score >= 0.5 and enough else ""
+
+
 def _story_coverage(story: str, panels: list[dict[str, Any]]) -> dict[str, Any]:
     """Report which prose units are anchored by a panel's exact source quote.
 
@@ -1941,8 +2039,7 @@ def _story_coverage(story: str, panels: list[dict[str, Any]]) -> dict[str, Any]:
     sentence verbatim report 67%. Those are not prose that can go missing, so
     they are not in the denominator.
     """
-    units = [" ".join(s.split()) for s in re.split(r"(?<=[.!?])\s+|\n+", story)
-             if s.strip()]
+    units = _story_units(story)
     sources = [str(p.get("source", "")).lower() for p in panels if p.get("source")]
     scorable = [(index, unit) for index, unit in enumerate(units)
                 if _significant(unit)]
@@ -2630,9 +2727,26 @@ def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         text = " ".join(raw.strip().splitlines()[0].split())
         # An enrichment that dropped the moment is worse than none: the panel
         # would be drawn as something the story does not contain.
-        if text and not _keeps_intent(moment, text):
-            log(req_id, f"panel {i + 1} enrichment lost the moment; keeping it plain", "warn")
-            text = ""
+        #
+        # `_keeps_intent` is not the check for this. It passes when any single
+        # word of the moment has a four-letter prefix match anywhere in the
+        # reply, so it returned True for "A kitchen." against "medium shot.
+        # Mira. pours the tea. a narrow kitchen" -- and the prompt builder then
+        # *replaces* the action and setting with the brief, so the panel was
+        # drawn as an empty room with no Mira and no pouring. A guard that
+        # cannot fail is how the board stopped being about the story.
+        action = str(p.get("action", "")).strip()
+        if text and not _carries(action, text):
+            # Repaired rather than rejected. The brief is where the surface and
+            # the light come from, and those are what make a panel drawable at
+            # all -- so the thing that happens is put back in front of it
+            # instead of the whole paragraph being thrown away.
+            log(req_id, f"panel {i + 1} brief lost the action; restoring it", "warn")
+            text = f"{action}. {text}"
+        subject = str(p.get("subject", "")).strip()
+        if text and subject and not _carries(subject, text):
+            log(req_id, f"panel {i + 1} brief lost the subject; restoring it", "warn")
+            text = f"{subject}. {text}"
         out.append({**p, "description": text[:400],
                     "place": places.get(_as_scene(p.get("scene", 1)), "")})
 

@@ -1353,6 +1353,126 @@ class VideoLoadArguments(unittest.TestCase):
         self.assertGreater(checked, 0, "expected op_video's call to be covered")
 
 
+class PanelFidelity(unittest.TestCase):
+    """What reaches the picture has to be what the story said.
+
+    The division is the writer's paraphrase of the prose; the brief is the
+    writer's paraphrase of the division. Neither was checked against anything,
+    and `panelPrompt` *replaces* the action and setting with the brief -- so a
+    brief that dropped the moment was drawn as something the story does not
+    contain, and nothing anywhere noticed.
+    """
+
+    ACTION = "pours the tea"
+    SUBJECT = "Mira"
+
+    def test_a_brief_that_keeps_the_moment_is_accepted(self):
+        for brief in (
+            "Mira pouring tea into a white cup, steam rising. Grey window light.",
+            "Mira pours tea at the stove, steam rising in grey light.",
+        ):
+            self.assertTrue(worker._carries(self.ACTION, brief), brief)
+            self.assertTrue(worker._carries(self.SUBJECT, brief), brief)
+
+    def test_a_brief_that_lost_the_moment_is_caught(self):
+        # Every one of these passed `_keeps_intent`, which is why it is not
+        # the check for this: it asks whether *any* word survived.
+        for brief in (
+            "A narrow kitchen, dark green walls, bare oak boards, one window.",
+            "Warm hallway light falling across a narrow flat.",
+            "A kitchen.",
+        ):
+            self.assertTrue(worker._keeps_intent(
+                f"medium shot. {self.SUBJECT}. {self.ACTION}. a narrow kitchen", brief))
+            self.assertFalse(worker._carries(self.ACTION, brief), brief)
+
+    def test_carries_is_not_defeated_by_inflection(self):
+        self.assertTrue(worker._carries("rises slowly", "steam rising slowly"))
+        self.assertTrue(worker._carries("carries a lamp", "carrying a lamp"))
+        self.assertTrue(worker._carries("", "anything at all"))
+
+    def test_carries_needs_every_content_word(self):
+        self.assertFalse(worker._carries("pours the tea", "pours the coffee"))
+        self.assertFalse(worker._carries("opens the window", "opens the door"))
+
+
+class SourceSnapping(unittest.TestCase):
+    """A panel's anchor is the user's own sentence, or it is nothing.
+
+    The writer is told to quote the prose and often paraphrases it instead.
+    That used to be thrown away -- the anchor was blanked, the rail said no
+    quote was returned, and coverage counted the sentence as missing even
+    though a panel was about it. The sentence is right there in what was
+    pasted, so the paraphrase is matched back onto the prose and the prose
+    wins.
+    """
+
+    STORY = ("Marta opened the kitchen door. The rain had not stopped since "
+             "Tuesday. She poured the tea and sat down without drinking it. "
+             "She ran.")
+
+    def _anchor(self, source):
+        return worker._clean_panel(
+            {"shot": "medium", "subject": "Marta", "action": "a",
+             "setting": "b", "source": source, "scene": 1}, self.STORY)["source"]
+
+    def test_every_anchor_is_verbatim_from_the_story(self):
+        for source in ("She poured the tea and sat down without drinking it.",
+                       "Marta pours tea and sits",
+                       "Marta opens the door of the kitchen",
+                       "rain since Tuesday",
+                       "She ran.",
+                       "Marta boarded a train to Leeds",
+                       "Marta", "the", ""):
+            got = self._anchor(source)
+            if got:
+                self.assertIn(got, self.STORY,
+                              f"{source!r} produced an anchor that is not in the story")
+
+    def test_a_paraphrase_snaps_to_the_sentence_it_came_from(self):
+        self.assertEqual(self._anchor("Marta pours tea and sits"),
+                         "She poured the tea and sat down without drinking it.")
+        self.assertEqual(self._anchor("Marta opens the door of the kitchen"),
+                         "Marta opened the kitchen door.")
+        self.assertEqual(self._anchor("rain since Tuesday"),
+                         "The rain had not stopped since Tuesday.")
+
+    def test_an_invented_beat_gets_no_anchor(self):
+        # Fabricating an anchor is worse than having none: scoring by
+        # character similarity used to pin "Marta boarded a train to Leeds"
+        # onto "Marta opened the kitchen door." because the strings look alike.
+        for invented in ("Marta boarded a train to Leeds",
+                         "A dragon circled the tower",
+                         "He signed the lease on Thursday morning"):
+            self.assertEqual(self._anchor(invented), "", invented)
+
+    def test_a_fragment_too_short_to_anchor_is_dropped(self):
+        # A bare name is a substring of the prose, so it passes as a quote --
+        # and then credits a whole sentence in the coverage figure.
+        self.assertEqual(self._anchor("Marta"), "")
+        self.assertEqual(self._anchor("the"), "")
+
+    def test_a_whole_short_sentence_is_kept_however_short(self):
+        self.assertEqual(self._anchor("She ran."), "She ran.")
+
+    def test_snapping_makes_coverage_tell_the_truth(self):
+        paraphrased = [{"source": s} for s in (
+            "Marta opens the door of the kitchen",
+            "rain since Tuesday",
+            "Marta pours tea and sits")]
+        snapped = [{"source": worker._snap_source(p["source"], self.STORY)}
+                   for p in paraphrased]
+        before = worker._story_coverage(self.STORY, paraphrased)["percent"]
+        after = worker._story_coverage(self.STORY, snapped)["percent"]
+        self.assertGreater(after, before)
+        # Three panels over four sentences: "She ran." really is unanchored, so
+        # 75% is the honest figure and 100% would be the old lie. Snapping is
+        # for telling the truth about the division, not for flattering it.
+        self.assertEqual(after, 75)
+        self.assertIn("She ran.",
+                      worker._story_coverage(self.STORY, snapped)["missing"])
+
+
 class ShotlistTruncation(unittest.TestCase):
     """An overshooting division must be reported, not quietly shortened.
 

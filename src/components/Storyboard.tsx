@@ -138,18 +138,31 @@ export default function Storyboard({
    * redrawn panel is cast exactly like the one it replaces.
    */
   const lead = useMemo(() => cast?.people.find((p) => p.tier === 1), [cast]);
+  /**
+   * One person, as the prompt should name them.
+   *
+   * A person the story never describes is named and nothing more. This used to
+   * append "appearance not specified", which is not a fact about the story --
+   * it is the tool's own bookkeeping, in English, in the prompt, and the
+   * generator drew it as though it had been asked for something. The name on
+   * its own is the truthful instruction: the drawer invents a face either way,
+   * and the reference sheet is what keeps it the same face.
+   */
   const personBrief = (name: string) => {
     const person = cast?.people.find((p) => p.name.toLowerCase() === name.toLowerCase());
     if (!person) return name;
     if (person === lead && character.trim()) return `${person.name}: ${character.trim()}`;
-    return `${person.name}: ${person.description || "appearance not specified"}`;
+    return person.description.trim()
+      ? `${person.name}: ${person.description.trim()}`
+      : person.name;
   };
   const castForSheet = useMemo(() => {
     const major = cast?.people.filter((p) => p.tier <= 2).slice(0, 4) ?? [];
     if (major.length === 0) return character.trim();
-    return major.map((p) => p === lead && character.trim()
-      ? `${p.name}: ${character.trim()}`
-      : `${p.name}: ${p.description || "appearance not specified"}`).join("\n");
+    return major.map((p) => {
+      if (p === lead && character.trim()) return `${p.name}: ${character.trim()}`;
+      return p.description.trim() ? `${p.name}: ${p.description.trim()}` : p.name;
+    }).join("\n");
   }, [cast, character, lead]);
   const panelWho = (panel: Panel) => {
     const named = panel.characters?.map(personBrief).filter(Boolean) ?? [];
