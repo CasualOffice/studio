@@ -319,6 +319,16 @@ export interface Cast {
   people: CastMember[];
   places: CastPlace[];
   words: number;
+  /**
+   * The story is told by someone it never names.
+   *
+   * A first-person story has no name in the prose for the person it is about,
+   * so the cast reader has nothing to return for the lead -- and with no lead
+   * there is no reference sheet, which is the thing that keeps a face the same
+   * face across panels. The interface asks for a name instead of inventing
+   * one. Optional: a draft saved before this does not carry it.
+   */
+  first_person?: boolean;
 }
 
 /** What the prompt enhancer did, said plainly rather than inferred. */

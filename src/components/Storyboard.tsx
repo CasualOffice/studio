@@ -197,6 +197,49 @@ export default function Storyboard({
   /** The look the user is describing for themselves, and whether it is open. */
   const [customOpen, setCustomOpen] = useState(false);
   const [customWords, setCustomWords] = useState("");
+  /** A name for a narrator the story never names. */
+  const [narratorName, setNarratorName] = useState("");
+  const [narratorLook, setNarratorLook] = useState("");
+
+  /**
+   * Put someone into the cast by hand.
+   *
+   * The cast is read out of the prose, which is right -- asking someone to
+   * type what chapter one already says is the tool failing at its job. But a
+   * story told in the first person names nobody, and a story that calls
+   * someone "her sister" gives the drawer nothing to hold on to, and there was
+   * no way to say who they are. So the read is a proposal that can be
+   * corrected, which is what it was always supposed to be.
+   *
+   * `mentions` is set above the current top so the named person leads and gets
+   * the full sheet: they are the one the story is about, which is precisely
+   * why the prose never stopped to name them.
+   */
+  const addPerson = (name: string, look: string, lead = false) => {
+    const clean = name.trim();
+    if (!clean) return;
+    setCast((c) => {
+      const base: Cast = c ?? { people: [], places: [], words: 0 };
+      if (base.people.some((p) => p.name.toLowerCase() === clean.toLowerCase())) {
+        notify(`${clean} is already in the cast.`, true);
+        return base;
+      }
+      const top = base.people.reduce((n, p) => Math.max(n, p.mentions), 0);
+      const person = {
+        name: clean,
+        description: look.trim(),
+        mentions: lead ? top + 1 : Math.max(1, Math.round(top / 2)),
+        tier: lead ? 1 : 2,
+      };
+      const people = [person, ...base.people]
+        .sort((a, b) => b.mentions - a.mentions);
+      return { ...base, people };
+    });
+    // The sheet was drawn against the old cast, so it is not this cast.
+    setSheet(null); setPages([]);
+    setNarratorName(""); setNarratorLook("");
+    notify(`${clean} added to the cast. The cast sheet will be drawn again.`);
+  };
 
   const [stage, setStage] = useState<Stage>("idle");
   const [prog, setProg] = useState<EngineProgress | null>(null);
@@ -1382,6 +1425,37 @@ export default function Storyboard({
       </div>
 
       {/* ---- the cast, along the bottom: it belongs to the whole board ---- */}
+      {/* A story told in the first person never names the person it is about,
+          so there is nothing for the cast reader to return for the lead -- and
+          with no lead there is no reference sheet, which is what makes a face
+          the same face from panel to panel. Asked for once, here, rather than
+          left for someone to work out from the pictures. */}
+      {cast?.first_person && !cast.people.some((p) => p.tier === 1) && (
+        <div className="notice warn" style={{ margin: "10px 0" }}>
+          <strong>This story is told by someone it never names.</strong>
+          <div style={{ fontSize: 11.5, lineHeight: 1.6, marginTop: 4 }}>
+            Give them a name and, if you like, a description. Without one there
+            is no cast sheet, and a face drawn from nothing is a different face
+            in every panel.
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+            <input value={narratorName} disabled={busy}
+                   style={{ maxWidth: 160 }}
+                   onChange={(e) => setNarratorName(e.target.value)}
+                   placeholder="Name" />
+            <input value={narratorLook} disabled={busy}
+                   style={{ flex: 1, minWidth: 180 }}
+                   onChange={(e) => setNarratorLook(e.target.value)}
+                   placeholder="short black hair, red scarf (optional)" />
+            <button className="btn small primary"
+                    disabled={busy || !narratorName.trim()}
+                    onClick={() => addPerson(narratorName, narratorLook, true)}>
+              Add them
+            </button>
+          </div>
+        </div>
+      )}
+
       {cast && (cast.people.length > 0 || cast.places.length > 0) && (
         <div className="board-shelf">
           <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".13em",
