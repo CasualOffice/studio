@@ -107,12 +107,20 @@ export default function App() {
    * were all recorded when it was made. Keeping the seed repeats it exactly;
    * dropping it explores around it, which is what people actually want most of
    * the time.
+   *
+   * Everything the run sent is copied across, not just the handful the first
+   * version carried. "Same seed" promises the same picture, and it cannot keep
+   * that promise while the negative prompt, the adapters, the edit route and
+   * the strength are all quietly taken from whatever the controls were last
+   * left on. Fields the item does not have stay undefined and the Studio then
+   * leaves the matching control where it is, so old items behave as before.
    */
   const reuse = useCallback((item: VaultItem, reuseSeed: boolean) => {
     setRecipe({
       kind: item.kind,
       prompt: item.prompt,
       modelName: item.model,
+      modelRepo: item.model_repo,
       seed: item.seed,
       width: item.width,
       height: item.height,
@@ -120,6 +128,13 @@ export default function App() {
       guidance: item.guidance,
       inputs: item.inputs,
       reuseSeed,
+      negativePrompt: item.negative_prompt,
+      loras: item.loras,
+      i2iMode: item.i2i_mode,
+      imageStrength: item.image_strength,
+      outpaintPadding: item.outpaint_padding,
+      outpaintFill: item.outpaint_fill,
+      lowRam: item.low_ram,
     });
     if (item.kind === "video") setTab("video");
     else if (item.kind === "edit") { setEditImages(item.inputs); setTab("edit"); }
