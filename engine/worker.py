@@ -1236,37 +1236,56 @@ SCENE_SYSTEM = (
 # Slots rather than free writing, because a 2B model asked for "a vivid prompt"
 # produces adjective soup. Asked what the light is doing, it answers.
 SCENE_DIRECTION_SYSTEM = (
-    "You make an image request precise. You do not invent a scene.\n\n"
-    "Rules, in order of importance:\n"
-    "1. Never introduce a thing the request does not already contain. No new "
-    "objects, no new people, no new places. If the request says 'a cat on a "
-    "chair', there is no book, no window and no rug.\n"
-    "2. Keep every thing the request does name, and keep what it says about "
-    "them.\n"
-    "3. Your only job is to make what is already there specific: give it "
-    "material, colour, texture, age, scale. 'a chair' may become 'a worn oak "
-    "chair'. It may not become 'a chair beside a fireplace'.\n"
-    "4. Never write 'beautiful', 'stunning', 'high quality', '8k', "
+    "You are an art director writing the prompt for an image model.\n\n"
+    "First work out what the person actually wants to see. They are describing "
+    "a picture in their head, often in a hurry, often badly: misspelled, "
+    "ungrammatical, half a sentence. Read through that to the picture. Then "
+    "write the prompt you would give an illustrator who cannot ask "
+    "questions.\n\n"
+    "Say it in your own words. You are not editing their sentence, you are "
+    "describing what they meant -- so rephrase freely, fix the grammar, and "
+    "use the right word where they reached for the nearest one. What must "
+    "survive is the thing they asked for, not the words they asked in.\n\n"
+    "Work through the fields below, then write them out as one flowing "
+    "sentence or two. Everything the fields cover is yours to decide -- and "
+    "you must decide it, because a prompt that leaves light, lens and framing "
+    "unsaid gets whatever the model felt like.\n\n"
+    "  SUBJECT      who or what, with material, age, wear\n"
+    "  APPEARANCE   what they are wearing or made of, in detail\n"
+    "  ACTION       what is happening, in this instant\n"
+    "  SETTING      where it is, and what else is in the frame\n"
+    "  COMPOSITION  framing, camera height, what is near and what is far\n"
+    "  LIGHT        source, direction, quality, colour\n"
+    "  STYLE        medium and finish\n\n"
+    "Rules:\n"
+    "1. Keep the subject and every attribute given to it. If they say a red "
+    "car, it is still a car and still red -- a sedan is a car, a motorbike is "
+    "not.\n"
+    "2. Correct the spelling and the grammar, always. 'a hous at nite' is a "
+    "house at night. 'me and him was walking' is two people walking.\n"
+    "3. Never write 'beautiful', 'stunning', 'high quality', '8k', "
     "'cinematic' or 'masterpiece'. They describe nothing.\n"
-    "5. Correct the spelling and the grammar. Write the words properly, in a "
-    "sentence that reads correctly. A misspelled request is still that "
-    "request: 'a hous at nite' is a house at night.\n"
-    "6. If the request names no thing at all -- 'make it better', 'something "
-    "nice' -- you cannot make it precise. Reply with exactly: UNCLEAR\n\n"
-    "Reply with the rewritten request on one line and nothing else.\n\n"
+    "4. No field labels in the answer. One paragraph, 40 to 80 words.\n"
+    "5. If the request names no thing at all -- 'make it better', 'something "
+    "nice' -- you cannot direct it. Reply with exactly: UNCLEAR\n\n"
+    "Reply with the prompt and nothing else.\n\n"
     "Examples\n"
-    "Request: a pictuer of a hous at nite\n"
-    "a house at night, warm light in the windows, the road wet and black "
-    "in front of it\n\n"
     "Request: a cat on a chair\n"
-    "a tabby cat with dense grey-brown fur, curled on a worn oak chair\n\n"
-    "Request: a woman walking in the rain at night\n"
-    "a woman in a rain-soaked overcoat walking at night, hair flat with wet, "
-    "the road black and reflective under the rain\n\n"
+    "A tabby cat with dense grey-brown fur lies curled on a worn oak chair, "
+    "one paw tucked under its chin, tail hanging over the seat edge. Late "
+    "afternoon sun comes low through a window to the left, warming the "
+    "chair's arm and throwing a long soft shadow across the floorboards. "
+    "Close, slightly above eye level, the room falling away out of focus "
+    "behind. Oil on canvas, visible brushwork.\n\n"
+    "Request: a pictuer of a hous at nite\n"
+    "A narrow brick house stands at the end of a wet street at night, paint "
+    "flaking from its window frames, one upstairs light burning behind a thin "
+    "curtain. The road is black and mirror-slick, holding the orange smear of "
+    "a streetlamp just out of frame. Shot from across the road at standing "
+    "height, the house small in a wide, quiet frame. Photographic, long "
+    "exposure, grain in the shadows.\n\n"
     "Request: make it look better\n"
-    "UNCLEAR\n\n"
-    "Request: a red car\n"
-    "a red car with sun-faded paint and a dented wing, standing still\n"
+    "UNCLEAR\n"
 )
 
 
@@ -1332,13 +1351,20 @@ _ATTRIBUTE_HINTS = (
 # request that names nothing returns UNCLEAR before any of this runs, and the
 # retention check below still guarantees nothing the user asked for is lost.
 # So these are loose, and retention does the real work.
-_MAX_EXPANSION = 14
+# Direction, not paraphrase. A four-word request becoming seventy words of
+# subject, light, framing and medium is the whole job now, not evidence of
+# overreach -- so the ceiling is a sanity bound on runaway output rather than a
+# limit on richness. Retention below is what keeps the rewrite honest.
+_MAX_EXPANSION = 60
 
 # How many more things a clarification may name than the request did. Enough
 # that a bowl of ramen may have its broth, noodles, egg and nori -- which was
 # rejected outright before -- while a request that comes back naming a dozen
 # unrelated objects is still refused.
-_MAX_NEW_THINGS = 12
+# Likewise. An art direction names the room, the window, the light and the
+# floor; counting those as "new things" and refusing is how the enhancer ended
+# up writing thirteen words when it was asked for a picture.
+_MAX_NEW_THINGS = 20
 
 
 # Endings English adds to a word that is still the same word. Ordered longest
@@ -1547,6 +1573,16 @@ _NOT_A_SUBJECT = {
     "him", "her", "his", "hers", "she", "he", "they", "them", "their",
     "was", "were", "been", "has", "had", "have", "did", "does", "doing",
     "walking",
+    # Words people instruct with rather than describe with. "my dog but make
+    # him look like a king" is four content words and five of these, and
+    # counting them as things the rewrite lost refused every rendering of it.
+    "but", "look", "looks", "looking", "like", "make", "makes", "making",
+    "turn", "turns", "into", "show", "shows", "want", "wants", "kind",
+    "sort", "type", "style", "version", "also", "then", "just", "really",
+    # And the placeholders for a thing not yet named. A request built on one
+    # is still a request -- "something scary in an old house" is a house --
+    # and UNCLEAR above already catches the case where it is the *only* thing.
+    "something", "somthing", "anything", "stuff", "things", "thing",
 }
 
 
@@ -1658,18 +1694,39 @@ def _clarified_with_reason(original: str, raw: str) -> tuple[str | None, str]:
     if not _keeps_intent(original, line):
         return None, "lost_intent"
 
-    # Every thing the request named has to still be there. `_keeps_intent` only
-    # asks whether *any* of it survived, which let "an old bicycle against a
-    # brick wall" come back as a bicycle with no wall -- the clarification
-    # quietly deleting half the request.
-    if _dropped_words(original, line):
+    # A word the rewrite no longer says is reported, not refused.
+    #
+    # This used to reject. It made rephrasing impossible: "me and him was
+    # walking in forrest" cannot become good English without losing "him" and
+    # "was", and "a pictuer of a hous" cannot be fixed without losing
+    # "pictuer". The guard made sense when the rewrite was applied the instant
+    # it existed -- silently swapping the user's words was worth preventing.
+    # It is now shown for approval with the changes named, so vetoing a good
+    # rewrite on behalf of someone who can see it is the wrong call. The
+    # subject test above still refuses a rewrite about something else.
+    dropped = _dropped_words(original, line)
+    # The same filtered view retention uses. Taken raw, the head word of
+    # "somthing scary in a old hosue" is "somthing" -- a placeholder for a
+    # thing not yet named -- and every rewrite that named one was refused for
+    # not repeating it.
+    kept = [w for w in _significant(original)
+            if not any(w.lower() == n or _misspelling_of(w.lower(), n)
+                       for n in _NOT_A_SUBJECT)]
+    # Losing a modifier is rephrasing. Losing the subject is a different
+    # picture. "a cat on a chair" coming back as "a hat rests on a chair" keeps
+    # the chair and passes any test that asks whether *some* of the request
+    # survived, so the head word is checked by name and a rewrite that loses
+    # half of what was asked for is refused however well it reads.
+    head_lost = bool(kept) and kept[0].lower() in {w.lower() for w in dropped}
+    if dropped and (head_lost or len(dropped) * 2 >= len(kept)):
         return None, "dropped"
+    log_reason = "rephrased" if dropped else "ok"
 
     # A rewrite far longer than the request is inventing, not clarifying.
     # The floor matters as much as the ratio: "a teapot" is one significant
     # word, and naming its glaze, its spout and its wear is a legitimate
     # clarification that a ratio alone would reject.
-    if len(_significant(line)) > max(40, _MAX_EXPANSION * len(_significant(original))):
+    if len(_significant(line)) > max(90, _MAX_EXPANSION * len(_significant(original))):
         return None, "too_long"
 
     # Length alone cannot tell a described teapot from a list of furniture.
@@ -1681,7 +1738,20 @@ def _clarified_with_reason(original: str, raw: str) -> tuple[str | None, str]:
 
     if things(line) - things(original) > _MAX_NEW_THINGS:
         return None, "rejected"
-    return line, "ok"
+
+    # A count alone cannot separate a described room from a list of its
+    # contents: an eighty-word direction legitimately names the coat, the
+    # window, the lamp and the floor. What separates them is shape. "a cat, a
+    # book, a window, a rug, a fireplace, a lamp..." is almost entirely
+    # article-noun pairs, while a direction spends most of its words on what
+    # those things look like and how they are lit.
+    density = things(line) / max(1, len(_significant(line)))
+    if things(line) > 6 and density > 0.45:
+        return None, "rejected"
+    # "rephrased" when the wording moved off the user's words, "ok" when it did
+    # not. Both are accepted; the caller names the difference so the person
+    # approving it can see what changed.
+    return line, log_reason
 
 
 def _carries(part: str, text: str) -> bool:
@@ -1703,17 +1773,70 @@ def _carries(part: str, text: str) -> bool:
     return all(stem in got for stem in wanted)
 
 
+SAME_REQUEST_SYSTEM = (
+    "You are checking whether a rewritten image prompt still asks for the "
+    "same picture as the original request.\n\n"
+    "The wording will be different -- that is the point of the rewrite. Added "
+    "detail about light, framing, materials or style is fine. Judge only "
+    "this: would someone who asked for the original be satisfied by a picture "
+    "of the rewrite?\n\n"
+    "A dog shown as a golden retriever is the same request. A dog shown as a "
+    "cat is not. A house shown as a derelict mansion is the same request. A "
+    "house shown as a ship is not.\n\n"
+    "Answer with one word: SAME or DIFFERENT."
+)
+
+
+def _same_request(req_id: str, original: str, rewritten: str,
+                  writer: str | None) -> bool:
+    """Ask the writer whether a rewrite it cannot be string-matched to still holds.
+
+    The literal checks cannot see that "a golden retriever in a velvet robe
+    and a gold crown" is "my dog but make him look like a king" -- it repeats
+    neither "dog" nor "king". Refusing on that basis threw away exactly the
+    rewrites worth having, because the better the rephrasing the fewer of the
+    original words it repeats.
+
+    Costs one short answer. Wrong answers fail closed: anything that is not a
+    clear SAME leaves the rewrite refused and shown for approval, which is
+    where a literal failure sent it anyway.
+    """
+    try:
+        verdict = _write(
+            req_id, SAME_REQUEST_SYSTEM,
+            f"Original: {original}\nRewrite: {rewritten}",
+            max_tokens=6, temperature=0.0, repo=writer,
+            label="Checking the rewrite",
+        )
+    except Exception as exc:
+        log(req_id, f"could not check the rewrite: {exc}", "warn")
+        return False
+    return verdict.strip().upper().startswith("SAME")
+
+
 def _keeps_intent(original: str, rewritten: str) -> bool:
-    """A rewrite that loses the request is worse than no rewrite."""
+    """A rewrite that loses the request is worse than no rewrite.
+
+    Matched on four-character prefixes, which a typo defeats: "hosue" and
+    "house" share three. So a misspelled request whose rewrite spelled it
+    correctly read as a rewrite about something else, and the correction was
+    thrown away for being one -- the same bug the retention check had, in the
+    one place it had not been fixed.
+    """
     def words(text: str) -> set[str]:
         cleaned = "".join(c.lower() if c.isalnum() else " " for c in text)
-        return {w for w in cleaned.split() if len(w) > 2 and w not in _STOPWORDS}
+        return {w for w in cleaned.split()
+                if len(w) > 2 and w not in _STOPWORDS and w not in _NOT_A_SUBJECT}
 
     wanted = words(original)
     if not wanted:
         return True
     got = words(rewritten)
-    return any(any(w.startswith(g[:4]) or g.startswith(w[:4]) for g in got) for w in wanted)
+    return any(
+        any(w.startswith(g[:4]) or g.startswith(w[:4]) or _misspelling_of(w, g)
+            for g in got)
+        for w in wanted
+    )
 
 
 
@@ -4143,11 +4266,31 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             raw = _write(req_id, system,
                          (f"The picture shows: {seen}\n" if seen else "")
                          + f"Request: {user_prompt}",
+                         # Room to actually write. The default of 160 tokens is
+                         # about 120 words, so a fielded prompt was being cut
+                         # off mid-sentence and then judged on the fragment.
+                         max_tokens=420, temperature=0.6,
                          repo=req.get("writer"), label="Improving the prompt")
             improved, why = _clarified_with_reason(user_prompt, raw)
+            if improved is None and why in ("dropped", "lost_intent"):
+                # Ask before repairing. The string comparison could not place
+                # it, and the better the rephrasing the fewer of the original
+                # words it repeats -- so this is precisely where the literal
+                # checks reject the rewrites worth having. "my dog but make
+                # him look like a king" rendered as a golden retriever on a
+                # marble throne repeats neither "dog" nor "king".
+                attempt = _first_line(raw)
+                if attempt and _same_request(req_id, user_prompt, attempt,
+                                             req.get("writer")):
+                    log(req_id, f"{why} by the letter, same request by the "
+                                f"writer's own reading; keeping it")
+                    improved, why = attempt, "rephrased"
             if improved is None and why == "dropped":
-                # A paraphrase, most likely. Put the missing words back rather
-                # than discarding a good description over one of them.
+                # Only now, and it shows: repairing appends the missing word to
+                # the end of the sentence, so the prompt finishes "...atop a
+                # marble throne, his fur catching the light, king." It is worth
+                # having when the alternative is losing the request, and worth
+                # avoiding whenever the reading above can settle it instead.
                 repaired = _repair_dropped(user_prompt, _first_line(raw))
                 if repaired:
                     log(req_id, f"rewrite dropped a word; repaired to {repaired!r}")
@@ -4165,9 +4308,20 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                 raw = _write(req_id, system,
                              (f"The picture shows: {seen}\n" if seen else "")
                              + f"Request: {user_prompt}",
-                             temperature=0.15, repo=req.get("writer"),
+                             max_tokens=420, temperature=0.25,
+                             repo=req.get("writer"),
                              label="Improving the prompt")
                 improved, why = _clarified_with_reason(user_prompt, raw)
+            if improved is None and why in ("dropped", "lost_intent"):
+                # Again on the second draw. The first pass adjudicated and the
+                # retry did not, so a rewrite that was right both times was
+                # refused on the second -- the one that actually reaches the
+                # user.
+                attempt = _first_line(raw)
+                if attempt and _same_request(req_id, user_prompt, attempt,
+                                             req.get("writer")):
+                    log(req_id, "second draw reads as the same request; keeping it")
+                    improved, why = attempt, "rephrased"
             if improved is None:
                 if why == "unclear":
                     # A fact about the request: it names nothing that could be
@@ -4242,7 +4396,12 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
            # in. The retention check used to count a corrected word as a lost
            # one and throw the whole rewrite away, so an enhancer that could
            # not fix a typo was the entire behaviour anyone saw.
-           "corrected": _corrections(original_prompt, improved)}
+           "corrected": _corrections(original_prompt, improved),
+           # Words the rewrite no longer says. Reported rather than refused:
+           # a request cannot be put into good English without losing some of
+           # the words it was typed in, and the person approving the rewrite
+           # can see for themselves whether the one it dropped mattered.
+           "dropped": _dropped_words(original_prompt, improved)}
     if blind:
         out["note"] = ("Rewritten from your words only. Install the prompt "
                        "assistant (1.2 GiB) if you want it to look at the "

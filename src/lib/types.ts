@@ -345,6 +345,8 @@ export interface AssistResult {
   changed?: boolean;
   /** Significant words the rewrite introduced. */
   added?: string[];
+  /** Words the rewrite no longer says, having rephrased around them. */
+  dropped?: string[];
   /** Spellings the rewrite fixed, as [typed, written] pairs. */
   corrected?: [string, string][];
   /** Empty quality labels it stripped out. */

@@ -100,6 +100,14 @@ export default function PromptProposal({
           ))}
         </div>
       )}
+      {!!result.dropped?.length && (
+        <div className="chips">
+          <span className="label">no longer says</span>
+          {result.dropped.map((w) => (
+            <span className="chip drop" key={w}>{w}</span>
+          ))}
+        </div>
+      )}
       {!!result.removed?.length && (
         <div className="chips">
           <span className="label">removed</span>

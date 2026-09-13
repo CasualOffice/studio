@@ -1015,6 +1015,111 @@ class MemoryHeadroom(unittest.TestCase):
             self.assertLess(worker._free_ram_gib(), worker._MIN_FREE_GIB, str(e))
 
 
+class EnhancerMayRephrase(unittest.TestCase):
+    """Losing a word is reported; losing the subject is still refused.
+
+    Retention used to reject any rewrite that dropped a word, which made
+    rephrasing impossible: "me and him was walking in forrest" cannot become
+    good English without losing "him" and "was". It is shown for approval now,
+    with the changes named, so vetoing a good rewrite on behalf of someone who
+    can see it is the wrong call.
+    """
+
+    def test_a_modifier_may_be_rephrased_away(self):
+        out, why = worker._clarified_with_reason(
+            "a red car in the rain at night",
+            "A red sedan sits in rain at night, wet asphalt reflecting a lamp.")
+        self.assertIsNotNone(out)
+        self.assertEqual(why, "rephrased")
+        self.assertIn("car", worker._dropped_words(
+            "a red car in the rain at night",
+            "A red sedan sits in rain at night, wet asphalt reflecting a lamp."))
+
+    def test_the_subject_may_not_be(self):
+        # "a cat on a chair" keeps the chair, so any test asking whether *some*
+        # of the request survived passes it. The head word is checked by name.
+        for typed, rewrite in [
+            ("a cat on a chair", "A hat rests on a chair."),
+            ("a dog in the snow", "A log lies in the snow."),
+        ]:
+            out, why = worker._clarified_with_reason(typed, rewrite)
+            self.assertIsNone(out, f"{typed!r} -> {rewrite!r} was accepted")
+            self.assertEqual(why, "dropped")
+
+    def test_losing_half_the_request_is_refused(self):
+        out, _ = worker._clarified_with_reason(
+            "an old bicycle against a brick wall", "A bicycle leans in a yard.")
+        self.assertIsNone(out, "the wall was dropped and it passed")
+
+    def test_instruction_words_are_not_things_to_keep(self):
+        # "my dog but make him look like a king" is four content words and five
+        # of these; counting them as lost refused every rendering of it.
+        for w in ("but", "look", "like", "make", "turn", "into", "something"):
+            self.assertIn(w, worker._NOT_A_SUBJECT)
+
+    def test_a_placeholder_is_not_a_word_to_keep(self):
+        # "somthing scary in a old hosue" names a house. Treating the
+        # placeholder as a thing the rewrite had to repeat refused every
+        # rendering of it.
+        lost = worker._dropped_words(
+            "somthing scary in a old hosue",
+            "A derelict Victorian house looms in fog, boarded windows, door ajar.")
+        self.assertNotIn("somthing", lost)
+        self.assertNotIn("hosue", lost, "the spelling fix read as a loss")
+
+    def test_a_mood_word_rendered_as_detail_goes_to_the_adjudicator(self):
+        # "scary" becoming fog, boarding and an open door is the translation
+        # being asked for, and no string comparison can see it. The literal
+        # layer refuses, and op_assist asks the writer whether it is still the
+        # same request -- which is the only thing that can answer.
+        out, why = worker._clarified_with_reason(
+            "somthing scary in a old hosue",
+            "A derelict Victorian house looms in fog, boarded windows, door ajar.")
+        self.assertIsNone(out)
+        self.assertEqual(why, "dropped")
+        self.assertIn("SAME", worker.SAME_REQUEST_SYSTEM)
+        self.assertIn("DIFFERENT", worker.SAME_REQUEST_SYSTEM)
+
+    def test_a_misspelling_no_longer_reads_as_a_different_request(self):
+        # `_keeps_intent` matched four-character prefixes, and "hosue" and
+        # "house" share three -- so correcting the spelling looked like
+        # changing the subject.
+        self.assertTrue(worker._keeps_intent(
+            "a hosue at nite", "A house at night, one window lit."))
+
+    def test_a_list_of_objects_is_still_refused(self):
+        # A count cannot separate a described room from a list of its contents;
+        # an eighty-word direction legitimately names several things. Shape can:
+        # a list is almost entirely article-noun pairs.
+        out, why = worker._clarified_with_reason(
+            "a cat on a chair",
+            "a cat, a chair, a book, a window, a rug, a fireplace, a lamp, "
+            "a vase, a painting, a bookshelf, a cushion, a blanket, a clock.")
+        self.assertIsNone(out)
+        self.assertEqual(why, "rejected")
+
+    def test_a_long_direction_is_not(self):
+        out, why = worker._clarified_with_reason(
+            "a cat on a chair",
+            "A tabby cat with dense grey-brown fur lies curled on a worn oak "
+            "chair, one paw tucked under its chin, tail hanging over the seat "
+            "edge. Late afternoon sun comes low through a window to the left, "
+            "warming the chair's arm and throwing a long soft shadow across "
+            "the floorboards. Oil on canvas, visible brushwork.")
+        self.assertIsNotNone(out, f"a real direction was refused as {why}")
+
+    def test_the_instruction_asks_for_direction_not_paraphrase(self):
+        system = worker.SCENE_DIRECTION_SYSTEM
+        for field in ("SUBJECT", "COMPOSITION", "LIGHT", "STYLE"):
+            self.assertIn(field, system)
+        self.assertIn("rephrase freely", system)
+        self.assertIn("UNCLEAR", system)
+        # The rule that made it timid. It said "Never introduce a thing the
+        # request does not already contain", which is why a four-word request
+        # came back as thirteen words with no light and no framing.
+        self.assertNotIn("Never introduce a thing", system)
+
+
 class EnhancerFixesSpelling(unittest.TestCase):
     """The thing anyone means by "enhancer", which it could not do.
 
