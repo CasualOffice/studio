@@ -3215,6 +3215,67 @@ def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             "panels": n, "layout": layout}
 
 
+def op_bind_comic(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
+    """Bind the finished pages into one PDF, sealed like everything else.
+
+    A comic that leaves as a folder of PNGs is not a comic, it is a folder of
+    PNGs: the reading order lives in the file names and the first person to
+    sort them differently loses it. A PDF carries the order inside the file.
+
+    Written into a vault slot rather than straight to disk, because the vault
+    export command is the one sanctioned path for plaintext to leave. So this
+    seals a PDF the same way a page is sealed, and the library exports it the
+    same way it exports anything else.
+    """
+    from PIL import Image
+
+    slots = req.get("vault_slots") or []
+    if not slots:
+        raise ValueError("binding a comic needs a vault slot to write into")
+
+    staged = _stage_vault_inputs(req.get("vault_inputs") or [])
+    if not staged:
+        raise ValueError("there are no pages to bind")
+
+    try:
+        import io
+
+        import vaultcrypto as vc
+
+        pages: list[Any] = []
+        for path in staged:
+            # PDF has no alpha channel. Flattening onto white rather than
+            # letting PIL drop the channel keeps a page with a transparent
+            # gutter looking like the page that was composed.
+            img = Image.open(path)
+            if img.mode in ("RGBA", "LA", "P"):
+                img = img.convert("RGBA")
+                flat = Image.new("RGB", img.size, (255, 255, 255))
+                flat.paste(img, mask=img.split()[-1])
+                img = flat
+            else:
+                img = img.convert("RGB")
+            pages.append(img)
+
+        buf = io.BytesIO()
+        pages[0].save(buf, format="PDF", save_all=True,
+                      append_images=pages[1:],
+                      title=str(req.get("title") or "Picture board")[:200],
+                      # 72 dpi is PDF's own unit, so a page is its pixel size in
+                      # points and nothing is resampled on the way in.
+                      resolution=72.0)
+        data = buf.getvalue()
+        slot = slots[0]
+        vc.write_sealed(slot["path"], bytes.fromhex(slot["key"]),
+                        bytes.fromhex(slot["file_id"]), data)
+        log(req_id, f"bound {len(pages)} pages into {slot['id']} "
+                    f"({len(data)} bytes)")
+        return {"outputs": [slot["id"]], "sealed": True, "sizes": [len(data)],
+                "pages": len(pages)}
+    finally:
+        _discard_staged(staged)
+
+
 PLACE_SYSTEM = (
     "You are the background artist on a comic. You are told everything that "
     "happens in one scene, and you describe the place it happens in -- once, "
@@ -6139,6 +6200,7 @@ OPS = {
     "shotlist": op_shotlist,
     "enrich_panels": op_enrich_panels,
     "compose_board": op_compose_board,
+    "bind_comic": op_bind_comic,
     "unload_assistant": op_unload_assistant,
     "set_memory": op_set_memory,
 }

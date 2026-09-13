@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, errText, fmtBytes, fmtDuration, vaultUrl } from "../lib/api";
+import { api, errText, fmtBytes, fmtDuration, newJobId, vaultUrl } from "../lib/api";
 import type { ModelStatus, VaultItem } from "../lib/types";
 import { savedBoardIds } from "../lib/boardDraft";
 import { exportItem, exportMany } from "./shared";
@@ -39,6 +39,7 @@ export default function Gallery({
   const [confirmBoard, setConfirmBoard] = useState(false);
   /** Which comics kept their story, so the card knows what it can offer. */
   const [reopenable, setReopenable] = useState<Set<string>>(new Set());
+  const [binding, setBinding] = useState(false);
   useEffect(() => { void savedBoardIds().then(setReopenable); }, [items]);
 
   // Escape clears a selection the way it does everywhere else. This is
@@ -283,6 +284,33 @@ export default function Gallery({
                   onClick={() => void exportMany(openProject, notify)}>
             Export everything ({openProject.length})
           </button>
+          {pagesOf.length > 0 && (
+            // One file, with the reading order inside it. Exporting pages as
+            // separate PNGs leaves that order in the file names, and the first
+            // person to sort them differently loses it.
+            <button
+              className="btn small"
+              disabled={busy || binding}
+              onClick={async () => {
+                setBinding(true);
+                try {
+                  const id = await api.bindComic(
+                    newJobId(), pagesOf.map((p) => p.id),
+                    open.project_name || "Picture board",
+                    open.project ?? null, open.project_name ?? null);
+                  onChanged();
+                  notify("Bound into a PDF. It is in this comic, ready to export.");
+                  void id;
+                } catch (e) {
+                  notify(errText(e), true);
+                } finally {
+                  setBinding(false);
+                }
+              }}
+            >
+              {binding ? "Binding…" : "Bind as one PDF"}
+            </button>
+          )}
           {onOpenBoard && open.project && (
             // The pictures were always here; the comic was not. Its division,
             // its per-panel notes and the character it was drawn against lived

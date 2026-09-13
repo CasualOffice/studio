@@ -194,6 +194,7 @@ pub fn run() {
             commands::shot_list,
             commands::story_cast,
             commands::compose_board,
+            commands::bind_comic,
             commands::enrich_panels,
             commands::hf_token_status,
             commands::set_hf_token,

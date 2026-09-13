@@ -1094,6 +1094,81 @@ class EnhancerFixesSpelling(unittest.TestCase):
         self.assertIn("rainy", fixed)
 
 
+class ComicBindsIntoOneFile(unittest.TestCase):
+    """Pages become a PDF, sealed, with the reading order inside the file.
+
+    Exporting a comic as separate PNGs leaves its order in the file names, and
+    the first person to sort them differently loses it.
+    """
+
+    def _sealed_page(self, tmp, colour):
+        import io
+        import secrets
+        import uuid
+
+        from PIL import Image
+
+        import vaultcrypto as vc
+
+        fid, key = secrets.token_bytes(16), secrets.token_bytes(32)
+        sid = str(uuid.uuid4())
+        path = os.path.join(tmp, sid + ".bin")
+        buf = io.BytesIO()
+        Image.new("RGBA", (620, 876), colour).save(buf, format="PNG")
+        vc.write_sealed(path, key, fid, buf.getvalue())
+        return {"id": sid, "file_id": fid.hex(), "key": key.hex(),
+                "path": path, "ext": "png"}
+
+    def test_three_pages_make_a_three_page_pdf(self):
+        import secrets
+        import tempfile
+        import uuid
+
+        import vaultcrypto as vc
+
+        tmp = tempfile.mkdtemp()
+        pages = [self._sealed_page(tmp, c) for c in
+                 ((255, 255, 255, 255), (240, 240, 240, 255), (250, 250, 250, 255))]
+        fid, key = secrets.token_bytes(16), secrets.token_bytes(32)
+        slot = {"id": str(uuid.uuid4()), "file_id": fid.hex(), "key": key.hex(),
+                "path": os.path.join(tmp, "out.bin")}
+        result = worker.op_bind_comic(
+            "t", {"vault_slots": [slot], "vault_inputs": pages, "title": "Mira"})
+
+        self.assertEqual(result["pages"], 3)
+        self.assertTrue(result["sealed"])
+        pdf = vc.open_with_file_key(key, open(slot["path"], "rb").read())
+        self.assertTrue(pdf.startswith(b"%PDF-"), "not a PDF")
+        self.assertGreater(len(pdf), 1000)
+
+    def test_binding_nothing_is_refused(self):
+        with self.assertRaises(ValueError):
+            worker.op_bind_comic("t", {"vault_slots": [{"id": "x"}],
+                                       "vault_inputs": []})
+
+    def test_a_slot_is_required(self):
+        # Without one there is nowhere sealed to put it, and the alternative --
+        # writing the PDF straight to disk -- is plaintext leaving the vault by
+        # a path that is not the sanctioned one.
+        with self.assertRaises(ValueError):
+            worker.op_bind_comic("t", {"vault_slots": [], "vault_inputs": []})
+
+    def test_it_leaves_no_decrypted_pages_behind(self):
+        import secrets
+        import tempfile
+        import uuid
+
+        tmp = tempfile.mkdtemp()
+        pages = [self._sealed_page(tmp, (255, 255, 255, 255))]
+        fid, key = secrets.token_bytes(16), secrets.token_bytes(32)
+        slot = {"id": str(uuid.uuid4()), "file_id": fid.hex(), "key": key.hex(),
+                "path": os.path.join(tmp, "out2.bin")}
+        worker.op_bind_comic("t", {"vault_slots": [slot], "vault_inputs": pages,
+                                   "title": "Mira"})
+        left = [f for f in os.listdir(worker._stage_dir())]
+        self.assertEqual(left, [], f"plaintext left in the staging directory: {left}")
+
+
 class AdapterMustHoldAnAdapter(unittest.TestCase):
     """A "LoRA" with no adapter weights in it is refused, loudly.
 

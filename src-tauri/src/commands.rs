@@ -2028,6 +2028,102 @@ pub struct BoardPages {
     pub project_name: Option<String>,
 }
 
+/// Bind a board's finished pages into one PDF.
+///
+/// Sealed into the vault like everything else, then exported through
+/// `vault_export` -- the one sanctioned path for plaintext to leave. A comic
+/// that leaves as a folder of PNGs keeps its reading order in the file names,
+/// and the first person to sort them differently loses it.
+#[tauri::command]
+pub async fn bind_comic(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+    pages: Vec<String>,
+    title: String,
+    project: Option<String>,
+    project_name: Option<String>,
+) -> Result<String> {
+    let _job = state.job_gate.read().await;
+    state.require_unlocked()?;
+    if pages.is_empty() {
+        return Err(AppError::msg("compose the pages before binding them"));
+    }
+
+    let mut vault_inputs = Vec::new();
+    for id in &pages {
+        let (fid, k, p) = state.vault.input_key(id)?;
+        vault_inputs.push(json!({
+            "id": id, "file_id": hex(&fid), "key": hex(&k),
+            "path": p.to_string_lossy(), "ext": "png",
+        }));
+    }
+
+    let (slot_id, file_id, key, path) = state.vault.reserve_slot()?;
+    let started = std::time::Instant::now();
+    let engine = state.engine(&app).await?;
+    let result = match engine
+        .request(
+            &job_id,
+            "bind_comic",
+            json!({
+                "vault_inputs": vault_inputs,
+                "title": title,
+                "vault_slots": [json!({
+                    "id": slot_id, "file_id": hex(&file_id),
+                    "key": hex(&key), "path": path.to_string_lossy(),
+                })],
+            }),
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            state.vault.discard_slots(std::slice::from_ref(&slot_id));
+            return Err(e);
+        }
+    };
+
+    let bytes = result["sizes"][0].as_u64().unwrap_or(0);
+    if bytes == 0 {
+        state.vault.discard_slots(std::slice::from_ref(&slot_id));
+        return Err(AppError::msg("the engine bound an empty comic"));
+    }
+    // A name that is about to be a file name. The separators and the Windows
+    // reserved set become hyphens rather than being dropped, so two comics
+    // whose titles differ only there do not collide.
+    let safe: String = title
+        .chars()
+        .map(|c| match c {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+            other => other,
+        })
+        .collect();
+    state.vault.commit_slot(VaultItem {
+        id: slot_id.clone(),
+        content_hash: None,
+        kind: "document".into(),
+        name: format!("{}.pdf", safe.trim()),
+        mime: "application/pdf".into(),
+        bytes,
+        model: "composed".into(),
+        prompt: format!("{} pages", pages.len()),
+        seed: 0,
+        width: None,
+        height: None,
+        steps: None,
+        guidance: None,
+        inputs: pages.clone(),
+        created_at: chrono::Local::now().to_rfc3339(),
+        duration_ms: started.elapsed().as_millis() as u64,
+        project,
+        project_name,
+        // Last, so it sorts after every page it was made from.
+        project_index: Some(u32::MAX),
+    })?;
+    Ok(slot_id)
+}
+
 #[tauri::command]
 pub async fn compose_board(
     app: AppHandle,

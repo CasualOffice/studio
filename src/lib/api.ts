@@ -95,6 +95,15 @@ export const api = {
   enrichPanels: (jobId: string, panels: Panel[], style: string,
                  places: CastPlace[] = []) =>
     invoke<{ panels: Panel[] }>("enrich_panels", { jobId, panels, style, places }),
+  /**
+   * Bind composed pages into one PDF, sealed into the vault.
+   *
+   * Returns the new item's id. It is exported through the ordinary vault
+   * export, which is the only sanctioned way for plaintext to leave.
+   */
+  bindComic: (jobId: string, pages: string[], title: string,
+              project: string | null, projectName: string | null) =>
+    invoke<string>("bind_comic", { jobId, pages, title, project, projectName }),
   composeBoard: (
     jobId: string, panels: string[], captions: string[], shots: string[],
     dialogue: { speaker: string; text: string }[][], scenes: number[],
