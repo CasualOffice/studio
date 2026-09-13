@@ -3,7 +3,8 @@ import { api, errText, isCancelled, newJobId, onEngineProgress, vaultUrl } from 
 import type { Cast, EngineProgress, ModelStatus, Panel } from "../lib/types";
 import { ImageDrop, JobProgress } from "./shared";
 import { loadPref, savePref } from "../lib/prefs";
-import { loadBoardDraft, type BoardDraft, type Coverage } from "../lib/boardDraft";
+import { loadBoardDraft, loadSavedBoard, type BoardDraft, type Coverage }
+  from "../lib/boardDraft";
 import { CUSTOM_STYLE, STYLES, isKnownStyle, lockCustomStyle, lockStyle,
          panelPrompt, panelReferences, panelSeed, placeKey, placePrompt,
          placeSeed, reviveLock, sheetPrompt, styleHasMoved,
@@ -53,11 +54,14 @@ const PANEL_SIZES: [string, number][] = [
 type Stage = "idle" | "dividing" | "enriching" | "casting" | "building" | "drawing";
 
 export default function Storyboard({
-  models, notify, onProduced,
+  models, notify, onProduced, openProject, onOpened,
 }: {
   models: ModelStatus[];
   notify: (m: string, bad?: boolean) => void;
   onProduced: () => void;
+  /** A saved board the Vault asked to reopen, by project id. */
+  openProject?: string | null;
+  onOpened?: () => void;
 }) {
   const usable = useMemo(
     () => models.filter(
@@ -326,56 +330,66 @@ export default function Storyboard({
 
   // A Board contains the manuscript and creative history. Load it from the
   // encrypted vault, migrating old plaintext preferences exactly once.
+  /**
+   * Put a stored board on screen.
+   *
+   * Shared by the draft restored at launch and by a comic reopened from the
+   * Vault, so the two cannot drift into applying different subsets of it --
+   * the sort of difference that surfaces as a board that opens with its notes
+   * missing.
+   */
+  const applyDraft = (draft: Partial<BoardDraft>) => {
+        setStory(typeof draft.story === "string" ? draft.story : "");
+        setCast(draft.cast ?? null);
+        setProjectId(draft.projectId ?? null);
+        setCharacter(typeof draft.character === "string" ? draft.character : "");
+        setPanels(Array.isArray(draft.panels) ? draft.panels : null);
+        setSheet(typeof draft.sheet === "string" ? draft.sheet : null);
+        setDrawn(Array.isArray(draft.drawn) ? draft.drawn : []);
+        setRedraws(Array.isArray(draft.redraws) ? draft.redraws : []);
+        setNotes(draft.notes ?? {});
+        setPages(Array.isArray(draft.pages) ? draft.pages : []);
+        setOwnSheet(Array.isArray(draft.ownSheet) ? draft.ownSheet : []);
+        setPlaceSheets(draft.placeSheets ?? {});
+        setCoverage(draft.coverage ?? null);
+        // The style the board was drawn under wins over the remembered
+        // preset. A draft written before the lock existed has none, so it
+        // takes the preset it named -- which is the last moment that
+        // substitution is invisible, and the notice below is why it is not.
+        const locked = reviveLock(draft.style);
+        if (locked) {
+          setStyle(locked);
+          if (locked.id === CUSTOM_STYLE) setCustomWords(locked.words);
+          if (styleHasMoved(locked) && (draft.drawn ?? []).some(Boolean)) {
+            notify(
+              `This board is drawn in ${styleLabel(locked.id)} as it was when `
+              + "it was started. The preset has changed since, so a new board "
+              + "will not match it.",
+            );
+          }
+        } else {
+          // The raw remembered id, not `style.id` -- `lockStyle` has already
+          // substituted the first preset by the time it is state, so asking
+          // the state whether the id was known can only ever answer yes.
+          const remembered = loadPref("boardStyle", STYLES[0].id);
+          if (!isKnownStyle(remembered)) {
+            notify(
+              "This board was made in a style this build no longer has "
+              + `("${remembered}"), so it is now set to ${STYLES[0].label}. `
+              + "Anything already drawn was drawn in the old one.",
+              true,
+            );
+          }
+        }
+  };
+
   useEffect(() => {
     let live = true;
     void (async () => {
       try {
         const draft: Partial<BoardDraft> | null = await loadBoardDraft();
         if (!live) return;
-        if (draft) {
-          setStory(typeof draft.story === "string" ? draft.story : "");
-          setCast(draft.cast ?? null);
-          setProjectId(draft.projectId ?? null);
-          setCharacter(typeof draft.character === "string" ? draft.character : "");
-          setPanels(Array.isArray(draft.panels) ? draft.panels : null);
-          setSheet(typeof draft.sheet === "string" ? draft.sheet : null);
-          setDrawn(Array.isArray(draft.drawn) ? draft.drawn : []);
-          setRedraws(Array.isArray(draft.redraws) ? draft.redraws : []);
-          setNotes(draft.notes ?? {});
-          setPages(Array.isArray(draft.pages) ? draft.pages : []);
-          setOwnSheet(Array.isArray(draft.ownSheet) ? draft.ownSheet : []);
-          setPlaceSheets(draft.placeSheets ?? {});
-          setCoverage(draft.coverage ?? null);
-          // The style the board was drawn under wins over the remembered
-          // preset. A draft written before the lock existed has none, so it
-          // takes the preset it named -- which is the last moment that
-          // substitution is invisible, and the notice below is why it is not.
-          const locked = reviveLock(draft.style);
-          if (locked) {
-            setStyle(locked);
-            if (locked.id === CUSTOM_STYLE) setCustomWords(locked.words);
-            if (styleHasMoved(locked) && (draft.drawn ?? []).some(Boolean)) {
-              notify(
-                `This board is drawn in ${styleLabel(locked.id)} as it was when `
-                + "it was started. The preset has changed since, so a new board "
-                + "will not match it.",
-              );
-            }
-          } else {
-            // The raw remembered id, not `style.id` -- `lockStyle` has already
-            // substituted the first preset by the time it is state, so asking
-            // the state whether the id was known can only ever answer yes.
-            const remembered = loadPref("boardStyle", STYLES[0].id);
-            if (!isKnownStyle(remembered)) {
-              notify(
-                "This board was made in a style this build no longer has "
-                + `("${remembered}"), so it is now set to ${STYLES[0].label}. `
-                + "Anything already drawn was drawn in the old one.",
-                true,
-              );
-            }
-          }
-        }
+        if (draft) applyDraft(draft);
         // Arm the autosave only once the restore has actually succeeded. A
         // draft of `null` counts: that is a good read of a board nobody has
         // started yet, and a first-time user still needs saving to work.
@@ -410,12 +424,59 @@ export default function Storyboard({
       coverage,
     };
     const timeout = window.setTimeout(() => {
-      void api.boardStateSet(JSON.stringify(draft)).catch((e) =>
+      const body = JSON.stringify(draft);
+      void api.boardStateSet(body).catch((e) =>
         notify(`Could not save the encrypted Board draft: ${errText(e)}`, true));
+      // A second copy under this board's own id, so the comic survives the next
+      // story. The draft slot holds the board in front of you and nothing else:
+      // dividing a new story overwrote the division, the notes and the
+      // character binding of the last one, while its pictures sat in the vault
+      // with no way left to reach them.
+      if (projectId) {
+        void api.boardStateSet(body, `board-${projectId}`).catch(() => {
+          /* the live draft saved; the archive can wait for the next edit */
+        });
+      }
     }, 350);
     return () => window.clearTimeout(timeout);
   }, [draftLoaded, story, cast, projectId, style, character, panels, sheet, drawn,
       redraws, notes, pages, ownSheet, placeSheets, coverage, notify]);
+
+  /**
+   * Open a comic the Vault asked for.
+   *
+   * Waits for the launch restore, so a board opened from the library is not
+   * overwritten a moment later by the draft that was already on screen. The
+   * autosave then writes it into the draft slot as the board in front of you,
+   * which is what makes it the one you are working on.
+   */
+  useEffect(() => {
+    if (!openProject || !draftLoaded) return;
+    if (openProject === projectId) { onOpened?.(); return; }
+    let live = true;
+    void (async () => {
+      try {
+        const saved = await loadSavedBoard(openProject);
+        if (!live) return;
+        if (!saved) {
+          notify(
+            "That comic was made before boards were saved individually, so "
+            + "its panels are in the Vault but its story and notes are not.",
+            true,
+          );
+        } else {
+          applyDraft(saved);
+          notify("Opened in the Board.");
+        }
+      } catch (e) {
+        if (live) notify(`Could not open that board: ${errText(e)}`, true);
+      } finally {
+        if (live) onOpened?.();
+      }
+    })();
+    return () => { live = false; };
+  // Runs when the library names a different board, not on every render.
+  }, [openProject, draftLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // An armed reset is disarmed by anything else happening: pressing Escape,
   // or the board changing under it. A destructive button left loaded is how a

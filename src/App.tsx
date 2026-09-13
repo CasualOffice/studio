@@ -51,6 +51,13 @@ export default function App() {
    *  should not be met by the starter list every launch. */
   const [welcomed, setWelcomed] = useState(() => loadPref("welcomed", false));
   const [upscaleImage, setUpscaleImage] = useState<string[]>([]);
+  /**
+   * A comic the Vault asked to reopen, by project id.
+   *
+   * Owned here because the request crosses tabs: the card is in the Vault and
+   * the board it opens is in Board.
+   */
+  const [openBoard, setOpenBoard] = useState<string | null>(null);
 
   const notify = useCallback((msg: string, bad?: boolean) => setToast({ msg, bad }), []);
 
@@ -482,6 +489,8 @@ export default function App() {
               models={models}
               notify={notify}
               onProduced={refreshItems}
+              openProject={openBoard}
+              onOpened={() => setOpenBoard(null)}
             />
           </div>
           <div style={{ display: tab === "video" ? "block" : "none" }}>
@@ -514,6 +523,7 @@ export default function App() {
               send={send}
               models={models}
               onReuse={reuse}
+              onOpenBoard={(project) => { setOpenBoard(project); setTab("board"); }}
             />
           )}
           {tab === "activity" && <Activity notify={notify} />}

@@ -252,18 +252,62 @@ pub fn vault_list(state: State<'_, AppState>) -> Result<Vec<VaultItem>> {
 /// preference. Keep it in the encrypted index so locking the vault locks the
 /// manuscript, cast, notes and panel plan as well.
 #[tauri::command]
-pub fn board_state_get(state: State<'_, AppState>) -> Result<Option<String>> {
-    Ok(state.vault.get_state("board-draft")?)
+pub fn board_state_get(state: State<'_, AppState>, key: Option<String>) -> Result<Option<String>> {
+    Ok(state.vault.get_state(&board_key(key)?)?)
+}
+
+/// Which board this state belongs to.
+///
+/// `board-draft` is the one in front of you. Every comic that has been divided
+/// also keeps its own entry, `board-<project id>`, so a finished board can be
+/// opened again months later -- the pictures were always in the vault, but the
+/// division, the notes and the character binding lived only in the single
+/// draft slot and were overwritten by the next story.
+fn board_key(key: Option<String>) -> Result<String> {
+    let key = key.unwrap_or_else(|| "board-draft".into());
+    if key != "board-draft" && !key.starts_with("board-") {
+        return Err(AppError::msg("not a Board key"));
+    }
+    if key.len() > 64 || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Err(AppError::msg("not a Board key"));
+    }
+    Ok(key)
 }
 
 #[tauri::command]
-pub fn board_state_set(state: State<'_, AppState>, value: String) -> Result<()> {
+pub fn board_state_set(
+    state: State<'_, AppState>,
+    value: String,
+    key: Option<String>,
+) -> Result<()> {
     if value.len() > 2 * 1024 * 1024 {
         return Err(AppError::msg("the Board draft is unexpectedly large"));
     }
     serde_json::from_str::<serde_json::Value>(&value)
         .map_err(|e| AppError::msg(format!("the Board draft is not valid JSON: {e}")))?;
-    Ok(state.vault.set_state("board-draft", value)?)
+    Ok(state.vault.set_state(&board_key(key)?, value)?)
+}
+
+/// The project ids of every board that can be reopened.
+#[tauri::command]
+pub fn board_state_list(state: State<'_, AppState>) -> Result<Vec<String>> {
+    Ok(state
+        .vault
+        .state_keys()?
+        .into_iter()
+        .filter(|k| k.starts_with("board-") && k != "board-draft")
+        .map(|k| k["board-".len()..].to_string())
+        .collect())
+}
+
+/// Forget a saved board. The pictures it made stay in the vault.
+#[tauri::command]
+pub fn board_state_forget(state: State<'_, AppState>, key: String) -> Result<()> {
+    let key = board_key(Some(key))?;
+    if key == "board-draft" {
+        return Err(AppError::msg("that is the open board, not a saved one"));
+    }
+    Ok(state.vault.remove_state(&key)?)
 }
 
 #[tauri::command]
@@ -2242,4 +2286,40 @@ pub async fn set_hf_token(state: State<'_, AppState>, token: String) -> Result<(
     models::set_hf_token(&state.paths(), &token)?;
     state.stop_engine().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod board_key_tests {
+    use super::board_key;
+
+    #[test]
+    fn the_live_draft_is_the_default() {
+        assert_eq!(board_key(None).unwrap(), "board-draft");
+    }
+
+    #[test]
+    fn a_board_is_addressed_by_its_project_id() {
+        let id = "board-0f2a9c11-4b6e-4a0d-9f3e-2c7b8d5e1a44";
+        assert_eq!(board_key(Some(id.into())).unwrap(), id);
+    }
+
+    #[test]
+    fn nothing_outside_the_board_namespace_is_reachable() {
+        // The key names a slot in the encrypted index, so a caller must not be
+        // able to read or overwrite anything else that lives there.
+        for bad in [
+            "vault-dek",
+            "../board-draft",
+            "board-draft/../secrets",
+            "board-with spaces",
+            "board-with_underscore",
+        ] {
+            assert!(board_key(Some(bad.into())).is_err(), "{bad} was accepted");
+        }
+    }
+
+    #[test]
+    fn an_over_long_key_is_refused() {
+        assert!(board_key(Some(format!("board-{}", "a".repeat(60)))).is_err());
+    }
 }

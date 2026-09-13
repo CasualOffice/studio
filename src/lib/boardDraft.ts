@@ -92,3 +92,29 @@ export async function loadBoardDraft(): Promise<Partial<BoardDraft> | null> {
 export async function migrateBoardDraft(): Promise<void> {
   await loadBoardDraft();
 }
+
+/**
+ * A board saved under its own project id, ready to be worked on again.
+ *
+ * Returns null when that comic predates per-board saving, which is every board
+ * made before this existed: its pictures are in the vault and reachable, but
+ * the division and the notes were overwritten by whatever story came next and
+ * cannot be recovered.
+ */
+export async function loadSavedBoard(
+  projectId: string
+): Promise<Partial<BoardDraft> | null> {
+  const raw = await api.boardStateGet(`board-${projectId}`);
+  if (!raw) return null;
+  return JSON.parse(raw) as Partial<BoardDraft>;
+}
+
+/** Which comics in the vault can be opened in the Board again. */
+export async function savedBoardIds(): Promise<Set<string>> {
+  try {
+    return new Set(await api.boardStateList());
+  } catch {
+    // Not knowing is not an error: the card simply does not offer to open it.
+    return new Set();
+  }
+}

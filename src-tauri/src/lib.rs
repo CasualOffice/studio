@@ -170,6 +170,8 @@ pub fn run() {
             commands::vault_list,
             commands::board_state_get,
             commands::board_state_set,
+            commands::board_state_list,
+            commands::board_state_forget,
             commands::vault_repair,
             commands::vault_delete,
             commands::vault_export,

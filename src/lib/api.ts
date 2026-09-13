@@ -103,8 +103,21 @@ export const api = {
                         { jobId, board: { panels, captions, shots, dialogue,
                                           scenes, layout, project,
                                           project_name: projectName } }),
-  boardStateGet: () => invoke<string | null>("board_state_get"),
-  boardStateSet: (value: string) => invoke<void>("board_state_set", { value }),
+  /**
+   * Board state, encrypted in the vault.
+   *
+   * `key` is absent for the board in front of you and `board-<project id>` for
+   * a saved one. Every divided board keeps its own entry so a finished comic
+   * can be opened again -- its pictures were always in the vault, but the
+   * division, the notes and the character binding lived in one slot that the
+   * next story overwrote.
+   */
+  boardStateGet: (key?: string) => invoke<string | null>("board_state_get", { key }),
+  boardStateSet: (value: string, key?: string) =>
+    invoke<void>("board_state_set", { value, key }),
+  /** Project ids of every board that can be reopened. */
+  boardStateList: () => invoke<string[]>("board_state_list"),
+  boardStateForget: (key: string) => invoke<void>("board_state_forget", { key }),
   findOrphans: () => invoke<Orphans>("find_orphans"),
   sweepOrphans: () => invoke<number>("sweep_orphans"),
   hfTokenStatus: () =>

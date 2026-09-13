@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, errText, fmtBytes, fmtDuration, vaultUrl } from "../lib/api";
 import type { ModelStatus, VaultItem } from "../lib/types";
+import { savedBoardIds } from "../lib/boardDraft";
 import { exportItem, exportMany } from "./shared";
 import SendTo, { type Destination } from "./SendTo";
 
 export default function Gallery({
-  items, onChanged, notify, send, models, onReuse,
+  items, onChanged, notify, send, models, onReuse, onOpenBoard,
 }: {
   items: VaultItem[];
   onChanged: () => void;
@@ -15,6 +16,8 @@ export default function Gallery({
   models: ModelStatus[];
   /** Load this run's settings back into the tab that produced it. */
   onReuse?: (item: VaultItem, reuseSeed: boolean) => void;
+  /** Reopen a comic in the Board, by project id. */
+  onOpenBoard?: (project: string) => void;
 }) {
   const [open, setOpen] = useState<VaultItem | null>(null);
   const [query, setQuery] = useState("");
@@ -34,6 +37,9 @@ export default function Gallery({
   // reading "Really delete?", so the next click deleted without asking.
   const [confirmBulk, setConfirmBulk] = useState(false);
   const [confirmBoard, setConfirmBoard] = useState(false);
+  /** Which comics kept their story, so the card knows what it can offer. */
+  const [reopenable, setReopenable] = useState<Set<string>>(new Set());
+  useEffect(() => { void savedBoardIds().then(setReopenable); }, [items]);
 
   // Escape clears a selection the way it does everywhere else. This is
   // registered above the early returns because hooks cannot be conditional.
@@ -277,6 +283,22 @@ export default function Gallery({
                   onClick={() => void exportMany(openProject, notify)}>
             Export everything ({openProject.length})
           </button>
+          {onOpenBoard && open.project && (
+            // The pictures were always here; the comic was not. Its division,
+            // its per-panel notes and the character it was drawn against lived
+            // in one draft slot that the next story overwrote, so a finished
+            // board could be looked at and never worked on again.
+            <button
+              className="btn small primary"
+              disabled={busy || !reopenable.has(open.project)}
+              title={reopenable.has(open.project)
+                ? "Open this comic in the Board to redraw panels or add notes"
+                : "This comic predates per-board saving, so only its pictures were kept"}
+              onClick={() => onOpenBoard(open.project!)}
+            >
+              {reopenable.has(open.project) ? "Open in Board" : "Cannot reopen"}
+            </button>
+          )}
           {send && (
             <SendTo ids={openProject.filter((i) => i.mime.startsWith("image/")).map((i) => i.id)}
                     send={send} models={models} compact />

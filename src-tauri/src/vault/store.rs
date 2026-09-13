@@ -925,6 +925,28 @@ impl Vault {
         self.with_unlocked(|u| Ok(u.index.state.get(key).cloned()))
     }
 
+    /// Every application-state key currently stored.
+    ///
+    /// The Board keeps one entry per comic, so this is how the library finds
+    /// the boards it can reopen without decrypting each one to ask.
+    pub fn state_keys(&self) -> Result<Vec<String>, VaultError> {
+        self.with_unlocked(|u| {
+            let mut keys: Vec<String> = u.index.state.keys().cloned().collect();
+            keys.sort();
+            Ok(keys)
+        })
+    }
+
+    pub fn remove_state(&self, key: &str) -> Result<(), VaultError> {
+        let mut guard = write_guard!(self.inner);
+        let u = guard.as_mut().ok_or(VaultError::Locked)?;
+        let mut index = u.index.clone();
+        index.state.remove(key);
+        self.write_index(&u.dek, &index)?;
+        u.index = index;
+        Ok(())
+    }
+
     pub fn set_state(&self, key: &str, value: String) -> Result<(), VaultError> {
         if key.is_empty()
             || key.len() > 64
