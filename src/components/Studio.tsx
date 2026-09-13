@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, errDetail, errText, isCancelled, fmtDuration, newJobId, onEnginePreview, onEngineProgress, vaultUrl } from "../lib/api";
 import type { AssistResult, EngineProgress, ModelStatus, Recipe } from "../lib/types";
 import { autoPick, estimateSeconds, humanDuration, QUALITY_LABEL, SHAPES, stepsFor, type Quality } from "../lib/presets";
+import { editKindFor, isOutpaintFill, OUTPAINT_FILLS, parseOutpaintPadding, type EditKind } from "../lib/recipe";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
 import MaskCanvas from "./MaskCanvas";
 import SendTo, { type Destination } from "./SendTo";
@@ -74,7 +75,8 @@ export default function Studio({
   const setImages = onImagesChange ?? setLocalImages;
   const [strength, setStrength] = useState(0.6);
   // What kind of edit this is. Each maps to a different route in the engine.
-  type EditKind = "instruct" | "mask" | "expand" | "latent" | "adjust";
+  // The type lives in lib/recipe because reading a past run back into it is a
+  // lossy mapping worth testing on its own.
   const [editKind, setEditKind] = useState<EditKind>("instruct");
   const [maskBytes, setMaskBytes] = useState<Uint8Array | null>(null);
   const [pad, setPad] = useState({ top: 0, right: 25, bottom: 0, left: 25 });
@@ -135,6 +137,12 @@ export default function Studio({
 
   // Restore a past run's settings. Applied once, then cleared, so editing a
   // field afterwards is not undone by a re-render.
+  //
+  // Every field below is guarded on being present rather than merely truthy
+  // where the difference matters, because "the item does not record this" and
+  // "the item recorded this as off" are different facts and only the first one
+  // means "leave the control alone". Items made before any of this was
+  // recorded therefore restore exactly what they restored before.
   useEffect(() => {
     if (!recipe) return;
     setPrompt(recipe.prompt);
@@ -146,6 +154,32 @@ export default function Studio({
     }
     setRandomSeed(!recipe.reuseSeed);
     if (recipe.reuseSeed) setSeed(recipe.seed);
+
+    if (recipe.negativePrompt != null) setNegative(recipe.negativePrompt);
+    // Restored as recorded, including handles that are no longer installed.
+    // Dropping an uninstalled adapter would hand back a different picture
+    // under the same seed and call it a reproduction; failing loudly at the
+    // engine at least says which adapter is missing.
+    if (recipe.loras) setLoras(recipe.loras);
+
+    const kind = editKindFor(recipe.i2iMode, recipe.outpaintPadding);
+    if (kind) setEditKind(kind);
+    // Only latent runs record a strength at all -- the other routes send null
+    // -- so this never overwrites the slider for an instruct or expand recipe.
+    if (recipe.imageStrength != null) setStrength(recipe.imageStrength);
+
+    const padding = parseOutpaintPadding(recipe.outpaintPadding);
+    if (padding) setPad(padding);
+    // A fill this build no longer offers would leave the dropdown showing
+    // nothing at all, which reads as a broken control rather than an old one.
+    if (isOutpaintFill(recipe.outpaintFill)) setFill(recipe.outpaintFill);
+
+    // Reduced-memory mode is forced on for a model whose peak exceeds this
+    // Mac's ceiling, and a recipe made on a roomier machine must not switch
+    // that back off: the reproduction would simply run out of memory. Where
+    // the model does not need it, the recorded value wins.
+    if (recipe.lowRam != null && !model?.low_ram_may_help) setLowRam(recipe.lowRam);
+
     onRecipeUsed?.();
   }, [recipe]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -395,11 +429,13 @@ export default function Studio({
               </div>
               <div className="field" style={{ marginTop: 8 }}>
                 <label>How the new area starts out</label>
+                {/* Options come from the same list that decides whether a
+                    restored fill is still offered; two copies would drift and
+                    the drift would show up as an empty dropdown. */}
                 <select value={fill} onChange={(e) => setFill(e.target.value)}>
-                  <option value="auto">Choose for me</option>
-                  <option value="edge">Continue the edges outward</option>
-                  <option value="neutral">Flat colour, invent new subject matter</option>
-                  <option value="blur">Blurred copy of the original</option>
+                  {OUTPAINT_FILLS.map((f) => (
+                    <option key={f.id} value={f.id}>{f.label}</option>
+                  ))}
                 </select>
               </div>
             </div>

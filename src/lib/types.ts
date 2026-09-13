@@ -132,6 +132,32 @@ export interface VaultItem {
   project?: string | null;
   project_name?: string | null;
   project_index?: number | null;
+
+  /**
+   * How this was actually made.
+   *
+   * `model` is a display name and can be renamed out from under a saved run;
+   * everything below is the run itself, as the engine received it. All of it
+   * is optional because every item written before these were recorded is still
+   * in the vault and must still load -- a missing field means "not known",
+   * never "was off".
+   */
+  model_repo?: string | null;
+  quantize?: number | null;
+  negative_prompt?: string | null;
+  /** Adapter handles paired with the strengths they ran at. */
+  loras?: [string, number][];
+  /** The engine's two image-to-image routes: "edit" or "latent". */
+  i2i_mode?: string | null;
+  image_strength?: number | null;
+  /** CSS-like padding for outpainting, e.g. "10%,25%,10%,25%". */
+  outpaint_padding?: string | null;
+  outpaint_fill?: string | null;
+  low_ram?: boolean;
+  /** Which engine produced it, for runs the router could have sent elsewhere. */
+  engine?: string | null;
+  /** Working material that was never meant to outlive the run that made it. */
+  transient?: boolean;
 }
 
 export interface GenerateArgs {
@@ -223,7 +249,17 @@ export interface RepairReport {
 export interface Recipe {
   kind: string;
   prompt: string;
+  /** For display. A model can be renamed; this is only what it was called. */
   modelName: string;
+  /**
+   * The repository the picture actually came from.
+   *
+   * Names are not identity. Two installs can show the same name, and a custom
+   * model can be renamed after the fact, either of which would quietly
+   * reproduce a run against different weights. Optional: items recorded before
+   * the repo was stored have only the name.
+   */
+  modelRepo?: string | null;
   seed: number;
   width: number | null;
   height: number | null;
@@ -232,6 +268,24 @@ export interface Recipe {
   inputs: string[];
   /** Same seed reproduces it; a new seed varies it. */
   reuseSeed: boolean;
+
+  /**
+   * The rest of what decided the picture.
+   *
+   * These were dropped on the floor until now: the recipe carried ten fields
+   * and "use these settings again" then ran with whatever the controls
+   * happened to be showing, so a reproduction of a reinterpret came out as an
+   * instruct edit and a negative prompt vanished without a word. Undefined
+   * means the item predates the recording and the control must be left alone.
+   */
+  negativePrompt?: string | null;
+  loras?: [string, number][];
+  /** Engine-side: "edit" or "latent". See `editKindFor` for the UI mapping. */
+  i2iMode?: string | null;
+  imageStrength?: number | null;
+  outpaintPadding?: string | null;
+  outpaintFill?: string | null;
+  lowRam?: boolean;
 }
 
 export interface Lora {
