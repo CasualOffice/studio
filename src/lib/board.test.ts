@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CHAIN_LIMIT, CUSTOM_STYLE, isKnownStyle, lockCustomStyle, lockStyle,
+import { CHAIN_LIMIT, continuesFrom, CUSTOM_STYLE, isKnownStyle, lockCustomStyle, lockStyle,
          panelPrompt, previousPanel,
          panelReferences, panelSeed, placeKey, placePrompt, placeSeed,
          reviveLock, sheetPrompt, shotBackground, styleHasMoved, styleWords,
@@ -353,6 +353,54 @@ describe("continuity between panels", () => {
     // character's clothes reset between one panel and the next.
     const panels = [scene(1), scene(1), scene(1)];
     expect(previousPanel(1, panels, ["a", null, null])).toBe("a");
+  });
+
+  it("does not carry when the place changes inside a scene", () => {
+    // A scene number is too coarse. One scene moves between rooms, and a
+    // reference carrying the wrong room tells the drawer to continue it.
+    const a = panel({ scene: 1, setting: "a narrow hallway" });
+    const b = panel({ scene: 1, setting: "a bright kitchen" });
+    expect(continuesFrom(a, b)).toBe(false);
+    expect(previousPanel(1, [a, b], ["a", null])).toBeNull();
+  });
+
+  it("does not carry when the people change", () => {
+    const a = panel({ scene: 1, setting: "a hall", characters: ["Mira"] });
+    const b = panel({ scene: 1, setting: "a hall", characters: ["Tomas"] });
+    expect(continuesFrom(a, b)).toBe(false);
+  });
+
+  it("carries when the cast overlaps", () => {
+    const a = panel({ scene: 1, setting: "a hall", characters: ["Mira"] });
+    const b = panel({ scene: 1, setting: "a hall", characters: ["Mira", "Tomas"] });
+    expect(continuesFrom(a, b)).toBe(true);
+  });
+
+  it("does not lead a frame she is out of with one she is in", () => {
+    // The same failure the character sheet is already withheld to avoid:
+    // handing a panel a picture containing her puts her back in it.
+    const a = panel({ scene: 1, setting: "a hall", character_in_frame: true });
+    const b = panel({ scene: 1, setting: "a hall", character_in_frame: false });
+    expect(continuesFrom(a, b)).toBe(false);
+    expect(continuesFrom(b, a)).toBe(true);
+  });
+
+  it("does not carry when the light or weather moves", () => {
+    const a = panel({ scene: 1, setting: "a street", description: "morning sun" });
+    const b = panel({ scene: 1, setting: "a street", description: "night, raining" });
+    expect(continuesFrom(a, b)).toBe(false);
+  });
+
+  it("carries when the conditions agree", () => {
+    const a = panel({ scene: 1, setting: "a street", description: "night, wet road" });
+    const b = panel({ scene: 1, setting: "a street", description: "night, a lit window" });
+    expect(continuesFrom(a, b)).toBe(true);
+  });
+
+  it("carries when neither panel says anything about conditions", () => {
+    const a = panel({ scene: 1, setting: "a hall" });
+    const b = panel({ scene: 1, setting: "a hall" });
+    expect(continuesFrom(a, b)).toBe(true);
   });
 
   it("does not carry across a scene change", () => {

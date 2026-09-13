@@ -477,20 +477,78 @@ export function panelReferences(
 }
 
 /**
+ * Conditions in a frame that a later frame either shares or does not.
+ *
+ * A scene number is too coarse to decide continuity. One scene runs from
+ * morning to night, moves between rooms and changes who is present, and a
+ * reference carrying the wrong one of those is worse than no reference: the
+ * drawer is being shown a picture and told to continue it.
+ */
+const CONDITIONS = [
+  "dawn", "sunrise", "morning", "noon", "midday", "afternoon", "dusk",
+  "sunset", "evening", "night", "midnight",
+  "rain", "raining", "snow", "snowing", "fog", "foggy", "mist", "storm",
+  "sunny", "overcast", "cloudy", "dark", "candlelit", "firelight",
+];
+
+function conditionsOf(panel: Panel): Set<string> {
+  const text = `${panel.setting ?? ""} ${panel.description ?? ""} `
+    + `${panel.action ?? ""}`.toLowerCase();
+  return new Set(CONDITIONS.filter((c) => new RegExp(`\\b${c}\\b`).test(text)));
+}
+
+/**
+ * Whether `next` can be drawn as a continuation of `prev`.
+ *
+ * A reference is an instruction. Handing the drawer the last frame says "this,
+ * a moment later", and that is only true when the moment after really is the
+ * same place, the same people and the same conditions. Four ways it is not:
+ *
+ *   the place changed -- a different room inside one scene
+ *   the people changed -- a frame of someone else entirely
+ *   the character left the frame -- carrying a picture she is in puts her back
+ *     in, which is the failure the character sheet was already withheld to
+ *     avoid
+ *   the light or weather changed -- morning to night, dry to raining
+ */
+export function continuesFrom(prev: Panel, next: Panel): boolean {
+  if ((prev.scene ?? 1) !== (next.scene ?? 1)) return false;
+  if (placeKey(prev) !== placeKey(next)) return false;
+  // A frame she is in cannot lead a frame she must be out of.
+  if (prev.character_in_frame && !next.character_in_frame) return false;
+
+  const before = new Set((prev.characters ?? []).map((n) => n.toLowerCase()));
+  const after = new Set((next.characters ?? []).map((n) => n.toLowerCase()));
+  if (before.size > 0 && after.size > 0) {
+    const shared = [...after].some((n) => before.has(n));
+    if (!shared) return false;
+  }
+
+  const was = conditionsOf(prev);
+  const now = conditionsOf(next);
+  if (was.size > 0 && now.size > 0) {
+    const same = [...now].some((c) => was.has(c));
+    if (!same) return false;
+  }
+  return true;
+}
+
+/**
  * The panel to carry forward from, if any.
  *
- * Only within a scene, and only for a few panels before the chain is broken.
  * `drawn` holds one id per panel, null where nothing has been drawn yet, so a
  * redrawn panel in the middle of a batch is followed correctly rather than
- * skipped.
+ * skipped. The chain is broken at intervals so error cannot accumulate, and
+ * broken immediately whenever the conditions move.
  */
 export function previousPanel(
   index: number, panels: Panel[], drawn: (string | null)[]
 ): string | null {
-  const scene = panels[index]?.scene ?? 1;
+  const here = panels[index];
+  if (!here) return null;
   let back = 0;
   for (let i = index - 1; i >= 0 && back < CHAIN_LIMIT; i--, back++) {
-    if ((panels[i]?.scene ?? 1) !== scene) return null;
+    if (!continuesFrom(panels[i], here)) return null;
     if (drawn[i]) {
       // Re-anchor on the interval boundary: this panel is far enough from the
       // sheet that another copy of a copy is worth less than going back to it.
