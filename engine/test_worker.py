@@ -3138,5 +3138,72 @@ class StagingIsNotLeftBehind(unittest.TestCase):
                 "SIGTERM must remove the decrypted staging, not leave it for a day")
 
 
+
+class RightToLeftCaptions(unittest.TestCase):
+    """Arabic and Hebrew as they are read, not as they are stored.
+
+    Finding a font with the glyphs was only half of it. Pillow's wheel is built
+    without raqm -- `PIL.features.check("raqm")` is False, and so are harfbuzz
+    and fribidi -- so it draws right-to-left text in isolated forms and in
+    logical order: letters that do not join, running the wrong way. That is
+    arguably worse than the empty boxes it replaced, because it looks like text
+    somebody rendered rather than text somebody dropped.
+    """
+
+    ARABIC = "الفتاة تقف عند النافذة وتنظر الى المطر"
+    HEBREW = "הילדה עומדת ליד החלון ומביטה בגשם"
+    ENGLISH = "The rain had not stopped since Tuesday."
+
+    def _draw(self):
+        from PIL import Image, ImageDraw
+        return ImageDraw.Draw(Image.new("RGB", (8, 8)))
+
+    def test_english_is_returned_exactly_as_it_came(self):
+        # The whole path must be a no-op for left-to-right text, or every
+        # existing caption changes the day this ships.
+        self.assertEqual(worker._shape_for_display(self.ENGLISH), self.ENGLISH)
+        self.assertEqual(worker._shape_for_display(""), "")
+        self.assertFalse(worker._has_rtl(self.ENGLISH))
+
+    def test_arabic_is_joined_and_reordered(self):
+        self.assertTrue(worker._has_rtl(self.ARABIC))
+        shaped = worker._shape_for_display(self.ARABIC)
+        self.assertNotEqual(shaped, self.ARABIC)
+        # Presentation forms are what "joined" looks like in Unicode.
+        self.assertTrue(any(0xFE70 <= ord(c) <= 0xFEFF for c in shaped))
+
+    def test_hebrew_is_reordered(self):
+        self.assertTrue(worker._has_rtl(self.HEBREW))
+        self.assertNotEqual(worker._shape_for_display(self.HEBREW), self.HEBREW)
+
+    def test_wrapping_happens_in_logical_order(self):
+        # Shaping the whole caption and then breaking it puts words on the
+        # wrong lines: the break has to fall where the sentence breaks.
+        draw, font = self._draw(), worker._caption_font(19)
+        lines = worker._wrap(draw, self.ARABIC, font, 330)
+        self.assertGreater(len(lines), 1)
+        for line in lines:
+            self.assertLessEqual(draw.textlength(line, font=font), 330)
+
+    def test_a_missing_package_degrades_rather_than_crashes(self):
+        import builtins
+        real = builtins.__import__
+
+        def blocked(name, *a, **k):
+            if name.split(".")[0] in ("arabic_reshaper", "bidi"):
+                raise ModuleNotFoundError(name)
+            return real(name, *a, **k)
+
+        builtins.__import__ = blocked
+        try:
+            self.assertEqual(worker._shape_for_display(self.ARABIC), self.ARABIC)
+        finally:
+            builtins.__import__ = real
+
+    def test_the_packages_are_pinned(self):
+        lock = open(os.path.join(HERE, "requirements.lock"), encoding="utf-8").read()
+        self.assertIn("arabic-reshaper==", lock)
+        self.assertIn("python-bidi==", lock)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

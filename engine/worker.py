@@ -2686,17 +2686,66 @@ def _lettering(text: str, size: int, default: Any) -> Any:
     return default
 
 
+def _has_rtl(text: str) -> bool:
+    """Whether any character belongs to a right-to-left script."""
+    return any(
+        0x0590 <= ord(ch) <= 0x08FF or 0xFB1D <= ord(ch) <= 0xFDFF
+        or 0xFE70 <= ord(ch) <= 0xFEFF
+        for ch in text
+    )
+
+
+def _shape_for_display(text: str) -> str:
+    """Arabic and Hebrew as they are read, not as they are stored.
+
+    Finding the right font was only half of it. A face with the glyphs still
+    draws them in logical order and in isolated forms, so Arabic came out as
+    disconnected letters running the wrong way -- legible to nobody, and
+    arguably worse than the empty boxes it replaced, because it looks like
+    text that has been rendered rather than text that has been dropped.
+
+    Pillow does this itself when it is built against libraqm, and the wheel
+    this app installs is not: `PIL.features.check("raqm")` is False, and so are
+    harfbuzz and fribidi. So the two steps are done here instead --
+    `arabic_reshaper` picks the initial, medial and final forms, and
+    `python-bidi` reorders the run for display.
+
+    Left-to-right text is returned untouched, so nothing about an English
+    caption changes. If either package is missing the text is returned as it
+    came, which is the old behaviour rather than a crash.
+    """
+    if not text or not _has_rtl(text):
+        return text
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+    except Exception:
+        return text
+    try:
+        return get_display(arabic_reshaper.reshape(text))
+    except Exception:
+        return text
+
+
 def _wrap(draw: Any, text: str, font: Any, width: int) -> list[str]:
     """Break a caption to fit the panel, by measurement rather than by count.
 
     Character counts guess wrong on a proportional face, and a caption that
     overruns the panel is worse than one that wraps early.
+
+    Right-to-left text is wrapped in logical order and shaped per line. Doing
+    it the other way round -- shaping the whole caption and then breaking it --
+    puts the words on the wrong lines, because the break has to happen where
+    the sentence breaks, not where the display happens to run out.
     """
+    def measure(s: str) -> float:
+        return draw.textlength(_shape_for_display(s), font=font)
+
     lines: list[str] = []
     line = ""
     for word in text.split():
         trial = f"{line} {word}".strip()
-        if draw.textlength(trial, font=font) <= width:
+        if measure(trial) <= width:
             line = trial
             continue
         if line:
@@ -2712,16 +2761,17 @@ def _wrap(draw: Any, text: str, font: Any, width: int) -> list[str]:
         # off the page, cut mid-character at the margin. Nothing in the caption
         # path bounds what a person can paste, so the break is made here by
         # measurement, the same way every other break is.
-        while draw.textlength(word, font=font) > width and len(word) > 1:
+        while measure(word) > width and len(word) > 1:
             cut = len(word)
-            while cut > 1 and draw.textlength(word[:cut], font=font) > width:
+            while cut > 1 and measure(word[:cut]) > width:
                 cut -= 1
             lines.append(word[:cut])
             word = word[cut:]
         line = word
     if line:
         lines.append(line)
-    return lines
+    # Shaped last, per line, so each is drawn as it is read.
+    return [_shape_for_display(l) for l in lines]
 
 
 # What a page holds. Four to six panels is the working range in print comics;

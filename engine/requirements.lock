@@ -84,3 +84,10 @@ urllib3==2.7.0
 uvicorn==0.52.4
 wcwidth==0.8.3
 websockets==17.1
+
+# Arabic and Hebrew captions. Pillow's wheel is built without raqm, so it
+# draws right-to-left text in isolated forms and logical order -- letters
+# that do not join, running the wrong way. These do the two steps Pillow
+# would otherwise do: form selection, then reordering for display.
+arabic-reshaper==3.0.1
+python-bidi==0.6.11
