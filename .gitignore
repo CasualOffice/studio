@@ -15,3 +15,7 @@ __pycache__/
 
 # Logs and scratch
 *.log
+
+# Agent worktrees. Each is a real git worktree of this repo; committing one
+# records an embedded repository that no clone can resolve.
+.claude/worktrees/

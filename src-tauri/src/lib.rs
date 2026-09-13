@@ -168,6 +168,7 @@ pub fn run() {
             commands::vault_disable_biometry,
             commands::vault_change_passphrase,
             commands::vault_list,
+            commands::sweep_transient,
             commands::board_state_get,
             commands::board_state_set,
             commands::board_state_list,

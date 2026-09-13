@@ -167,7 +167,21 @@ pub fn vault_unlock_passphrase(
     passphrase: String,
 ) -> Result<VaultStatus> {
     state.vault.unlock_with_passphrase(&passphrase)?;
+    collect_working_material(&state);
     Ok(state.vault.status())
+}
+
+/// Sweep anything left behind by a run that did not finish cleanly.
+///
+/// The right moment is an unlock: the vault has just opened, so nothing is
+/// running and nothing can be mid-read. Failure is ignored on purpose -- a
+/// mask that will not delete is not a reason to refuse someone entry to their
+/// own vault.
+fn collect_working_material(state: &State<'_, AppState>) {
+    // Deliberately silent. There is no interface for this and no decision for
+    // anyone to make: either it collected something nobody wanted or there was
+    // nothing to collect.
+    let _ = sweep_transient(state.clone());
 }
 
 /// Triggers the system Touch ID prompt. Runs on a blocking thread because the
@@ -245,7 +259,41 @@ pub fn vault_repair(state: State<'_, AppState>) -> Result<RepairReport> {
 
 #[tauri::command]
 pub fn vault_list(state: State<'_, AppState>) -> Result<Vec<VaultItem>> {
-    Ok(state.vault.list()?)
+    // Working material never reaches the interface. Filtered here rather than
+    // in each view: the library, the "use one from your vault" picker and the
+    // Board's own sheet chooser all read this list, and every one of them had
+    // to know that `kind == "mask"` meant "not really an item".
+    Ok(state
+        .vault
+        .list()?
+        .into_iter()
+        .filter(|i| !i.transient)
+        .collect())
+}
+
+/// Remove working material nothing is using any more.
+///
+/// A mask is deleted by its caller when the run ends. That covers the ordinary
+/// path and not the one that matters: an engine abort or a kill leaves it in
+/// the index for ever, invisible, holding disk. This collects what was left
+/// behind, and is safe to call at any time because a mask is only ever read
+/// during the single run that created it.
+#[tauri::command]
+pub fn sweep_transient(state: State<'_, AppState>) -> Result<u64> {
+    state.require_unlocked()?;
+    let stale: Vec<VaultItem> = state
+        .vault
+        .list()?
+        .into_iter()
+        .filter(|i| i.transient)
+        .collect();
+    let mut freed = 0u64;
+    for item in stale {
+        if state.vault.delete(&item.id).is_ok() {
+            freed += item.bytes;
+        }
+    }
+    Ok(freed)
 }
 
 /// The in-progress Board is private project content, not an interface
@@ -348,6 +396,17 @@ pub fn vault_import_bytes(
     if !matches!(kind.as_str(), "mask" | "adjust") {
         return Err(AppError::msg("unsupported in-memory import kind"));
     }
+    // A painted mask is working material: it exists so the engine can read it
+    // during one run and means nothing afterwards. It goes through the vault
+    // because it is derived from a private picture and must not be the one
+    // thing written to disk in the clear -- but it is not something the person
+    // made, and the library should never show it.
+    //
+    // The caller deletes it in a `finally`, which covers the ordinary path and
+    // not the one that matters: if the app is killed or the engine aborts mid
+    // run, the mask stays in the index for ever with nothing left that knows
+    // what it was for. Marking it is what lets it be collected later.
+    let transient = kind == "mask";
     let safe_name = std::path::Path::new(&name)
         .file_name()
         .and_then(|n| n.to_str())
@@ -368,6 +427,7 @@ pub fn vault_import_bytes(
         height: None,
         steps: None,
         guidance: None,
+        transient,
         inputs: vec![],
         created_at: chrono::Local::now().to_rfc3339(),
         duration_ms: 0,
@@ -2456,5 +2516,53 @@ mod board_key_tests {
     #[test]
     fn an_over_long_key_is_refused() {
         assert!(board_key(Some(format!("board-{}", "a".repeat(60)))).is_err());
+    }
+}
+
+#[cfg(test)]
+mod transient_tests {
+    use crate::vault::VaultItem;
+
+    /// Working material must never reach the library.
+    ///
+    /// Masks went through the vault because they are derived from a private
+    /// picture and must not be the one thing written in the clear, and each
+    /// view then had to know that `kind == "mask"` meant "not really an item".
+    /// Three of them did. A fourth would have forgotten.
+    #[test]
+    fn the_filter_is_on_the_flag_not_the_kind() {
+        let items = [
+            VaultItem {
+                id: "a".into(),
+                kind: "mask".into(),
+                transient: true,
+                ..Default::default()
+            },
+            VaultItem {
+                id: "b".into(),
+                kind: "generate".into(),
+                ..Default::default()
+            },
+            VaultItem {
+                // An adjusted picture is something the person made, not
+                // working material, and stays in the library.
+                id: "c".into(),
+                kind: "adjust".into(),
+                ..Default::default()
+            },
+        ];
+        let shown: Vec<&str> = items
+            .iter()
+            .filter(|i| !i.transient)
+            .map(|i| i.id.as_str())
+            .collect();
+        assert_eq!(shown, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn a_default_item_is_not_transient() {
+        // Every index written before the flag existed loads with it unset, and
+        // must keep showing everything it always showed.
+        assert!(!VaultItem::default().transient);
     }
 }
