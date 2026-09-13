@@ -255,6 +255,32 @@ export default function App() {
     };
   }, [ready, notify]);
 
+  // Above every early return, because hooks cannot be conditional. This sat
+  // below them: while setup and the vault were still loading, the component
+  // returned before reaching it, so the first render ran one fewer hook than
+  // the next -- and React tore the tree down with "rendered more hooks than
+  // during the previous render". On launch, every time.
+  /**
+   * What the library holds, counted the way it is shown.
+   *
+   * This was `items.length` -- every row in the vault. The Vault groups a
+   * board into one card, so a person who had just composed a twelve-panel
+   * board over two scenes saw "Composed 2 pages" and then a badge reading 17:
+   * the cast sheet, two room sheets, twelve panels and two pages, counted as
+   * though they were seventeen separate things they had made. They made one
+   * comic. Masks are working data and are not in the library at all.
+   */
+  const vaultCount = useMemo(() => {
+    const loose = items.filter((i) => i.kind !== "mask");
+    const projects = new Set<string>();
+    let singles = 0;
+    for (const item of loose) {
+      if (item.project) projects.add(item.project);
+      else singles++;
+    }
+    return projects.size + singles;
+  }, [items]);
+
   if (!setup || !vault) {
     return <div className="empty-state" style={{ paddingTop: 160 }}>Loading…</div>;
   }
@@ -288,26 +314,6 @@ export default function App() {
   }
 
   const installedCount = models.filter((m) => m.installed).length;
-  /**
-   * What the library holds, counted the way it is shown.
-   *
-   * This was `items.length` -- every row in the vault. The Vault groups a
-   * board into one card, so a person who had just composed a twelve-panel
-   * board over two scenes saw "Composed 2 pages" and then a badge reading 17:
-   * the cast sheet, two room sheets, twelve panels and two pages, counted as
-   * though they were seventeen separate things they had made. They made one
-   * comic. Masks are working data and are not in the library at all.
-   */
-  const vaultCount = useMemo(() => {
-    const loose = items.filter((i) => i.kind !== "mask");
-    const projects = new Set<string>();
-    let singles = 0;
-    for (const item of loose) {
-      if (item.project) projects.add(item.project);
-      else singles++;
-    }
-    return projects.size + singles;
-  }, [items]);
 
   // Nothing installed means no tab can do anything, so the first screen asks
   // one question instead of presenting twenty-six models and a memory budget.
