@@ -423,18 +423,43 @@ export function placePrompt(style: StyleLock, place: string): string {
 }
 
 /**
+ * How often a panel is re-anchored to the character sheet alone.
+ *
+ * Chaining each panel to the one before it carries continuity forward, and
+ * carries error forward with it: every generation is a lossy copy, so by the
+ * tenth panel the character is ten copies from the sheet that defined her.
+ * The sheet is the fixed point and cannot drift, so the chain is broken at
+ * intervals and re-anchored to it.
+ */
+export const CHAIN_LIMIT = 4;
+
+/**
  * Which reference images a panel is drawn against.
  *
- * The character sheet holds the person; the location sheet holds the room.
- * Verified: passing both keeps consecutive panels in the same room rather
- * than a similar one. A panel the character is not in gets the room only --
- * handing it her sheet is what drew her into shots she does not appear in.
+ * Three anchors, in falling order of what they cost to lose:
+ *
+ *   the character sheet, which holds who this is and never drifts
+ *   the previous panel, which holds what the last moment looked like
+ *   the location sheet, which holds the room
+ *
+ * The previous panel is the continuity that was missing: within a scene it
+ * carries the time of day, the weather, the state of the clothes and where
+ * the light is coming from -- none of which the sheet or the room knows, and
+ * all of which reset between panels without it. It is passed only inside a
+ * scene, because the panel before a scene change is the wrong room.
+ *
+ * Order matters beyond taste: most models in the catalogue take exactly one
+ * reference, so this list is trimmed to `budget` and the first entry is the
+ * one that survives. Identity wins, because a character who changes face
+ * between panels is the failure everyone sees first.
  */
 export function panelReferences(
-  panel: Panel, sheet: string | null, place: string | null
+  panel: Panel, sheet: string | null, place: string | null,
+  previous: string | null = null, budget = 3
 ): string[] {
   const refs: string[] = [];
   if (panel.character_in_frame && sheet) refs.push(sheet);
+  if (previous) refs.push(previous);
   // No room for a close-up. At that distance the room is not in frame, and
   // handing the drawer a picture of it asks for two things at once: it pulls
   // the shot wider to fit the furniture in, which is the opposite of what a
@@ -448,5 +473,29 @@ export function panelReferences(
   // one failure this function exists to prevent. A panel with no reference is
   // drawn from its prompt instead; the style words are in the prompt, so the
   // board still holds together.
-  return refs;
+  return refs.slice(0, Math.max(1, budget));
+}
+
+/**
+ * The panel to carry forward from, if any.
+ *
+ * Only within a scene, and only for a few panels before the chain is broken.
+ * `drawn` holds one id per panel, null where nothing has been drawn yet, so a
+ * redrawn panel in the middle of a batch is followed correctly rather than
+ * skipped.
+ */
+export function previousPanel(
+  index: number, panels: Panel[], drawn: (string | null)[]
+): string | null {
+  const scene = panels[index]?.scene ?? 1;
+  let back = 0;
+  for (let i = index - 1; i >= 0 && back < CHAIN_LIMIT; i--, back++) {
+    if ((panels[i]?.scene ?? 1) !== scene) return null;
+    if (drawn[i]) {
+      // Re-anchor on the interval boundary: this panel is far enough from the
+      // sheet that another copy of a copy is worth less than going back to it.
+      return index % CHAIN_LIMIT === 0 ? null : drawn[i];
+    }
+  }
+  return null;
 }

@@ -7,7 +7,7 @@ import { loadBoardDraft, loadSavedBoard, type BoardDraft, type Coverage }
   from "../lib/boardDraft";
 import { CUSTOM_STYLE, STYLES, isKnownStyle, lockCustomStyle, lockStyle,
          panelPrompt, panelReferences, panelSeed, placeKey, placePrompt,
-         placeSeed, reviveLock, sheetPrompt, styleHasMoved,
+         placeSeed, previousPanel, reviveLock, sheetPrompt, styleHasMoved,
          styleLabel } from "../lib/board";
 import type { StyleLock } from "../lib/board";
 
@@ -123,6 +123,16 @@ export default function Storyboard({
   const [panels, setPanels] = useState<Panel[] | null>(null);
   const [sheet, setSheet] = useState<string | null>(null);
   const [drawn, setDrawn] = useState<(string | null)[]>([]);
+  /**
+   * The same list, readable inside a running batch.
+   *
+   * Panels are drawn in a loop and each one asks what the panel before it
+   * looked like. React state does not update until the loop yields, so every
+   * panel in a batch would see the list as it was when the batch started and
+   * the continuity reference would always be missing.
+   */
+  const drawnRef = useRef<(string | null)[]>([]);
+  useEffect(() => { drawnRef.current = drawn; }, [drawn]);
   /** The distinct scenes the panels fall into, in order. */
   const scenes = useMemo(() => {
     const seen: number[] = [];
@@ -905,8 +915,14 @@ export default function Storyboard({
     const id = newJobId();
     setJobId(id);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
-    const refs = panelReferences(panels[i], sheetId,
-                                 places[placeKey(panels[i])] ?? null);
+    // What the last moment looked like, when there is one in this scene. The
+    // board had no continuity at all: every panel was drawn from the sheet and
+    // the room, so the light, the weather and the state of the character's
+    // clothes reset between one panel and the next inside a single scene.
+    const refs = panelReferences(
+      panels[i], sheetId, places[placeKey(panels[i])] ?? null,
+      previousPanel(i, panels, drawnRef.current),
+      model.max_edit_images || 1);
     try {
       const params = {
         job_id: id, model_id: model.id,
@@ -940,6 +956,13 @@ export default function Storyboard({
         ? await api.editImage(params)
         : await api.generate(params);
       setDrawn((d) => { const n = [...d]; n[i] = res[0] ?? null; return n; });
+      // Immediately, not on the next render: the next panel in this batch asks
+      // for it before React has committed the state above.
+      drawnRef.current = (() => {
+        const n = [...drawnRef.current];
+        n[i] = res[0] ?? null;
+        return n;
+      })();
       // A composed page is only as current as the panels in it, so any panel
       // arriving retires the pages. `edit` already did this and `redraw` did
       // not, which left the one hole: correcting a frame and drawing it again
@@ -1704,7 +1727,14 @@ export default function Storyboard({
               </button>
             )}
             {busy && <button className="btn small" onClick={cancel}>Cancel</button>}
-            {!busy && remaining === 0 && drawn.some(Boolean) && (
+            {/* Available from the first drawn panel, not the last.
+                `compose` has always worked on whatever is drawn -- it filters
+                to the panels that have a picture -- and this gate was the only
+                thing insisting on a finished board. A board is twenty minutes
+                to an hour, and seeing the first page laid out is how you find
+                out the style is wrong while it still costs two panels to fix
+                rather than twelve. */}
+            {!busy && drawn.some(Boolean) && (
               <>
                 <select value={layout} style={{ width: "auto", fontSize: 11, padding: "2px 6px" }}
                         onChange={(e) => setLayout(e.target.value)}>
@@ -1713,7 +1743,9 @@ export default function Storyboard({
                 </select>
                 <button className="btn small" disabled={composing}
                         onClick={() => void compose()}>
-                  {composing ? "Composing…" : "Make a page"}
+                  {composing ? "Composing…"
+                    : remaining === 0 ? "Make a page"
+                    : `Page from the ${drawnCount} drawn`}
                 </button>
               </>
             )}

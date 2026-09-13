@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { CUSTOM_STYLE, isKnownStyle, lockCustomStyle, lockStyle, panelPrompt,
+import { CHAIN_LIMIT, CUSTOM_STYLE, isKnownStyle, lockCustomStyle, lockStyle,
+         panelPrompt, previousPanel,
          panelReferences, panelSeed, placeKey, placePrompt, placeSeed,
          reviveLock, sheetPrompt, shotBackground, styleHasMoved, styleWords,
          STYLES } from "./board";
@@ -340,6 +341,56 @@ describe("sheetPrompt", () => {
   it("counts a larger cast correctly", () => {
     const four = sheetPrompt(INK, "A: a\nB: b\nC: c\nD: d");
     expect(four).toContain("four people");
+  });
+});
+
+describe("continuity between panels", () => {
+  const scene = (n: number): Panel => panel({ scene: n });
+
+  it("carries the previous panel forward inside a scene", () => {
+    // The board had no continuity at all: every panel was drawn from the
+    // sheet and the room, so the light, the weather and the state of the
+    // character's clothes reset between one panel and the next.
+    const panels = [scene(1), scene(1), scene(1)];
+    expect(previousPanel(1, panels, ["a", null, null])).toBe("a");
+  });
+
+  it("does not carry across a scene change", () => {
+    // The panel before a scene change is the wrong room.
+    const panels = [scene(1), scene(2)];
+    expect(previousPanel(1, panels, ["a", null])).toBeNull();
+  });
+
+  it("re-anchors to the sheet at the chain limit", () => {
+    // Every generation is a lossy copy. Chained without limit, the character
+    // is N copies from the sheet that defined her by panel N.
+    const panels = Array.from({ length: 9 }, () => scene(1));
+    const drawn = panels.map((_, i) => `p${i}`);
+    expect(previousPanel(CHAIN_LIMIT, panels, drawn)).toBeNull();
+    expect(previousPanel(CHAIN_LIMIT + 1, panels, drawn)).toBe(`p${CHAIN_LIMIT}`);
+  });
+
+  it("skips a panel that has not been drawn", () => {
+    const panels = [scene(1), scene(1), scene(1)];
+    expect(previousPanel(2, panels, ["a", null, null])).toBe("a");
+  });
+
+  it("identity wins when only one reference fits", () => {
+    // Most models in the catalogue take exactly one. A character whose face
+    // changes between panels is the failure everyone sees first.
+    const refs = panelReferences(panel(), "sheet", "room", "previous", 1);
+    expect(refs).toEqual(["sheet"]);
+  });
+
+  it("orders identity, then continuity, then the room", () => {
+    const refs = panelReferences(panel(), "sheet", "room", "previous", 3);
+    expect(refs).toEqual(["sheet", "previous", "room"]);
+  });
+
+  it("gives a panel without the character its continuity instead", () => {
+    const refs = panelReferences(
+      panel({ character_in_frame: false }), "sheet", "room", "previous", 1);
+    expect(refs).toEqual(["previous"]);
   });
 });
 
