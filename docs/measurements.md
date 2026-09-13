@@ -284,3 +284,68 @@ The character holds. Drawn against a 512 sheet, a wide shot and a close-up
 both came back with the same black bob, red scarf and grey tee, in the same
 style, with the shot type respected -- which is the claim the board rests on
 and had not been checked end to end before.
+
+## Image models, measured across four canvas sizes
+
+Twelve runs, one process each, low-RAM on so the text encoder is released after
+encoding. Same prompt and seed throughout. Every output was opened and looked
+at: all twelve are real photographs of the prompt, not noise. Two runs were
+repeated and reproduced to the byte.
+
+| model | 512 | 640 | 768 | 896 |
+|---|---|---|---|---|
+| FLUX.2 Klein 4B q8 | 9.39 G / 24s | 10.70 G / 31s | 12.30 G / 44s | 14.23 G / 81s |
+| FLUX.2 Klein 9B q4 | 10.28 G / 50s | 11.59 G / 82s | 13.19 G / 116s | 15.12 G / 148s |
+| Z-Image Turbo q8 | 11.99 G / 38s | 12.68 G / 49s | 13.80 G / 74s | 15.18 G / 122s |
+
+**Nothing crashed.** Two predictions of an out-of-memory at 896 were wrong, and
+so was one at 768. Klein 9B reached 15.12 GiB and Z-Image 15.18 GiB on a 16 GB
+machine and both produced clean pictures: Metal did not fail, macOS paged.
+
+**The real failure is not a crash, it is a stall.** Z-Image at 640, started
+immediately after its download with ~2.9 GB of swap already in use, completed
+**zero of four steps in nine minutes**. From a clean start the same run took 49
+seconds. Above roughly 13 GiB these jobs swap-thrash into uselessness rather
+than dying, which is the same condition that starves the machine when the app
+is also holding memory. **Treat 13 GiB as the ceiling, not the 15 the runs
+technically survived.**
+
+### The scaling law, corrected
+
+Subtracting the resident floor -- transformer plus VAE, the text encoder having
+been released -- isolates the activation cost:
+
+    Klein 9B q4    5.37  6.68  8.28  10.21
+    Klein 4B q8    5.40  6.71  8.31  10.24
+    Z-Image q8     5.73  6.42  7.54   8.92
+
+Klein 4B q8 is Klein 9B q4 plus 0.03 GiB at every size. Two different parameter
+counts and two different quantisations land on one activation curve, which
+confirms the floor decomposition independently: activations depend on the
+architecture and not on how large or how quantised the weights are.
+
+    Klein:    peak GiB = floor + 3.04 + 8.95 x megapixels
+    Z-Image:  peak GiB = floor + 3.81 + 6.36 x megapixels
+
+The earlier fit had the slope right and the constant wrong -- 1.79 against a
+measured 3.04 -- which is why it under-predicted by a flat 1.2 GiB across both
+Klein models at all four sizes. Maximum residual on the corrected Klein fit is
+0.02 GiB over eight points.
+
+Z-Image is a different machine, not a different constant: its activations grow
+about 30% slower per megapixel but start 0.8 GiB higher. That crossover is the
+whole story -- it is the worst of the three at 512 and merely tied at 896.
+
+### Verdict
+
+**Klein 4B q8, at 768.** Cheapest in memory at every size, two to three times
+faster than Klein 9B, and its pictures are good. 12.30 GiB at 768 is the
+comfortable maximum; 896 works at 14.23 but is in swap territory.
+
+Klein 9B q4 buys visibly richer scene detail -- it renders the "cluttered dock"
+the prompt asks for, where Z-Image gives a clean centred portrait against a
+blurred harbour -- for +0.9 GiB and two to three times the wall time.
+
+Z-Image Turbo q8 is not worth its disk here. Largest download of the three, and
+its flatter slope never pays off: at 512 it costs more than Klein 9B needs at
+640, and at 896 it is no better. No canvas size makes it the right choice.
