@@ -51,6 +51,7 @@ fn main() {
         project: None,
         project_name: None,
         project_index: None,
+        ..Default::default()
     };
 
     let first = vault.put(b"identical bytes", item("a.png")).unwrap();

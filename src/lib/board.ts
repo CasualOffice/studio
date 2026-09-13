@@ -460,13 +460,31 @@ export function panelReferences(
   const refs: string[] = [];
   if (panel.character_in_frame && sheet) refs.push(sheet);
   if (previous) refs.push(previous);
-  // No room for a close-up. At that distance the room is not in frame, and
-  // handing the drawer a picture of it asks for two things at once: it pulls
-  // the shot wider to fit the furniture in, which is the opposite of what a
-  // close-up is for. The same reasoning as withholding the character sheet
-  // from a panel she is not in -- a reference is an instruction, and an
-  // instruction for something outside the frame fights the frame.
-  if (place && panel.shot !== "close-up") refs.push(place);
+  // The room picture goes to the frames that are about the room.
+  //
+  // Handing it to a panel with somebody in it does not place them in the room;
+  // it composites the room's most salient object onto them. Measured, same
+  // seed, same prompt, one reference changed: with the kitchen sheet attached,
+  // the wooden window frame was painted across Mira's face in one panel and
+  // across Jonas's in the next -- a window worn like a mask. Without it, both
+  // came back as ordinary panels, faces visible, and the kitchen still right:
+  // green walls, the dark counter, the sugar tin, the letter face up. The room
+  // survives because it is in the brief, which is built from the story's own
+  // words, and prose cannot be composited onto a face.
+  //
+  // It is also cheaper. One reference instead of two took 406s against 504s,
+  // and 353s against 540s, on the same two panels.
+  //
+  // So the room reference is for establishing frames -- the ones with nobody
+  // in them, where the room IS the subject. A reference is an instruction, and
+  // an instruction to draw the room competes with the instruction to draw the
+  // person.
+  // And still not for a close-up, for the older reason that has not changed:
+  // at that distance the room is not in frame at all, so a picture of it pulls
+  // the shot wider to fit the furniture in.
+  if (place && !panel.character_in_frame && panel.shot !== "close-up") {
+    refs.push(place);
+  }
   // Nothing, when there is nothing that belongs. This used to fall back to the
   // character sheet so the drawer always had an image to work from, which put
   // her in every panel she is not in whenever the room failed to draw -- the

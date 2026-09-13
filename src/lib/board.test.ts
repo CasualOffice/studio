@@ -430,9 +430,11 @@ describe("continuity between panels", () => {
     expect(refs).toEqual(["sheet"]);
   });
 
-  it("orders identity, then continuity, then the room", () => {
+  it("orders identity, then continuity, and holds the room back", () => {
+    // The room picture is not handed to a frame with somebody in it -- see
+    // the A/B in panelReferences. Identity and continuity still lead.
     const refs = panelReferences(panel(), "sheet", "room", "previous", 3);
-    expect(refs).toEqual(["sheet", "previous", "room"]);
+    expect(refs).toEqual(["sheet", "previous"]);
   });
 
   it("gives a panel without the character its continuity instead", () => {
@@ -443,10 +445,16 @@ describe("continuity between panels", () => {
 });
 
 describe("panelReferences", () => {
-  it("hands the drawer both the character and the room", () => {
-    // Verified against the model: two references keep consecutive panels in
-    // the same room rather than a similar one.
-    expect(panelReferences(panel(), "sheet", "room")).toEqual(["sheet", "room"]);
+  it("hands a frame with somebody in it her sheet, and not the room", () => {
+    // This asserted both references, on a measurement that was real but only
+    // half the question: two references do keep consecutive panels in the same
+    // room, and nobody checked what the room picture did to the person in
+    // front of it. Measured again, same seed, same prompt, one reference
+    // changed: with the kitchen attached the window frame was painted across
+    // Mira's face, and across Jonas's in the next panel. Without it both came
+    // back as ordinary panels -- and the kitchen was still right, because the
+    // room is in the brief and prose cannot be composited onto a face.
+    expect(panelReferences(panel(), "sheet", "room")).toEqual(["sheet"]);
   });
 
   it("leaves the character out of a panel she is not in", () => {
@@ -603,11 +611,17 @@ describe("how much place a panel asks for", () => {
     expect(panelReferences(close, "sheet-id", "place-id")).toEqual(["sheet-id"]);
   });
 
-  it("still hands the room to the shots that show it", () => {
+  it("hands the room to the frames that are about the room", () => {
+    // Establishing frames: nobody in them, so the room is the subject and
+    // there is no face for it to be stamped onto.
     for (const shot of ["wide", "medium"] as const) {
+      expect(panelReferences(panel({ shot, character_in_frame: false }),
+                             "sheet-id", "place-id"))
+        .toEqual(["place-id"]);
+      // The same shot with somebody in it gets her, and the room from words.
       expect(panelReferences(panel({ shot, character_in_frame: true }),
                              "sheet-id", "place-id"))
-        .toEqual(["sheet-id", "place-id"]);
+        .toEqual(["sheet-id"]);
     }
   });
 

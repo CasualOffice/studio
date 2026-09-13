@@ -374,6 +374,7 @@ pub fn vault_import_bytes(
         project: None,
         project_name: None,
         project_index: None,
+        ..Default::default()
     };
     Ok(state.vault.put(&data, item)?)
 }
@@ -428,6 +429,7 @@ pub fn vault_import(state: State<'_, AppState>, source: String, kind: String) ->
         project: None,
         project_name: None,
         project_index: None,
+        ..Default::default()
     };
     let before = state.vault.list()?.len();
     let id = state.vault.put(&bytes, item)?;
@@ -1128,6 +1130,20 @@ pub struct GenerateArgs {
     pub outpaint_fill: Option<String>,
 }
 
+/// What produced this, in one line.
+///
+/// Upstream drift has silently changed behaviour twice -- a model that stopped
+/// loading on an mlx-gen bump, and a download path that started reporting
+/// every repository as gated. Neither was visible from the item it produced,
+/// because nothing recorded what had made it.
+fn engine_versions() -> String {
+    format!(
+        "app {} · mlx-gen {}",
+        env!("CARGO_PKG_VERSION"),
+        crate::setup::MLX_GEN_VERSION,
+    )
+}
+
 async fn run_job(
     app: &AppHandle,
     state: &AppState,
@@ -1342,6 +1358,25 @@ async fn run_job(
             // One request can produce several pictures, so the index walks
             // from whatever the caller said this batch starts at.
             project_index: args.project_index.map(|n| n + i as u32),
+            // Everything needed to run this again and get this picture. All of
+            // it was already resolved above and thrown away, which is why
+            // "use these settings" restored the prompt and the seed and
+            // silently dropped the negative prompt, the adapters and the edit
+            // mode -- then produced something else.
+            model_repo: Some(entry.repo.clone()),
+            quantize: entry.quantize,
+            negative_prompt: args
+                .negative_prompt
+                .clone()
+                .filter(|n| !n.trim().is_empty()),
+            loras: args.loras.clone(),
+            i2i_mode: args.i2i_mode.clone(),
+            image_strength: args.image_strength,
+            outpaint_padding: args.outpaint_padding.clone(),
+            outpaint_fill: args.outpaint_fill.clone(),
+            low_ram: args.low_ram,
+            engine: Some(engine_versions()),
+            transient: false,
         })?;
     }
 
@@ -1495,6 +1530,7 @@ pub async fn upscale(
             project: None,
             project_name: None,
             project_index: None,
+            ..Default::default()
         })?;
     }
     Ok(produced)
@@ -1702,6 +1738,7 @@ pub async fn generate_video(
             project: None,
             project_name: None,
             project_index: None,
+            ..Default::default()
         })?;
     }
     Ok(produced)
@@ -2120,6 +2157,7 @@ pub async fn bind_comic(
         project_name,
         // Last, so it sorts after every page it was made from.
         project_index: Some(u32::MAX),
+        ..Default::default()
     })?;
     Ok(slot_id)
 }
@@ -2262,6 +2300,7 @@ pub async fn compose_board(
             project: project.clone(),
             project_name: project_name.clone(),
             project_index: Some(i as u32),
+            ..Default::default()
         })?;
     }
 

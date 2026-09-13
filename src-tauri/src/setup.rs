@@ -20,7 +20,7 @@ use tokio::process::Command;
 const PYTHON_URL: &str = "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-aarch64-apple-darwin-install_only.tar.gz";
 const PYTHON_SHA256: &str = "3ee3ee547cedfeb7c2b16b2b7156039f7b470bb8f857e226fd3d2eb11db83c76";
 const PY_SERIES: &str = "3.12";
-const MLX_GEN_VERSION: &str = "0.36.0";
+pub const MLX_GEN_VERSION: &str = "0.36.0";
 const MLX_LM_VERSION: &str = "0.31.3";
 const MLX_VLM_VERSION: &str = "0.7.0";
 const ENGINE_REQUIREMENTS: &str = include_str!("../../engine/requirements.lock");

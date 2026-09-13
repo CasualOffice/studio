@@ -155,7 +155,9 @@ fn derive_kek(passphrase: &str, kdf: &KdfParams) -> Result<[u8; 32], VaultError>
 // Index
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+// `Default` so a caller states only the provenance it actually knows. An
+// import has no seed and no adapters; a generation has all of it.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct VaultItem {
     pub id: String,
     /// SHA-256 of the plaintext. Lets an import recognise a file already in the
@@ -197,6 +199,52 @@ pub struct VaultItem {
     /// members back into the order they were meant to be read in.
     #[serde(default)]
     pub project_index: Option<u32>,
+
+    // ---- How this was actually made -------------------------------------
+    //
+    // Everything below is already known at the moment the job is dispatched
+    // and was simply not kept, which made "use these settings again" a
+    // half-truth: it restored the prompt, the size and the seed, and silently
+    // dropped the negative prompt, the adapters, the edit mode and the
+    // strength. Running it again produced a different picture and nothing said
+    // why.
+    //
+    // All defaulted, so every index written before they existed still loads.
+    /// The repository and quantisation that actually ran, not the catalogue's
+    /// display name. A rename or a requant changes the picture; the name does
+    /// not change with it.
+    #[serde(default)]
+    pub model_repo: Option<String>,
+    #[serde(default)]
+    pub quantize: Option<u8>,
+    #[serde(default)]
+    pub negative_prompt: Option<String>,
+    /// Adapters and their strengths. Part of the engine's cache key already,
+    /// so a rerun without them is a different picture by construction.
+    #[serde(default)]
+    pub loras: Vec<(String, f32)>,
+    /// Which edit this was. `kind` says "edit" for five different operations --
+    /// instruct, mask, expand, latent and adjust -- so on its own it cannot
+    /// reproduce any of them.
+    #[serde(default)]
+    pub i2i_mode: Option<String>,
+    #[serde(default)]
+    pub image_strength: Option<f32>,
+    #[serde(default)]
+    pub outpaint_padding: Option<String>,
+    #[serde(default)]
+    pub outpaint_fill: Option<String>,
+    /// Changes batching and eviction, so it changes how outputs are grouped.
+    #[serde(default)]
+    pub low_ram: bool,
+    /// mlx, mlx-gen and app versions at the time. Upstream drift has silently
+    /// changed behaviour here twice.
+    #[serde(default)]
+    pub engine: Option<String>,
+    /// Working material, not a library item: a painted mask, an intermediate.
+    /// Hidden from the library and safe to collect.
+    #[serde(default)]
+    pub transient: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -865,6 +913,9 @@ impl Vault {
                             project: None,
                             project_name: None,
                             project_index: None,
+                            // Same reasoning for how it was made: the index
+                            // held that and the index is what was lost.
+                            ..Default::default()
                         });
                     }
                     // Not ours, or corrupt. Left alone rather than deleted:
@@ -1076,6 +1127,7 @@ mod tests {
             project: None,
             project_name: None,
             project_index: None,
+            ..Default::default()
         }
     }
 
