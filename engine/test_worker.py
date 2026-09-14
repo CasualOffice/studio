@@ -1274,6 +1274,66 @@ class ComicBindsIntoOneFile(unittest.TestCase):
         self.assertEqual(left, [], f"plaintext left in the staging directory: {left}")
 
 
+class ChunkedTransferFallsBackToPlainHttp(unittest.TestCase):
+    """A Xet failure is retried over plain HTTP, in process as well as out.
+
+    Measured on this machine: a 9 GB fetch died at 6.9 GB with a 403 from the
+    CDN, and the same fetch completed with Xet disabled. The subprocess routes
+    already recovered by setting the variable in the child's environment. The
+    in-process routes -- which fetch the prompt writer and the picture reader --
+    had no recovery at all, because the variable is read into a module constant
+    at import, long before any download runs.
+    """
+
+    TRANSPORT = RuntimeError(
+        "Task error: File reconstruction error: CAS Client Error: Request "
+        "error: HTTP status client error (403 Forbidden)"
+    )
+
+    def test_it_retries_once_and_succeeds(self):
+        calls = []
+
+        def fetch():
+            from huggingface_hub import constants
+            calls.append(constants.HF_HUB_DISABLE_XET)
+            if len(calls) == 1:
+                raise self.TRANSPORT
+            return "fetched"
+
+        self.assertEqual(worker._retry_without_xet(fetch, "t"), "fetched")
+        self.assertEqual(len(calls), 2, "did not retry")
+        self.assertFalse(calls[0], "first attempt should use the fast path")
+        self.assertTrue(calls[1], "retry should have Xet disabled")
+
+    def test_the_switch_is_put_back(self):
+        # It is a module-level constant shared by every later download, so
+        # leaving it flipped would quietly slow every subsequent fetch.
+        from huggingface_hub import constants
+
+        before = constants.HF_HUB_DISABLE_XET
+        try:
+            worker._retry_without_xet(lambda: (_ for _ in ()).throw(self.TRANSPORT), "t")
+        except RuntimeError:
+            pass
+        self.assertEqual(constants.HF_HUB_DISABLE_XET, before)
+
+    def test_an_unrelated_failure_is_not_retried(self):
+        # Retrying a gated repository or a missing file just fails twice and
+        # takes twice as long to say so.
+        calls = []
+
+        def fetch():
+            calls.append(1)
+            raise RuntimeError("401 Unauthorized: access to this repo is gated")
+
+        with self.assertRaises(RuntimeError):
+            worker._retry_without_xet(fetch, "t")
+        self.assertEqual(len(calls), 1, "retried something that would not help")
+
+    def test_a_working_fetch_is_not_touched(self):
+        self.assertEqual(worker._retry_without_xet(lambda: "ok", "t"), "ok")
+
+
 class AdapterMustHoldAnAdapter(unittest.TestCase):
     """A "LoRA" with no adapter weights in it is refused, loudly.
 

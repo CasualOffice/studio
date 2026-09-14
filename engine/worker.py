@@ -4874,6 +4874,44 @@ def _dir_size(path: Path) -> int:
     return total
 
 
+def _retry_without_xet(fetch: Any, req_id: str) -> Any:
+    """Run a Hugging Face download, and run it again over plain HTTP if the
+    chunked transport fails.
+
+    Hugging Face serves large files through Xet, a content-addressed store that
+    hands back a reconstruction plan of chunks. A truncated or expired response
+    surfaces partway through a multi-gigabyte download as a CAS error or a bare
+    403, and retrying the same way tends to fail the same way.
+
+    The subprocess routes already do this by setting HF_HUB_DISABLE_XET in the
+    child's environment. The in-process routes could not: the variable is read
+    into a module constant at import, long before any of this runs. But that
+    constant is consulted on every call rather than cached, so setting it
+    directly works -- and without it the prompt writer and the picture reader,
+    which both come down this path, had no recovery at all. Measured on this
+    machine: a 9 GB fetch died at 6.9 GB with a 403 from the CDN, and the same
+    fetch completed with Xet disabled.
+    """
+    from huggingface_hub import constants
+
+    try:
+        return fetch()
+    except Exception as exc:
+        text = str(exc).lower()
+        if not any(m in text for m in (
+            "cas client error", "file reconstruction error", "xet_get",
+            "error decoding response body",
+        )):
+            raise
+        log(req_id, "chunked transfer failed; retrying over plain HTTP", "warn")
+        was = constants.HF_HUB_DISABLE_XET
+        constants.HF_HUB_DISABLE_XET = True
+        try:
+            return fetch()
+        finally:
+            constants.HF_HUB_DISABLE_XET = was
+
+
 def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     """Fetch a model through MLX-Gen's own downloader.
 
@@ -5041,12 +5079,17 @@ def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             # patterns; they are a few MB, so fetch them in the same pass.
             patterns += ["tokenizer/*", "tokenizer_2/*", "scheduler/*",
                          "model_index.json"]
-            snapshot_download(repo_id=repo_id, allow_patterns=patterns,
-                              token=_hf_token())
+            _retry_without_xet(
+                lambda: snapshot_download(repo_id=repo_id,
+                                          allow_patterns=patterns,
+                                          token=_hf_token()),
+                req_id)
         elif via == "hf":
             from huggingface_hub import snapshot_download
 
-            snapshot_download(repo_id=repo_id, token=_hf_token())
+            _retry_without_xet(
+                lambda: snapshot_download(repo_id=repo_id, token=_hf_token()),
+                req_id)
         else:
             cli = Path(sys.executable).parent / "mlxgen"
             cmd = [str(cli), "download", "--model", repo_id] if cli.exists() else [
