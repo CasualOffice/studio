@@ -98,6 +98,8 @@ export interface EngineProgress {
   /** How long since the byte count last moved. A download that quietly
    *  stopped is otherwise indistinguishable from a slow one. */
   stalled_seconds?: number | null;
+  /** Words written so far, for a step that produces text. */
+  text?: string | null;
 }
 
 export interface VaultStatus {

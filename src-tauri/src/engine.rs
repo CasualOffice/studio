@@ -39,6 +39,10 @@ pub struct EngineProgress {
     pub step: Option<u32>,
     pub total_steps: Option<u32>,
     pub message: Option<String>,
+    /// The words written so far, when a step is producing text rather than
+    /// pixels. Lets the interface show a prompt arriving instead of a spinner.
+    #[serde(default)]
+    pub text: Option<String>,
     pub done_bytes: Option<u64>,
     pub total_bytes: Option<u64>,
     pub seed: Option<i64>,
@@ -336,6 +340,7 @@ async fn dispatch(app: &AppHandle, pending: &Pending, v: Value) {
                     step: v["step"].as_u64().map(|n| n as u32),
                     total_steps: v["total_steps"].as_u64().map(|n| n as u32),
                     message: v["message"].as_str().map(|s| s.to_string()),
+                    text: v["text"].as_str().map(|s| s.to_string()),
                     done_bytes: v["done_bytes"].as_u64(),
                     total_bytes: v["total_bytes"].as_u64(),
                     seed: v["seed"].as_i64(),

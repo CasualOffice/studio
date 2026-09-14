@@ -1181,7 +1181,14 @@ def _write(req_id: str, system: str, user: str, max_tokens: int = 160,
             last = now
             emit({"id": req_id, "type": "progress", "phase": "denoise",
                   "progress": None, "step": written,
-                  "total_steps": max_tokens, "message": label})
+                  "total_steps": max_tokens, "message": label,
+                  # The words so far. A spinner and a token count say the
+                  # machine is busy; they do not say it is writing something
+                  # worth waiting for, and eight seconds of a spinner feels
+                  # longer than eight seconds of watching a sentence arrive.
+                  # Only the tail, because the interface shows a line, not a
+                  # transcript, and the channel is shared with everything else.
+                  "text": "".join(pieces)[-400:]})
     return "".join(pieces)
 
 

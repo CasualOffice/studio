@@ -98,6 +98,8 @@ export default function Studio({
   const [undoPrompt, setUndoPrompt] = useState<string | null>(null);
   /** What the enhancer suggests, pending your decision. */
   const [proposal, setProposal] = useState<AssistResult | null>(null);
+  /** The prompt as it is being written, shown while you wait for it. */
+  const [draft, setDraft] = useState("");
   const [elapsed, setElapsed] = useState(0);
   // Which model the engine currently holds, so a warm run is not quoted the
   // cold-start penalty.
@@ -199,7 +201,17 @@ export default function Studio({
     if (!prompt.trim()) { notify("Write a rough idea first.", true); return; }
     const id = newJobId();
     setAssisting(true);
-    const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
+    setDraft("");
+    const un = await onEngineProgress((p) => {
+      if (p.job_id !== id) return;
+      setProg(p);
+      // The words as they arrive. A spinner says the machine is busy; it does
+      // not say it is writing something worth waiting for, and eight seconds
+      // of a spinner feels far longer than eight seconds of watching a
+      // sentence form. The engine has streamed these all along and the
+      // interface was throwing them away.
+      if (typeof p.text === "string") setDraft(p.text);
+    });
     try {
       // Shown, not applied. Overwriting the prompt the moment a rewrite
       // existed meant you could not see what changed, and the three ways it
@@ -211,7 +223,7 @@ export default function Studio({
     } catch (e) {
       notify(errText(e), true);
     } finally {
-      un(); setAssisting(false); setProg(null);
+      un(); setAssisting(false); setProg(null); setDraft("");
     }
   };
 
@@ -479,6 +491,12 @@ export default function Studio({
                   ? "Make this precise using my picture"
                   : "Make my prompt precise"}
             </button>
+            {assisting && draft && (
+              <div className="proposal plain" aria-live="polite">
+                <b>Writing…</b>
+                <div className="text">{draft}</div>
+              </div>
+            )}
             {proposal && (
               <PromptProposal
                 result={proposal}
