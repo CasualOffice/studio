@@ -1358,12 +1358,15 @@ class ShotMixIsReported(unittest.TestCase):
 class ChunkedTransferFallsBackToPlainHttp(unittest.TestCase):
     """A Xet failure is retried over plain HTTP, in process as well as out.
 
-    Measured on this machine: a 9 GB fetch died at 6.9 GB with a 403 from the
-    CDN, and the same fetch completed with Xet disabled. The subprocess routes
-    already recovered by setting the variable in the child's environment. The
+    Measured: a 9 GB fetch died at 6.9 GB with a 403 from the CDN, and the same
+    fetch completed with the chunked transport disabled. The subprocess routes
+    already recovered by setting the variable in a child's environment; the
     in-process routes -- which fetch the prompt writer and the picture reader --
-    had no recovery at all, because the variable is read into a module constant
-    at import, long before any download runs.
+    had no recovery, because the variable is read into a module constant at
+    import, long before any download runs.
+
+    Tested without huggingface_hub installed, because CI does not have it. The
+    first version of these tests imported it and passed here and failed there.
     """
 
     TRANSPORT = RuntimeError(
@@ -1371,36 +1374,47 @@ class ChunkedTransferFallsBackToPlainHttp(unittest.TestCase):
         "error: HTTP status client error (403 Forbidden)"
     )
 
+    def test_a_transport_failure_is_recognised(self):
+        for message in (
+            "CAS Client Error: 403",
+            "File reconstruction error",
+            "xet_get failed",
+            "error decoding response body",
+        ):
+            self.assertTrue(worker._is_transfer_failure(RuntimeError(message)),
+                            f"{message!r} not recognised")
+
+    def test_a_request_failure_is_not(self):
+        # Retrying a gated repository or a missing file just fails twice and
+        # takes twice as long to say so.
+        for message in (
+            "401 Unauthorized: access to this repo is gated",
+            "404 Not Found",
+            "No space left on device",
+        ):
+            self.assertFalse(worker._is_transfer_failure(RuntimeError(message)),
+                             f"{message!r} would be retried pointlessly")
+
     def test_it_retries_once_and_succeeds(self):
         calls = []
+        disabled = []
 
         def fetch():
-            from huggingface_hub import constants
-            calls.append(constants.HF_HUB_DISABLE_XET)
+            calls.append(1)
             if len(calls) == 1:
                 raise self.TRANSPORT
             return "fetched"
 
-        self.assertEqual(worker._retry_without_xet(fetch, "t"), "fetched")
-        self.assertEqual(len(calls), 2, "did not retry")
-        self.assertFalse(calls[0], "first attempt should use the fast path")
-        self.assertTrue(calls[1], "retry should have Xet disabled")
-
-    def test_the_switch_is_put_back(self):
-        # It is a module-level constant shared by every later download, so
-        # leaving it flipped would quietly slow every subsequent fetch.
-        from huggingface_hub import constants
-
-        before = constants.HF_HUB_DISABLE_XET
+        original = worker._fetch_with_xet_disabled
+        worker._fetch_with_xet_disabled = lambda f: (disabled.append(1), f())[1]
         try:
-            worker._retry_without_xet(lambda: (_ for _ in ()).throw(self.TRANSPORT), "t")
-        except RuntimeError:
-            pass
-        self.assertEqual(constants.HF_HUB_DISABLE_XET, before)
+            self.assertEqual(worker._retry_without_xet(fetch, "t"), "fetched")
+        finally:
+            worker._fetch_with_xet_disabled = original
+        self.assertEqual(len(calls), 2, "did not retry")
+        self.assertEqual(len(disabled), 1, "retry did not disable the transport")
 
     def test_an_unrelated_failure_is_not_retried(self):
-        # Retrying a gated repository or a missing file just fails twice and
-        # takes twice as long to say so.
         calls = []
 
         def fetch():
@@ -1409,7 +1423,7 @@ class ChunkedTransferFallsBackToPlainHttp(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             worker._retry_without_xet(fetch, "t")
-        self.assertEqual(len(calls), 1, "retried something that would not help")
+        self.assertEqual(len(calls), 1)
 
     def test_a_working_fetch_is_not_touched(self):
         self.assertEqual(worker._retry_without_xet(lambda: "ok", "t"), "ok")
@@ -3280,6 +3294,25 @@ class StagingIsNotLeftBehind(unittest.TestCase):
 
 
 
+def _shaping_available() -> bool:
+    """Whether the two packages that do the reshaping are installed.
+
+    CI installs pillow, pillow-heif and cryptography and nothing else, so these
+    are absent there. `_shape_for_display` is documented to return the text
+    unchanged when they are missing -- deliberately, so a caption is drawn
+    badly rather than not at all -- and asserting it reorders anyway made CI
+    red for a behaviour that is correct.
+    """
+    try:
+        import arabic_reshaper  # noqa: F401
+        import bidi  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@unittest.skipUnless(_shaping_available(),
+                     "arabic_reshaper and python-bidi are not installed")
 class RightToLeftCaptions(unittest.TestCase):
     """Arabic and Hebrew as they are read, not as they are stored.
 

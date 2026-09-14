@@ -4994,24 +4994,39 @@ def _retry_without_xet(fetch: Any, req_id: str) -> Any:
     machine: a 9 GB fetch died at 6.9 GB with a 403 from the CDN, and the same
     fetch completed with Xet disabled.
     """
-    from huggingface_hub import constants
-
     try:
         return fetch()
     except Exception as exc:
-        text = str(exc).lower()
-        if not any(m in text for m in (
-            "cas client error", "file reconstruction error", "xet_get",
-            "error decoding response body",
-        )):
+        if not _is_transfer_failure(exc):
             raise
         log(req_id, "chunked transfer failed; retrying over plain HTTP", "warn")
-        was = constants.HF_HUB_DISABLE_XET
-        constants.HF_HUB_DISABLE_XET = True
-        try:
-            return fetch()
-        finally:
-            constants.HF_HUB_DISABLE_XET = was
+        return _fetch_with_xet_disabled(fetch)
+
+
+def _is_transfer_failure(exc: BaseException) -> bool:
+    """Whether this failure is the chunked transport rather than the request.
+
+    Separate and pure so the decision can be tested where huggingface_hub is
+    not installed -- which is CI, and which is how four tests for this went
+    green locally and red on push.
+    """
+    text = str(exc).lower()
+    return any(m in text for m in (
+        "cas client error", "file reconstruction error", "xet_get",
+        "error decoding response body",
+    ))
+
+
+def _fetch_with_xet_disabled(fetch: Any) -> Any:
+    """Run `fetch` with the chunked transport turned off, then put it back."""
+    from huggingface_hub import constants
+
+    was = constants.HF_HUB_DISABLE_XET
+    constants.HF_HUB_DISABLE_XET = True
+    try:
+        return fetch()
+    finally:
+        constants.HF_HUB_DISABLE_XET = was
 
 
 def op_download(req_id: str, req: dict[str, Any]) -> dict[str, Any]:

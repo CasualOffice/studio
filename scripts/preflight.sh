@@ -16,13 +16,32 @@ bad()  { printf '   FAILED: %s\n' "$1"; fail=1; }
 VENV="$HOME/Library/Application Support/com.melp.modelstudio/runtime/venv/bin/python"
 [ -x "$VENV" ] || VENV=python3
 
-step "engine tests, with numpy blocked exactly as CI has it"
+step "engine tests, with CI's exact dependency set"
 if "$VENV" - <<'PY'
 import sys, builtins, unittest
+
+# CI installs pillow, pillow-heif and cryptography and nothing else, so a test
+# that reaches for anything beyond them passes here and fails there. This
+# blocked numpy alone, which is how four tests importing huggingface_hub went
+# green locally and red on push -- the gate said "exactly as CI has it" while
+# checking one module out of a dozen.
+#
+# The list is what the venv has that CI does not, so it has to be kept beside
+# the workflow's install line. A module missing from both is already absent and
+# needs no help.
+ABSENT = {
+    "numpy", "huggingface_hub", "mlx", "mlx_lm", "mlx_vlm", "mlxgen", "mflux",
+    "torch", "transformers", "safetensors", "arabic_reshaper", "bidi",
+    "tokenizers", "sentencepiece", "scipy", "cv2",
+}
 real = builtins.__import__
 def guard(n, *a, **k):
-    if n.split(".")[0] == "numpy":
-        raise ModuleNotFoundError("No module named 'numpy'")
+    root = n.split(".")[0]
+    # A test that puts a stub in sys.modules has supplied the module itself and
+    # works in CI too. Refusing those manufactures failures CI would not have,
+    # which is its own way of making the gate untrustworthy.
+    if root in ABSENT and root not in sys.modules:
+        raise ModuleNotFoundError(f"No module named {root!r}")
     return real(n, *a, **k)
 builtins.__import__ = guard
 sys.path.insert(0, "engine")
