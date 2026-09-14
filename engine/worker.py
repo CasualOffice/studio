@@ -2123,6 +2123,11 @@ def _shotlist_instruction(story: str, count: int) -> str:
         "Reply with only a JSON array of exactly "
         f"{count} objects, each with:\n"
         '  "shot": one of "wide", "medium", "close-up"\n'
+        '  "purpose": what this panel is for -- one of "establishing" (shows '
+        'the reader where they are), "action" (something happens), "reaction" '
+        '(someone registers what just happened), "detail" (one object or a '
+        'part of one, no people), "dialogue" (the panel exists to carry what '
+        'is said)\n'
         '  "subject": who or what is in frame\n'
         '  "action": what is happening, as a short phrase\n'
         '  "setting": where it takes place\n'
@@ -2399,6 +2404,14 @@ def _clean_panel(p: dict[str, Any], story: str) -> dict[str, Any]:
             name = " ".join(str(value).split())[:80]
             if name and (not story or _mentions(story, name) > 0):
                 characters.append(name)
+    # Worked out before the record is built, because the in-frame default
+    # below depends on it. The stated one is kept apart from the inferred one:
+    # inference is good enough to label a panel and not good enough to decide
+    # who is in it.
+    stated_purpose = str(p.get("purpose") or "").strip().lower()
+    if stated_purpose not in PURPOSES:
+        stated_purpose = ""
+    purpose = _purpose_of({**p, "characters": characters})
     source = " ".join(str(p.get("source", "")).split())[:240]
     if story and source and not _quotes_story(source, story):
         # Not a quote. Match the paraphrase back onto the prose rather than
@@ -2422,9 +2435,23 @@ def _clean_panel(p: dict[str, Any], story: str) -> dict[str, Any]:
         "action": str(p.get("action", "")).strip(),
         "setting": str(p.get("setting", "")).strip(),
         # Default to showing them: a board is mostly about its character,
-        # and a missing flag should not quietly write them out.
-        "character_in_frame": bool(characters) or (
-            True if in_frame is None else bool(in_frame)),
+        # and a missing flag should not quietly write them out. Except on a
+        # panel the writer has called a detail -- one object, or part of one --
+        # where the default was a coin flip in favour of putting her in a frame
+        # that exists precisely because she is not in it. That is the failure
+        # the character sheet is already withheld to avoid, arrived at from the
+        # other direction.
+        "character_in_frame": (
+            # Only on the writer's own word, never on our inference. A wide
+            # shot whose subject is "Mira" is not an establishing shot merely
+            # because the characters array was left empty, and guessing it was
+            # writes her out of her own panel. `stated_purpose` is true only
+            # when the writer named one of the five itself.
+            False if stated_purpose in ("detail", "establishing")
+            and in_frame is None and not characters
+            else bool(characters) or (True if in_frame is None else bool(in_frame))
+        ),
+        "purpose": purpose,
         "characters": characters,
         "source": source,
         # Narration, kept short. A caption that restates the picture is
@@ -2499,6 +2526,72 @@ def _snap_source(source: str, story: str) -> str:
     # single shared name cannot carry a match on its own.
     enough = best_shared >= min(2, len(wanted))
     return best if best_score >= 0.5 and enough else ""
+
+
+PURPOSES = ("establishing", "action", "reaction", "detail", "dialogue")
+
+
+def _purpose_of(panel: dict[str, Any]) -> str:
+    """What a panel is for, asked of the writer and inferred when it declines.
+
+    `shot` says how far away the camera is. It does not say what the panel is
+    *doing*, and the two are not the same question: a close-up of a face
+    registering bad news and a close-up of a dripping tap want opposite
+    treatment -- one needs the character held exactly, the other must not have
+    her anywhere near it. The pipeline had only distance, so it gave both the
+    same references and the same brief rules.
+
+    Inference is deliberately conservative. It only claims what the panel
+    already states outright, and falls back to "action", which is what every
+    panel was implicitly treated as before.
+    """
+    stated = str(panel.get("purpose") or "").strip().lower()
+    if stated in PURPOSES:
+        return stated
+    if panel.get("dialogue"):
+        return "dialogue"
+    # Nobody in frame and nothing named to follow: this is a thing, not a
+    # person doing something.
+    if not panel.get("characters") and not panel.get("character_in_frame"):
+        return "detail" if panel.get("shot") == "close-up" else "establishing"
+    if panel.get("shot") == "wide" and not panel.get("characters"):
+        return "establishing"
+    return "action"
+
+
+def _shot_mix(panels: list[dict[str, Any]]) -> dict[str, Any]:
+    """How varied the shots are, reported the way story coverage is.
+
+    The writer is told "vary the shot sizes -- a page of close-ups reads as
+    flat as a page of wides", and nothing checked whether it had. Coverage gets
+    a full report; this got none, so twelve close-ups in a row went unnoticed
+    until forty minutes of drawing had been spent on them.
+
+    Reported, never enforced. The right number of wides is a judgement about a
+    particular story, and refusing a division on it would be this tool telling
+    a writer how to direct.
+    """
+    counts = {shot: 0 for shot in ("wide", "medium", "close-up")}
+    for panel in panels:
+        shot = str(panel.get("shot") or "medium")
+        if shot in counts:
+            counts[shot] += 1
+    total = sum(counts.values())
+    if total == 0:
+        return {"counts": counts, "total": 0, "uniform": None}
+    dominant, most = max(counts.items(), key=lambda kv: kv[1])
+    # Four is where a page starts to read as a page. Below it a run of one shot
+    # size is a short scene, not a flat one.
+    uniform = dominant if total >= 4 and most / total > 0.7 else None
+    return {"counts": counts, "total": total, "uniform": uniform,
+            "purposes": _purpose_counts(panels)}
+
+
+def _purpose_counts(panels: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {p: 0 for p in PURPOSES}
+    for panel in panels:
+        counts[_purpose_of(panel)] += 1
+    return counts
 
 
 def _story_coverage(story: str, panels: list[dict[str, Any]]) -> dict[str, Any]:
@@ -4184,6 +4277,7 @@ def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                 "truncated_from": returned if dropped else None,
                 "out_of_range": (not too_long
                                  and not (low <= returned <= high)),
+                "shot_mix": _shot_mix(panels),
                 "coverage": _story_coverage(story, panels)}
 
     count = max(2, min(int(asked), 60))
@@ -4197,6 +4291,7 @@ def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     if len(panels) < count:
         log(req_id, f"asked for {count} panels, got {len(panels)}", "warn")
     return {"panels": panels, "asked": count, "derived": False,
+            "shot_mix": _shot_mix(panels),
             "words": words, "coverage": _story_coverage(story, panels)}
 
 

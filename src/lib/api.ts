@@ -84,6 +84,19 @@ export const api = {
       truncated_from?: number | null;
       // Not `Coverage` from boardDraft: that module imports this one, and the
       // shape is small enough not to be worth the cycle.
+      /**
+       * How varied the shots are. The writer is told to vary them and nothing
+       * checked, so a page of close-ups went unnoticed until it had been
+       * drawn. `uniform` names the shot that dominates, or is null when the
+       * mix is fine. Reported, never enforced: the right number of wides is a
+       * judgement about a particular story.
+       */
+      shot_mix?: {
+        counts: Record<string, number>;
+        total: number;
+        uniform: string | null;
+        purposes?: Record<string, number>;
+      };
       coverage?: {
         covered: number; total: number; percent: number;
         missing: string[]; missing_total?: number;

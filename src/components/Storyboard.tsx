@@ -179,9 +179,27 @@ export default function Storyboard({
       return p.description.trim() ? `${p.name}: ${p.description.trim()}` : p.name;
     }).join("\n");
   }, [cast, character, lead]);
+  /**
+   * How many people get a full description in one panel's prompt.
+   *
+   * Every named character's whole appearance brief was joined with "; ", so a
+   * panel with four people carried four wardrobes. The drawer blends them or
+   * drops some, and with one reference slot there is no way to anchor four
+   * faces anyway. Beyond this many, the rest are named and not described --
+   * which is what a script does when a room is full.
+   */
+  const DESCRIBED_PER_PANEL = 2;
+
   const panelWho = (panel: Panel) => {
-    const named = panel.characters?.map(personBrief).filter(Boolean) ?? [];
-    if (named.length > 0) return named.join("; ");
+    const all = panel.characters ?? [];
+    const named = all.slice(0, DESCRIBED_PER_PANEL)
+      .map(personBrief).filter(Boolean);
+    const rest = all.slice(DESCRIBED_PER_PANEL)
+      .map((n) => n.trim()).filter(Boolean);
+    if (named.length > 0) {
+      return rest.length ? `${named.join("; ")}; also ${rest.join(", ")}`
+                         : named.join("; ");
+    }
     return panel.character_in_frame
       ? (character.trim() || lead?.description || lead?.name || "") : "";
   };
@@ -634,6 +652,18 @@ export default function Storyboard({
       const r = await api.shotList(id, story, null);
       setPanels(r.panels);
       setCoverage(r.coverage ?? null);
+      // The writer is told to vary the shot sizes and nothing checked whether
+      // it had. Said now, before any of it is drawn, because the fix is to
+      // divide again -- which is free -- and finding out afterwards means
+      // forty minutes of drawing a page that reads flat.
+      const mix = r.shot_mix;
+      if (mix?.uniform && mix.total > 0) {
+        const n = mix.counts[mix.uniform] ?? 0;
+        notify(
+          `${n} of ${mix.total} panels are ${mix.uniform} shots. A page of one `
+          + `size reads flat — worth dividing again, or changing a few by hand.`,
+        );
+      }
       // A fresh division is a different comic, so it gets its own identity
       // rather than adding panels to whatever was in the library before.
       setProjectId(newJobId());

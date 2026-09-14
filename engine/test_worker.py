@@ -1274,6 +1274,87 @@ class ComicBindsIntoOneFile(unittest.TestCase):
         self.assertEqual(left, [], f"plaintext left in the staging directory: {left}")
 
 
+class PanelsHaveAPurpose(unittest.TestCase):
+    """A panel now says what it is for, not only how far away the camera is.
+
+    `shot` is distance. It does not say what the panel is doing, and the two
+    are different questions: a close-up of a face registering bad news and a
+    close-up of a dripping tap want opposite treatment -- one needs the
+    character held exactly, the other must not have her anywhere near it. The
+    pipeline had only distance.
+    """
+
+    def panel(self, **over):
+        base = {"shot": "medium", "subject": "x", "action": "y",
+                "setting": "z", "scene": 1}
+        return json.dumps([{**base, **over}])
+
+    def test_the_writer_is_believed(self):
+        for stated in worker.PURPOSES:
+            got = worker._parse_shotlist(self.panel(purpose=stated), 1)
+            self.assertEqual(got[0]["purpose"], stated)
+
+    def test_a_nonsense_purpose_is_inferred_instead(self):
+        got = worker._parse_shotlist(self.panel(purpose="banana"), 1)
+        self.assertIn(got[0]["purpose"], worker.PURPOSES)
+
+    def test_spoken_words_make_it_a_dialogue_panel(self):
+        got = worker._parse_shotlist(
+            self.panel(dialogue=[{"speaker": "Mira", "text": "Who is there?"}]), 1)
+        self.assertEqual(got[0]["purpose"], "dialogue")
+
+    def test_a_stated_detail_is_not_given_the_character(self):
+        got = worker._parse_shotlist(
+            self.panel(shot="close-up", subject="a dripping tap",
+                       purpose="detail"), 1)
+        self.assertFalse(got[0]["character_in_frame"])
+
+    def test_an_inferred_purpose_never_writes_anyone_out(self):
+        # A wide shot whose subject is "Mira" is not an establishing shot
+        # merely because the characters array was left empty. Inference is good
+        # enough to label a panel and not good enough to decide who is in it.
+        got = worker._parse_shotlist(
+            self.panel(shot="wide", subject="Mira", action="stands"), 1)
+        self.assertTrue(got[0]["character_in_frame"])
+
+
+class ShotMixIsReported(unittest.TestCase):
+    """The writer is told to vary the shots. Nothing checked whether it had.
+
+    Story coverage gets a full report with a missing-passages list. Shot
+    distribution got none, so twelve close-ups in a row went unnoticed until
+    forty minutes of drawing had been spent on them.
+    """
+
+    def panels(self, shots):
+        return worker._parse_shotlist(json.dumps(
+            [{"shot": s, "subject": f"s{i}", "action": "a", "setting": "b",
+              "scene": 1} for i, s in enumerate(shots)]), len(shots))
+
+    def test_a_flat_page_is_named(self):
+        mix = worker._shot_mix(self.panels(["close-up"] * 9))
+        self.assertEqual(mix["uniform"], "close-up")
+        self.assertEqual(mix["counts"]["close-up"], 9)
+
+    def test_a_varied_page_is_not(self):
+        mix = worker._shot_mix(
+            self.panels(["wide", "medium", "close-up", "medium", "wide", "close-up"]))
+        self.assertIsNone(mix["uniform"])
+
+    def test_a_short_run_is_not_called_flat(self):
+        # Three of one size is a short scene, not a flat page.
+        self.assertIsNone(worker._shot_mix(self.panels(["wide"] * 3))["uniform"])
+
+    def test_it_counts_what_the_panels_are_for(self):
+        mix = worker._shot_mix(self.panels(["wide", "medium", "close-up", "wide"]))
+        self.assertEqual(sum(mix["purposes"].values()), 4)
+
+    def test_no_panels_is_not_an_error(self):
+        mix = worker._shot_mix([])
+        self.assertEqual(mix["total"], 0)
+        self.assertIsNone(mix["uniform"])
+
+
 class ChunkedTransferFallsBackToPlainHttp(unittest.TestCase):
     """A Xet failure is retried over plain HTTP, in process as well as out.
 

@@ -327,6 +327,13 @@ export interface Panel {
   source?: string;
   /** One line of narration under the panel. Empty when it needs no words. */
   caption: string;
+  /**
+   * What this panel is for, which is not the same question as how far away
+   * the camera is. A close-up of a face registering bad news and a close-up of
+   * a dripping tap want opposite treatment: one needs the character held
+   * exactly, the other must not have her anywhere near it.
+   */
+  purpose?: "establishing" | "action" | "reaction" | "detail" | "dialogue";
   /** Which continuous stretch of story this belongs to. Pages break here. */
   scene?: number;
   scene_title?: string;
