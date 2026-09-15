@@ -1,5 +1,15 @@
 # What the picture-board pipeline has to do
 
+> Historical defect checklist, not a current production-readiness assessment.
+> The [production tracker](board-production-tracker.md),
+> [test plan](board-production-test-plan.md), and
+> [research corrections](board-production-research.md) supersede its completion
+> claims as of 2026-09-16. In current code, coverage is lexical source anchoring,
+> note-based redraw regenerates the image, reference use is conditional, and
+> composition permits partially drawn boards. The original status below is
+> retained for history; it must not be used as evidence that those production
+> guarantees have passed.
+
 Written from defects found by using it, not from a plan. Each line below was
 confirmed in the code before it was written down.
 

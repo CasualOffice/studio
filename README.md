@@ -135,6 +135,11 @@ never touched, and uninstalling is `rm -rf` on that one directory.
 
 ## Architecture
 
+Board development: [production tracker](docs/board-production-tracker.md),
+[test plan](docs/board-production-test-plan.md), and
+[research/decision register](docs/board-production-research.md). These distinguish
+the current illustrated-story workflow from the phased manga-production target.
+
 ```
 src/                 React UI
 src-tauri/src/

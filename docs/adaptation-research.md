@@ -1,5 +1,12 @@
 # How prose actually becomes a comic
 
+> Exploratory research archive. Before implementing its recommendations, read
+> the [production research corrections](board-production-research.md): several
+> numerical rules and cross-study conclusions below are not validated product
+> requirements. Execution is tracked in the
+> [phase/gate tracker](board-production-tracker.md) and its
+> [acceptance test plan](board-production-test-plan.md).
+
 Research gathered before redesigning the board pipeline, because the first
 version of it was invented rather than learned. Every number below comes from
 comics craft practice, adaptation writing, or published work on character
