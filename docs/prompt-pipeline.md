@@ -1,5 +1,13 @@
 # Prompt pipeline contract
 
+> This is the intended contract, not proof the current enhancer meets it.
+> The [2026-09-16 code and live-writer audit](prompt-enhancer-audit.md) found
+> conflicting scene-expansion instructions, blind-edit routing, literal-text
+> deletion and intent-validation gaps. Work is organized in the
+> [enhancer tracker](prompt-enhancer-tracker.md) and
+> [acceptance plan](prompt-enhancer-test-plan.md). For Board-specific production
+> guarantees, use the [Board tracker](board-production-tracker.md).
+
 The prompt assistant is a local editor, not a prompt-lengthener. Its job is to
 preserve the user's subject and intent, remove empty quality folklore, resolve
 ambiguity only when the selected model needs it, and return an explanation of

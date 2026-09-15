@@ -140,6 +140,10 @@ Board development: [production tracker](docs/board-production-tracker.md),
 [research/decision register](docs/board-production-research.md). These distinguish
 the current illustrated-story workflow from the phased manga-production target.
 
+Prompt assistance: [code/live-writer audit](docs/prompt-enhancer-audit.md),
+[implementation tracker](docs/prompt-enhancer-tracker.md), and
+[acceptance plan](docs/prompt-enhancer-test-plan.md).
+
 ```
 src/                 React UI
 src-tauri/src/
