@@ -151,14 +151,34 @@ def parse_scene(raw, group, bible, scene_id):
     lookup = {c["id"]: c["id"] for c in characters}
     source = ''.join(u["text"] for u in group)
     local_ids = set()
-    for person in _array(reply.get("characters"), "characters"):
+    narrative = re.sub(r'[“"]([^”"]+)[”"]|「([^」]+)」', "", source)
+    first_person = bool(re.search(r'\b(?:I|my|me)\b', narrative, re.I))
+    narrator_roles = set()
+    proposed = _array(reply.get("characters"), "characters")
+    # Read named participants first so a later narration-role declaration can
+    # bind to a named first-person speaker regardless of JSON array order.
+    proposed = sorted(proposed, key=lambda person: str(person.get("name", "")).strip().casefold() == "narrator")
+    for person in proposed:
         name = _text(person.get("name"), "name", False)
+        if name.casefold() == "narrator":
+            name = "Narrator"
         local_id = _text(person.get("id"), "character id", False)
         if local_id in local_ids:
             raise ValueError("each local character ID must be unique")
         local_ids.add(local_id)
         aliases = [_text(a, "alias", False) for a in _array(person.get("aliases", []), "aliases")]
         aliases = [a for a in aliases if a.casefold() not in {"he", "she", "they", "him", "her", "his", "their", "we", "you"}]
+        literal_name = bool(re.search(r'(?<!\w)' + re.escape(name) + r'(?!\w)', source, re.I))
+        if name == "Narrator" and not first_person and not literal_name:
+            # Narration in a third-person story is a voice role, not a person.
+            # It does not belong in the character bible or visible cast.
+            narrator_roles.update({local_id, "narrator"})
+            lookup[local_id] = None
+            continue
+        introduced = literal_name and bool(re.search(
+            r"\b(?:my name is|i am|i['’]m)\s+" + re.escape(name) + r'(?!\w)', narrative, re.I))
+        if introduced:
+            aliases += [word for word in ["I", "my", "me"] if re.search(r'\b' + word + r'\b', narrative, re.I)]
         identity = {name.casefold(), *(a.casefold() for a in aliases)}
         matches = [c for c in characters if c["id"] == local_id or identity.intersection(
             {c["name"].casefold(), *(a.casefold() for a in c["aliases"])})]
@@ -167,10 +187,15 @@ def parse_scene(raw, group, bible, scene_id):
         existing = matches[0] if matches else None
         # Only literal aliases can be added to the persistent bible.
         aliases = [a for a in aliases if re.search(r'(?<!\w)' + re.escape(a) + r'(?!\w)', source, re.I)]
-        narrative = re.sub(r'[“"]([^”"]+)[”"]|「([^」]+)」', "", source)
-        anonymous_narrator = name == "Narrator" and bool(re.search(r'\b(?:I|my|me)\b', narrative, re.I))
-        if anonymous_narrator and any(set(c["aliases"]).intersection({"I", "my", "me"}) for c in characters):
-            raise ValueError("reuse the known narrator instead of adding another")
+        anonymous_narrator = name == "Narrator" and first_person
+        if anonymous_narrator:
+            narrators = [c for c in characters if c["name"].casefold() == "narrator"
+                         or {a.casefold() for a in c["aliases"]}.intersection({"i", "my", "me"})]
+            if len(narrators) > 1:
+                raise ValueError("the first-person narrator is ambiguous; use its exact character ID")
+            if narrators:
+                existing = narrators[0]
+            aliases += [word for word in ["I", "my", "me"] if re.search(r'\b' + word + r'\b', narrative, re.I)]
         if not existing and not anonymous_narrator and not re.search(r'(?<!\w)' + re.escape(name) + r'(?!\w)', source, re.I):
             raise ValueError(f"character {name} is not in this scene")
         if name.casefold() in {"i", "me", "my", "he", "she", "they", "him", "her", "we", "you"}:
@@ -178,6 +203,9 @@ def parse_scene(raw, group, bible, scene_id):
         visual = _text(person.get("visual", ""), "visual")
         voice = _text(person.get("voice", ""), "voice")
         if existing:
+            if existing["name"].casefold() == "narrator" and name != "Narrator" and literal_name:
+                existing["aliases"] = list(dict.fromkeys([*existing["aliases"], existing["name"]]))
+                existing["name"] = name
             existing["aliases"] = list(dict.fromkeys([*existing["aliases"], *aliases, name]))
             # First chapter's identity stays stable; later facts are additive.
             if visual and visual not in existing["visual"]:
@@ -204,12 +232,14 @@ def parse_scene(raw, group, bible, scene_id):
         reference = reference.strip()
         if reference in lookup:
             return lookup[reference]
+        if reference.casefold() in narrator_roles:
+            return None
         matches = names.get(reference.casefold(), set())
         if len(matches) == 1:
             return next(iter(matches))
         if len(matches) > 1:
             raise ValueError(f"{field} is ambiguous: {reference!r}; use its exact character ID")
-        valid = ', '.join(f"{local}={next(c['name'] for c in characters if c['id'] == cid)}"
+        valid = ', '.join(f"{local}={next((c['name'] for c in characters if c['id'] == cid), 'narration voice')}"
                           for local, cid in lookup.items())
         raise ValueError(f"{field} {reference!r} is not declared. Valid IDs: {valid or '(none)'}. "
                          "Declare new people in characters before referencing them in beats.")
@@ -230,30 +260,48 @@ def parse_scene(raw, group, bible, scene_id):
         visible = []
         for actor in _array(beat.get("visible"), "visible"):
             cid = resolve(actor.get("character_id"), "visible character")
+            if cid is None:
+                continue
             if cid in [a["character_id"] for a in visible]:
                 raise ValueError("duplicate visible character")
             visible.append({"character_id": cid,
                             "expression": _text(actor.get("expression"), "expression"),
                             "body_language": _text(actor.get("body_language"), "body language"),
                             "appearance": _text(actor.get("appearance", ""), "appearance")})
+        # Quoted speech is source data, not something the analyst must copy.
+        # The analyst supplies optional attribution only. Missing, paraphrased
+        # or invented lines never replace/drop the original quotation.
+        proposed_lines = {}
+        for line in _array(beat.get("dialogue") or [], "dialogue"):
+            if not isinstance(line, dict) or not isinstance(line.get("text"), str):
+                continue
+            text = line["text"].strip().strip('“”"「」').strip()
+            if text:
+                proposed_lines.setdefault(text, []).append(line)
         dialogue = []
-        # The second alternative is Japanese dialogue.
-        quoted = [(m.group(1) or m.group(2)).strip() for m in re.finditer(r'[“"]([^”"]+)[”"]|「([^」]+)」', excerpt)]
-        local_end = 0
-        for line in _array(beat.get("dialogue"), "dialogue"):
-            text = _text(line.get("text"), "dialogue text", False)
-            at = excerpt.find(text, local_end)
-            if at < 0:
-                raise ValueError("dialogue must quote this beat exactly and in order")
-            cid = resolve(line.get("speaker_id"), "dialogue speaker") if line.get("speaker_id") is not None else None
-            offscreen = line.get("offscreen")
-            if type(offscreen) is not bool:
-                raise ValueError("offscreen must be boolean")
+        for quoted in re.finditer(r'[“"]([^”"]+)[”"]|「([^」]+)」', excerpt):
+            group_no = 1 if quoted.group(1) is not None else 2
+            original = quoted.group(group_no)
+            text = original.strip()
+            if not text:
+                continue
+            at = quoted.start(group_no) + len(original) - len(original.lstrip())
+            candidates = proposed_lines.get(text, [])
+            line = candidates.pop(0) if candidates else None
+            cid, offscreen, review = None, True, line is None
+            if line is not None:
+                try:
+                    cid = resolve(line.get("speaker_id"), "dialogue speaker") if line.get("speaker_id") is not None else None
+                except ValueError:
+                    review = True
+                if type(line.get("offscreen")) is bool:
+                    offscreen = line["offscreen"]
+                else:
+                    review = True
+                review = review or cid is None
             dialogue.append({"speaker_id": cid, "text": text, "offscreen": offscreen,
-                             "start": start + at, "end": start + at + len(text)})
-            local_end = at + len(text)
-        if [line["text"] for line in dialogue] != quoted:
-            raise ValueError("dialogue must include every complete quoted utterance in source order")
+                             "start": start + at, "end": start + at + len(text),
+                             "attribution_review": review})
         beats.append({"id": f"{scene_id}-b{i + 1}", "start": start, "end": end,
                       "source": excerpt, "importance": importance, "tension": tension,
                       "action": _text(beat.get("action"), "action", False),
@@ -413,7 +461,8 @@ def direct(book, chapter_id):
             narrative = re.sub(r'[“"]\s*[”"]|「\s*」', '', ''.join(narration))
             captions = _chunks(narrative)
             dialogue = [{"speaker": people[d["speaker_id"]]["name"] if d["speaker_id"] else "Unknown speaker",
-                         "speaker_id": d["speaker_id"], "text": text, "offscreen": d["offscreen"]}
+                         "speaker_id": d["speaker_id"], "text": text, "offscreen": d["offscreen"],
+                         "attribution_review": d.get("attribution_review", False)}
                         for d in beat["dialogue"] for text in _chunks(d["text"], 28)]
             frames = max(len(captions), len(dialogue), 3 if beat["importance"] == 5 else 2 if beat["importance"] == 4 else 1)
             actors = [{**a, "name": people[a["character_id"]]["name"],

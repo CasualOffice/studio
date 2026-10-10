@@ -105,11 +105,12 @@ class StoryAnalysis(unittest.TestCase):
         source = 'Mira waited. Jonas said “Come home.”'
         group = story.passages(source)[0]
         data = reply(group)
-        with self.assertRaisesRegex(ValueError, 'every complete quoted'):
-            story.parse_scene(json.dumps(data), group, [], 's1')
+        scene, _ = story.parse_scene(json.dumps(data), group, [], 's1')
+        self.assertEqual(scene['beats'][0]['dialogue'][0]['text'], 'Come home.')
+        self.assertTrue(scene['beats'][0]['dialogue'][0]['attribution_review'])
         data['beats'][0]['dialogue'] = [{"speaker_id": None, "text": "Come home.", "offscreen": True}]
         data['beats'][0]['units'] = [0]
-        with self.assertRaisesRegex(ValueError, 'quote this beat'):
+        with self.assertRaisesRegex(ValueError, 'every source unit'):
             story.parse_scene(json.dumps(data), group, [], 's1')
 
     def test_source_mutation_and_overlapping_dialogue_fail_before_rendering(self):
@@ -501,3 +502,91 @@ class SmallAnalystPassages(unittest.TestCase):
         self.assertEqual(len(chapter['scenes']), len(groups))
         self.assertEqual(''.join(beat['source'] for scene in chapter['scenes'] for beat in scene['beats']), source)
         self.assertTrue(chapter['scenes'][-1]['beats'][-1]['source'].endswith('The final door closes.'))
+
+
+class NarratorBindings(unittest.TestCase):
+    def analyze(self, source, characters, visible=None, previous=None):
+        data = reply(story.passages(source)[0], characters)
+        data['beats'][0]['visible'] = visible or []
+        return story.analyze(source, lambda *_: json.dumps(data), previous=previous)
+
+    def person(self, name='narrator', identifier='n', aliases=None):
+        return {'id': identifier, 'name': name, 'aliases': aliases or [], 'visual': '', 'voice': ''}
+
+    def actor(self, identifier='n'):
+        return {'character_id': identifier, 'expression': 'calm', 'body_language': 'standing'}
+
+    def test_lowercase_first_person_narrator_is_valid_and_canonical(self):
+        book = self.analyze('I opened the door.', [self.person()], [self.actor()])
+        self.assertEqual(book['characters'][0]['name'], 'Narrator')
+        self.assertIn('I', book['characters'][0]['aliases'])
+        self.assertEqual(book['chapters'][0]['scenes'][0]['beats'][0]['visible'][0]['character_id'], book['characters'][0]['id'])
+
+    def test_known_named_narrator_is_reused_instead_of_rejected(self):
+        previous = self.analyze('My name is Mira Vale.', [self.person('Mira Vale', 'm')])
+        book = self.analyze('I opened the door.', [self.person('NARRATOR')], [self.actor()], previous)
+        self.assertEqual(len(book['characters']), 1)
+        self.assertEqual(book['characters'][0]['id'], previous['characters'][0]['id'])
+        self.assertEqual(book['characters'][0]['name'], 'Mira Vale')
+
+    def test_named_narrator_and_role_do_not_duplicate_in_the_same_reply(self):
+        book = self.analyze('My name is Mira Vale. I opened the door.',
+            [self.person(), self.person('Mira Vale', 'm')], [self.actor()])
+        self.assertEqual(len(book['characters']), 1)
+        self.assertEqual(book['characters'][0]['name'], 'Mira Vale')
+
+    def test_third_person_narration_role_does_not_add_a_visible_person(self):
+        book = self.analyze('Mira opened the door.', [self.person(), self.person('Mira', 'm')],
+            [self.actor(), self.actor('m')])
+        self.assertEqual([c['name'] for c in book['characters']], ['Mira'])
+        self.assertEqual(len(book['chapters'][0]['scenes'][0]['beats'][0]['visible']), 1)
+
+    def test_anonymous_narrator_can_gain_the_stated_name_in_a_later_chapter(self):
+        previous = self.analyze('I opened the door.', [self.person()])
+        book = self.analyze('My name is Mira Vale.', [self.person('Mira Vale', 'm', ['I'])], previous=previous)
+        self.assertEqual(len(book['characters']), 1)
+        self.assertEqual(book['characters'][0]['name'], 'Mira Vale')
+        self.assertEqual(book['characters'][0]['id'], previous['characters'][0]['id'])
+
+    def test_unrelated_invented_character_still_fails_validation(self):
+        with self.assertRaisesRegex(ValueError, 'Invented.*not in this scene'):
+            self.analyze('Mira opened the door.', [self.person('Invented', 'x')])
+
+
+class SourceDialogueExtraction(unittest.TestCase):
+    def parse(self, source, lines):
+        group = story.passages(source)[0]
+        data = reply(group, [{'id': 'm', 'name': 'Mira', 'aliases': [], 'visual': '', 'voice': ''}])
+        data['beats'][0]['dialogue'] = lines
+        scene, characters = story.parse_scene(json.dumps(data), group, [], 's')
+        return scene['beats'][0]['dialogue'], characters
+
+    def test_missing_and_paraphrased_dialogue_is_preserved_from_source(self):
+        lines, _ = self.parse('Mira said, “Wait for me.” Then “Come back.”',
+            [{'text': 'Please wait!', 'speaker_id': 'm', 'offscreen': False}])
+        self.assertEqual([d['text'] for d in lines], ['Wait for me.', 'Come back.'])
+        self.assertTrue(all(d['speaker_id'] is None and d['attribution_review'] for d in lines))
+
+    def test_wrapped_quotes_use_exact_source_spans_and_valid_attribution(self):
+        source = 'Mira said, “  Wait for me.  ”'
+        lines, characters = self.parse(source, [{'text': '“Wait for me.”', 'speaker_id': 'Mira', 'offscreen': False}])
+        line = lines[0]
+        self.assertEqual(source[line['start']:line['end']], 'Wait for me.')
+        self.assertEqual(line['speaker_id'], characters[0]['id'])
+        self.assertFalse(line['attribution_review'])
+
+    def test_invented_lines_are_not_added_and_unknown_speakers_require_review(self):
+        lines, _ = self.parse('Mira said, “Wait.”', [
+            {'text': 'Invented words', 'speaker_id': 'm', 'offscreen': False},
+            {'text': 'Wait.', 'speaker_id': 'missing', 'offscreen': False}])
+        self.assertEqual([d['text'] for d in lines], ['Wait.'])
+        self.assertIsNone(lines[0]['speaker_id'])
+        self.assertTrue(lines[0]['attribution_review'])
+
+    def test_repeated_utterances_keep_distinct_spans(self):
+        source = 'Mira said, “Wait.” Mira repeated, “Wait.”'
+        lines, _ = self.parse(source, [{'text': 'Wait.', 'speaker_id': 'm', 'offscreen': False}])
+        self.assertEqual(len(lines), 2)
+        self.assertNotEqual(lines[0]['start'], lines[1]['start'])
+        self.assertFalse(lines[0]['attribution_review'])
+        self.assertTrue(lines[1]['attribution_review'])

@@ -357,7 +357,7 @@ export interface Panel {
   scene?: number;
   scene_title?: string;
   /** What is spoken aloud in this panel. Usually empty. */
-  dialogue?: { speaker: string; text: string; speaker_id?: string | null; offscreen?: boolean }[];
+  dialogue?: { speaker: string; text: string; speaker_id?: string | null; offscreen?: boolean; attribution_review?: boolean }[];
   /** The scene's location, settled once and shared by every panel in it.
    *  Without this each panel invented its own version of the same room. */
   place?: string;

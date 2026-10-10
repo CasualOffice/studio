@@ -630,3 +630,12 @@ WAV made from redistributable fixture text for listening review. This checks the
 engine data flow; desktop interaction and Board image rendering are separate
 checks. Locally run `python scripts/smoke_story_audio.py --output smoke-results`
 on Apple Silicon macOS. The command downloads several GiB of model weights.
+
+
+The analyzer normalizes a narration-role label regardless of capitalization and
+reuses the known first-person character. Third-person narration is a voice role,
+not an additional visible person. Quoted dialogue is extracted directly from
+source text; omitted or paraphrased model dialogue no longer rejects an entire
+scene. Uncertain speaker attribution is marked for review and uses the narrator
+until corrected with the Speaker selector in Audiobook. Unknown visible people
+and incomplete source coverage still fail validation rather than being invented.

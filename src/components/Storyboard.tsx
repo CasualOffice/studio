@@ -2033,6 +2033,7 @@ export default function Storyboard({
                   </div>)}
                 </>}
                 <div className="field">
+                  {sel.dialogue?.some((line) => line.attribution_review) && <p className="notice warn">Some dialogue speakers need review. Original words were preserved; check the speaker names before drawing or lettering.</p>}
                   <label>Caption <em>what the picture cannot say</em></label>
                   <input type="text" value={sel.caption} disabled={busy}
                          onChange={(e) => edit(selIndex, { caption: e.target.value })} />

@@ -54,6 +54,21 @@ export default function Audiobook({ library, models, notify, onLibraryChange, on
       } };
     }).catch((e) => notify(`Could not save voice settings: ${errText(e)}`, true));
   };
+  const setSpeaker = (sceneId: string, beatId: string, start: number, speakerId: string) => {
+    if (!book || !chapter) return;
+    const selectedBook = book.id, selectedChapter = chapter.id;
+    void onLibraryChange((current) => ({ ...current, books: current.books.map((b) => b.id !== selectedBook ? b : {
+      ...b, chapters: b.chapters.map((c) => c.id !== selectedChapter ? c : { ...c,
+        scenes: c.scenes.map((scene) => scene.id !== sceneId ? scene : { ...scene,
+          beats: scene.beats.map((beat) => beat.id !== beatId ? beat : { ...beat,
+            dialogue: beat.dialogue.map((line) => line.start !== start ? line : {
+              ...line, speaker_id: speakerId || null, attribution_review: false,
+            }),
+          }),
+        }),
+      }),
+    }) })).catch((e) => notify(`Could not save speaker attribution: ${errText(e)}`, true));
+  };
   const perform = async (action: (id: string) => Promise<void>) => {
     const id = newJobId(); setJob(id); setProgress(null);
     let un: (() => void) | undefined;
@@ -183,9 +198,15 @@ export default function Audiobook({ library, models, notify, onLibraryChange, on
         <p style={{ whiteSpace: "pre-wrap" }}>{chapter.source}</p></details>}
       {chapter?.scenes.map((scene) => <section key={scene.id} className="notice">
         <h4>{scene.title}</h4><p>{scene.summary}</p>
-        {scene.beats.flatMap((beat) => beat.dialogue).map((line, i) => <p key={i}>
-          <strong>{book?.characters.find((c) => c.id === line.speaker_id)?.name ?? "Unattributed"}{line.offscreen ? " (offscreen)" : ""}:</strong> {line.text}
-        </p>)}
+        {scene.beats.flatMap((beat) => beat.dialogue.map((line) => <div key={`${beat.id}-${line.start}`}>
+          <p><strong>{book?.characters.find((c) => c.id === line.speaker_id)?.name ?? "Narrator / unattributed"}{line.offscreen ? " (offscreen)" : ""}:</strong> {line.text}</p>
+          {line.attribution_review && <p className="notice warn">Speaker attribution needs review. The original words are preserved; narration uses the narrator until you assign a speaker.</p>}
+          <label>Speaker<select aria-label={`Speaker for ${line.text}`} value={line.speaker_id ?? ""} disabled={!!job}
+            onChange={(e) => setSpeaker(scene.id, beat.id, line.start, e.target.value)}>
+            <option value="">Narrator / unknown speaker</option>
+            {book?.characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select></label>
+        </div>))}
       </section>)}
     </div>
   </div>;

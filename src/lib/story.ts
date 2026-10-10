@@ -14,6 +14,7 @@ export interface StoryActor {
   appearance?: string;
 }
 export interface StoryDialogue {
+  attribution_review?: boolean;
   speaker_id: string | null;
   text: string;
   offscreen: boolean;

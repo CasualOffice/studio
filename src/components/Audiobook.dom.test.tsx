@@ -86,3 +86,22 @@ describe("neural audiobook", () => {
       { model_id: SPEECH_MODEL_ID, language: "english", delivery: "Warm and intimate", directions: { mira: "Whisper nervously" } }));
   });
 });
+
+
+it("preserves source dialogue and lets a reviewer assign an omitted speaker", async () => {
+  const reviewLibrary: StoryLibrary = { ...initial, books: [{ ...initial.books[0], chapters: [{
+    ...initial.books[0].chapters[0], scenes: [{ id: "s", title: "Scene", summary: "Waiting", start: 0, end: 5,
+      beats: [{ id: "b", start: 0, end: 5, source: "Wait.", importance: 2, tension: 2, action: "waits", setting: "station", mood: "quiet", visible: [],
+        dialogue: [{ start: 0, end: 5, text: "Wait.", speaker_id: null, offscreen: true, attribution_review: true }] }] }] }] }] };
+  function Review() {
+    const [library, setLibrary] = useState(reviewLibrary);
+    return <Audiobook library={library} models={[]} notify={notify} onProduced={produced}
+      onLibraryChange={async (update) => { setLibrary((current) => update(current)); }} />;
+  }
+  render(<Review />);
+  expect(screen.getByText(/Speaker attribution needs review/)).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("Speaker for Wait."), { target: { value: "mira" } });
+  await waitFor(() => expect(screen.queryByText(/Speaker attribution needs review/)).toBeNull());
+  expect(screen.getByText("Wait.")).toBeTruthy();
+  expect((screen.getByLabelText("Speaker for Wait.") as HTMLSelectElement).value).toBe("mira");
+});

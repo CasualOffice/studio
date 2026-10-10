@@ -126,6 +126,8 @@ def run(output):
             print('Live pipeline checks passed; listen to the fixture WAV to assess delivery.', flush=True)
         except Exception as exc:
             report['status'] = 'failed'; report['error'] = str(exc)
+            message = str(exc).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+            print(f'::error title=Live story/audio pipeline failure::{message}', flush=True)
             raise
         finally:
             (output / 'report.json').write_text(json.dumps(report, indent=2))
