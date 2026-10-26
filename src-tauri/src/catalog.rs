@@ -124,9 +124,11 @@ pub const CATALOG: &[ModelEntry] = &[
         video_from_image: false,
         guidance_default: 1.0,
         guidance_max: 1.0,
-        notes: "Makes your prompt precise without inventing anything, and \
-                turns a story into a shot list. Answers in about two seconds. \
-                Runs entirely on this Mac — nothing is sent anywhere.",
+        notes: "Prompt help and story analysis. Offers a faithful, a fuller and \
+                a stylistic version of your prompt, written for the model you \
+                picked, and shows what each one added. Qwen3.5 9B writes better \
+                prompts and is used instead when installed. Runs entirely on \
+                this Mac — nothing is sent anywhere.",
         broken: None,
         backend: None,
     },
@@ -148,7 +150,8 @@ pub const CATALOG: &[ModelEntry] = &[
         guidance_max: 1.0,
         notes: "The recommended story analyst for Board and Audiobook: tells who is \
                 who, who speaks and what each scene is about more reliably than the \
-                smaller writers. Fits a 16 GB Mac. Runs one model at a time.",
+                smaller writers, and writes the prompt help when installed. \
+                Fits a 16 GB Mac. Runs one model at a time.",
         broken: None,
         backend: None,
     },
@@ -208,9 +211,11 @@ pub const CATALOG: &[ModelEntry] = &[
         video_from_image: false,
         guidance_default: 1.0,
         guidance_max: 1.0,
-        notes: "Reads the picture you are editing, so a request about \
-                \"the jacket\" can be tied to the jacket that is actually \
-                there. Runs entirely on this Mac — nothing is sent anywhere.",
+        notes: "Reads the picture you are editing or animating — what is \
+                where, and in which colours — so \"make it blue\" or \"the \
+                person on the left\" can be tied to what is actually there. \
+                Without it, prompt help only tidies your words. Runs entirely \
+                on this Mac — nothing is sent anywhere.",
         broken: None,
         backend: None,
     },

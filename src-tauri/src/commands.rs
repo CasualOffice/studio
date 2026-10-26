@@ -1726,9 +1726,11 @@ pub async fn upscale(
     Ok(produced)
 }
 
-/// Rewrite a prompt with the local assistant. For an edit, it is shown the
-/// source image so it can name what to change and what to leave alone.
+/// Rewrite a prompt with the local assistant, for the model it is going to.
+/// For an edit, the reader is shown the source image so the writer can name
+/// what to change, where it is, and what to leave alone.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn assist_prompt(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1736,24 +1738,41 @@ pub async fn assist_prompt(
     prompt: String,
     mode: String,
     images: Vec<String>,
+    model_id: Option<String>,
+    goal: Option<String>,
 ) -> Result<serde_json::Value> {
     let _job = state.job_gate.read().await;
     state.require_unlocked()?;
 
     let host = HostInfo::probe(&state.paths());
+    let goal = goal.unwrap_or_else(|| "enhance".into());
+    if !["enhance", "tighten", "style"].contains(&goal.as_str()) {
+        return Err(AppError::msg(format!("unknown prompt goal: {goal}")));
+    }
 
     // Two different models, and which one is needed depends on the request.
     // Writing a prompt is a text job; only reading the picture needs the
     // vision model. Requiring both would make a plain text request wait on a
     // download it never uses.
-    let writer = models::find(&state.paths(), &host, "qwen3-4b-instruct-4bit")
-        .ok_or_else(|| AppError::msg("the prompt writer is missing from the catalog"))?;
-    if !writer.installed {
-        return Err(AppError::msg(
+    //
+    // The best installed writer, the same choice the story analysts make:
+    // Qwen3.5 9B writes a far better prompt than the 4B and still fits a
+    // 16 GB Mac, and the 4B is the floor rather than the only option.
+    let writer = story_writer(&state, None).map_err(|_| {
+        AppError::msg(
             "The prompt writer is not installed yet. Add it from the Models tab \
-             \u{2014} it is a 2.3 GiB download and runs entirely on this Mac.",
-        ));
-    }
+             \u{2014} Qwen3.5 9B writes the best prompts; the 2.1 GB Qwen3 4B \
+             is the smallest. Both run entirely on this Mac.",
+        )
+    })?;
+    // What the prompt is for. Its family picks the template: FLUX.2 reads a
+    // Qwen3 encoder and wants full sentences, Qwen-Image long prompts with
+    // quoted lettering, Z-Image short photographic ones.
+    let target = model_id
+        .as_deref()
+        .and_then(|id| models::find(&state.paths(), &host, id))
+        .map(|m| json!({ "id": m.id, "family": m.family, "name": m.name }))
+        .unwrap_or_else(|| json!({ "id": model_id }));
     // The reader is what looks at the picture; the writer cannot, because
     // Qwen3 has no vision encoder. But a missing reader is no reason to refuse
     // the whole request: the rewrite still works from the words alone, and the
@@ -1784,9 +1803,11 @@ pub async fn assist_prompt(
                 // installed. Null tells the engine to rewrite from the words.
                 "assistant": can_read
                     .then_some("mlx-community/Qwen2-VL-2B-Instruct-4bit"),
-                "writer": writer.repo,
+                "writer": writer,
                 "prompt": prompt,
                 "mode": mode,
+                "goal": goal,
+                "target": target,
                 "vault_inputs": vault_inputs,
             }),
         )
