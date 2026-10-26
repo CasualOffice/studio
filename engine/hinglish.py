@@ -94,10 +94,16 @@ COMMON = {k.rstrip("_"): v for k, v in COMMON.items()}
 # it stays Hindi unless English words surround it; the second is Hindi only
 # beside a Hindi word.
 LEANS_HINDI = {"main", "me", "ho", "hi", "na", "ya", "ye", "par", "mat", "ab", "jab", "tab", "kar",
-               "pe", "tu", "bas", "aa", "ja", "le", "de", "li", "di", "re", "han", "ha", "to", "the"}
+               "pe", "tu", "bas", "aa", "ja", "le", "de", "li", "di", "re", "han", "ha", "to"}
 LEANS_ENGLISH = {"is", "us", "in", "use", "do", "are", "or", "man", "log", "sun", "door", "bus",
                  "band", "pal", "din", "teen", "char"}
-AMBIGUOUS = LEANS_HINDI | LEANS_ENGLISH
+# "the" is the English article far more often than थे, which only ever
+# follows the verb it completes ("wo aaye the"). It was in LEANS_HINDI, so
+# "The boss ne kaha" opened with थे and "Use the door, yaar" became
+# "उसे थे दूर, यार": with no English word beside it, every shared word in
+# the clause fell back to Hindi together.
+ARTICLE = "the"
+AMBIGUOUS = LEANS_HINDI | LEANS_ENGLISH | {ARTICLE}
 
 # Enough English to keep the commonest words English without the lexicon.
 ENGLISH_CORE = set("""a an and the of to in on at for from with by as is are was were be been am it this that these
@@ -218,6 +224,20 @@ def sentence(text):
             j += step
         return kinds[j] if 0 <= j < len(kinds) and clause[j] == clause[i] else None
 
+    # Settle what can be settled first, so the shared words that follow have
+    # something to lean on. A word no table knows is Hindi among Hindi words,
+    # else left alone; "the" is थे only straight after a Hindi word and
+    # never before an English one.
+    for i, word in enumerate(lower):
+        if kinds[i] == "u":
+            kinds[i] = "h" if hindi_sentence and len(word) > 1 and "'" not in word else "e"
+    for i, word in enumerate(lower):
+        if word == ARTICLE:
+            left = kinds[i - 1] if i and clause[i - 1] == clause[i] else None
+            right = kinds[i + 1] if i + 1 < len(kinds) and clause[i + 1] == clause[i] else None
+            hindi_before = left == "h" or (left == "a" and lower[i - 1] in LEANS_HINDI)
+            kinds[i] = "h" if hindi_before and right != "e" else "e"
+
     chosen = []
     for i, (word, kind) in enumerate(zip(lower, kinds)):
         if kind == "a":
@@ -227,9 +247,6 @@ def sentence(text):
             else:
                 left, right = known(-1, i), known(1, i)
                 kind = "h" if left == "h" or (left is None and (right == "h" or not near and hindi_sentence)) else "e"
-        elif kind == "u":
-            # A word no table knows: Hindi among Hindi words, else left alone.
-            kind = "h" if hindi_sentence and len(word) > 1 and "'" not in word else "e"
         if kind != "h":
             chosen.append(None)
         elif word == "ki" and i and lower[i - 1] in KI_AFTER:
