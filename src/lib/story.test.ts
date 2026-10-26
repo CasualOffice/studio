@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { castFromBook, EMPTY_LIBRARY, keepBook, voiceGroups, voiceLabel, voiceLanguage, type StoryBook, type StoryLibrary } from "./story";
-import { lockStyle, panelPrompt, identityPrompt } from "./board";
+import { lockStyle, panelPrompt, castSheetPrompt } from "./board";
 import { staleness } from "./boardDoc";
 import type { Panel } from "./types";
 
@@ -37,21 +37,37 @@ describe("shared story model", () => {
   });
   it("carries canonical IDs and aliases into the editable Board cast", () => {
     expect(castFromBook(book).people[0]).toMatchObject({ id: "mira", aliases: ["Mi"], description: "red coat" });
-    const told = { ...book, characters: [...book.characters,
-      { id: "x", name: "Xan", aliases: [], visual: "", voice: "" }, { id: "y", name: "Yul", aliases: [], visual: "", voice: "" },
-      { id: "n", name: "Narrator", aliases: [], visual: "", voice: "" }] };
-    expect(castFromBook(told).people[1].name).toBe("Narrator");
   });
-  it("keeps actions and emotion even when surface enrichment is present", () => {
+  it("leads with the protagonist, not whoever was declared first", () => {
+    const beat = (id: string, visible: string[], speakers: string[] = [], appearance = "") => ({
+      id, start: 0, end: 1, source: "x", importance: 2, tension: 2, action: "", setting: "", mood: "",
+      visible: visible.map((c) => ({ character_id: c, expression: "", body_language: "", appearance })),
+      dialogue: speakers.map((s) => ({ speaker_id: s, text: "x", offscreen: false, start: 0, end: 1 })) });
+    const chapter = (beats: ReturnType<typeof beat>[], source = "x") => ({ id: "c", title: "c", source,
+      source_hash: "h", scenes: [{ id: "s", title: "s", summary: "", start: 0, end: 1, beats }] });
+    const people = [{ id: "g", name: "Guard", aliases: [], visual: "", voice: "" },
+                    { id: "j", name: "Jonas", aliases: [], visual: "", voice: "" },
+                    { id: "m", name: "Mira Vale", aliases: ["Mira"], visual: "", voice: "" }];
+    // Most spoken and seen leads, wherever the analysis listed them.
+    const talky = { ...book, characters: people,
+      chapters: [chapter([beat("1", ["j", "m"], ["m", "m"], "red coat"), beat("2", ["m"]), beat("3", [], ["g"])])] };
+    const cast = castFromBook(talky, "c");
+    expect(cast.people[0]).toMatchObject({ id: "m", tier: 1, recurring: true, outfit: "red coat" });
+    // Heard once, never seen: no cast sheet.
+    expect(cast.people.find((p) => p.id === "g")).toMatchObject({ recurring: false, tier: 3 });
+    // A first-person narrator is the protagonist even when others speak more.
+    const told = { ...talky, characters: people.map((c) => (c.id === "j" ? { ...c, aliases: ["I", "me", "my"] } : c)) };
+    expect(castFromBook(told, "c").people[0].id).toBe("j");
+  });
+  it("keeps emotion and the brief in a directed panel's prompt", () => {
     const panel: Panel = { shot: "close-up", subject: "Mira", action: "releases the key",
       setting: "station", character_in_frame: true, caption: "", description: "cold blue light",
       cast: [{ character_id: "mira", name: "Mira", visual: "red coat", expression: "grief",
         body_language: "clenched hands" }], mood: "loss", tension: 5 };
-    const prompt = panelPrompt(panel, lockStyle("ink"), "ignored legacy binding");
-    for (const text of ["releases the key", "cold blue light", "grief", "clenched hands", "The feeling of the moment: loss"]) {
+    const prompt = panelPrompt(panel, lockStyle("ink"));
+    for (const text of ["cold blue light", "grief", "clenched hands", "The feeling of the moment: loss"]) {
       expect(prompt).toContain(text);
     }
-    expect(prompt).not.toContain("ignored legacy binding");
   });
   it("does not invite an offscreen speaker into the image", () => {
     const panel: Panel = { shot: "wide", subject: "door", action: "A guard calls from behind the locked door",
@@ -73,12 +89,11 @@ describe("story appearance continuity", () => {
     cast: [{ character_id: "mira", name: "Mira", visual: "curly black hair", appearance,
       expression: "calm", body_language: "walking" }],
   });
-  it("uses story clothing as a replacement and separates the identity reference", () => {
+  it("says a change of clothes against the outfit on the cast sheet", () => {
     const prompt = panelPrompt(panel("blue dress"), lockStyle("ink"), "");
-    expect(prompt).toContain("replaces earlier clothing");
-    expect(prompt).toContain("blue dress");
+    expect(prompt).toContain("now wearing blue dress instead of the outfit on their reference");
     expect(prompt).toContain("Current location state: dry floor; dawn");
-    expect(identityPrompt(lockStyle("ink"), "Mira: curly black hair")).toContain("No full-body outfit");
+    expect(castSheetPrompt(lockStyle("ink"), "Mira", "curly black hair", "grey coat")).toContain("Wearing grey coat");
   });
 });
 

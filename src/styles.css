@@ -635,6 +635,73 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   .board-pane { max-height: 46vh; }
 }
 
+/* The story, the cast and the comic: one step at a time, top to bottom. The
+   comic is two panes -- the pages with their panels, and the panel being
+   fixed -- because a fix is judged against the page it sits on. */
+.board .board-work { grid-template-columns: minmax(340px, 1.7fr) minmax(280px, 1fr); margin-top: 12px; }
+.board .board-work > .board-pane { padding: 0 14px 26px; }
+.board-story, .board-cast {
+  margin-top: 10px; padding: 14px; background: var(--bg-raised);
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.board-story > label, .board-options label { display: flex; flex-direction: column; gap: 5px; margin: 0 0 10px; }
+.board-story textarea { width: 100%; resize: vertical; }
+.board-options { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
+.board-options input[type="number"] { width: 6em; }
+.board-check { flex-direction: row !important; align-items: center; }
+.board-style-pills { display: flex; flex-wrap: wrap; gap: 5px; }
+.board-style-custom { display: flex; flex-direction: column; gap: 6px; margin-top: 7px; }
+.board-warn-text { color: var(--bad); }
+.board-tally, .board-elapsed { font-size: var(--fs-caption); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.board-cast-head h2 { margin: 0 0 4px; }
+.board-cast-cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 10px;
+}
+.board-cast-card {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  background: var(--bg-sunk); border: 1px solid var(--border); border-radius: var(--r-md);
+}
+.board-cast-card.recast { border-color: var(--warn-border); }
+.board-cast-card label { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-small); }
+.board-cast-card textarea { resize: vertical; }
+.board-cast-card .board-cast-lead { flex-direction: row; align-items: center; gap: 6px; }
+.board-cast-sheet {
+  aspect-ratio: 2 / 3; background: var(--bg-raised); border-radius: var(--r-md); overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-faint); font-size: var(--fs-caption);
+}
+.board-cast-sheet img { width: 100%; height: 100%; object-fit: contain; }
+.board-cast-minor { margin-top: 10px; }
+.board-cast-minor-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.board-pages .notice { margin: 8px 0; }
+.board-page { position: relative; margin-bottom: 12px; }
+.board-page img { width: 100%; display: block; border-radius: var(--r-md); }
+.board-page-cell {
+  position: absolute; background: transparent; border: 2px solid transparent; border-radius: 2px;
+  cursor: pointer; padding: 0;
+}
+.board-page-cell:hover, .board-page-cell:focus-visible { border-color: var(--accent); }
+.board-page-cell[aria-current="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.board-inspector { display: flex; flex-direction: column; gap: 4px; padding-top: 10px; }
+.board-fix-row, .board-structure, .board-history { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.board-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; margin-bottom: 6px; }
+.board-choice {
+  padding: 3px; background: var(--bg-sunk); border: 1px solid var(--border); border-radius: var(--r-md);
+  cursor: pointer; display: flex; flex-direction: column; gap: 3px; font-size: var(--fs-caption); color: var(--text-dim);
+}
+.board-choice:hover, .board-choice:focus-visible { border-color: var(--accent); }
+.board-choice img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: var(--r-sm); }
+.board-history img { width: 56px; height: 56px; object-fit: cover; border-radius: var(--r-sm); display: block; }
+.board-history .btn { padding: 3px; line-height: 0; }
+.board-repair { margin: 8px 0; }
+.board-balloons { border: 1px solid var(--border); border-radius: var(--r-md); padding: 8px; margin: 6px 0; }
+.board-balloons legend { font-size: var(--fs-small); padding: 0 4px; }
+.board-balloon-row { display: grid; grid-template-columns: minmax(70px, .35fr) 1fr auto; gap: 5px; margin-bottom: 5px; }
+.board-source {
+  font-size: var(--fs-caption); line-height: 1.55; color: var(--text-dim);
+  background: var(--bg-sunk); border-radius: var(--r-sm); padding: 6px 8px; user-select: text;
+}
+
 /* ---------------------------------------------------------------------------
    The prompt enhancer's suggestion, shown before it is applied.
 --------------------------------------------------------------------------- */

@@ -58,9 +58,9 @@ describe("the board repairs a region without redrawing the frame", () => {
   });
 
   it("leaves the whole-frame redraw unmasked", () => {
-    // `drawOne` draws a panel from its references; there is nothing to mask.
-    // A mask arriving here would confine a first draw to a painted region.
-    expect(fn("drawOne")).toContain("mask: null");
+    // `renderPanel` draws a panel from its references; there is nothing to
+    // mask. A mask arriving here would confine a first draw to a painted region.
+    expect(fn("renderPanel")).toContain("mask: null");
   });
 
   it("removes the mask from the vault once the engine has read it", () => {
@@ -95,8 +95,8 @@ describe("the board repairs a region without redrawing the frame", () => {
 
   it("retires the composed pages when a panel changes", () => {
     // A page is only as current as the panels in it.
-    for (const name of ["repair", "drawOne"]) {
-      expect(fn(name)).toContain("setPages([]); setOverflow([]);");
+    for (const name of ["repair", "drawOne", "restoreVariant"]) {
+      expect(fn(name)).toContain("retirePages()");
     }
   });
 });
@@ -107,7 +107,7 @@ describe("the board edits a panel without destroying its picture", () => {
     // correcting a comma cost a five-minute render and came back with a
     // different face. The rule is `staleness` in boardDoc and is tested there.
     const body = fn("edit");
-    expect(body).toContain("editPanel(doc, panel.id, patch)");
+    expect(body).toContain("editPanel(d, panel.id, patch)");
     expect(body).toContain("stale.art");
     expect(body).not.toMatch(/setDrawn\(|next\[i\] = null/);
   });

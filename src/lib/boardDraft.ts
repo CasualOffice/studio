@@ -19,12 +19,31 @@ export interface Coverage {
    * saved by an older build will not carry it.
    */
   missing_total?: number;
+  /**
+   * Everything the chapter tells, sentence by sentence and line by line, as
+   * the engine counted it -- so the board can count again after an edit
+   * instead of trusting the figure it was given.
+   */
+  sentences?: string[];
 }
 
 export interface BoardDraft {
   storyBook?: StoryBook | null;
   chapterId?: string | null;
+  /** Each recurring character's cast sheet for this board, by character id. */
   characterSheets?: Record<string, string>;
+  /** How many times each sheet was drawn again, so a new one gets a new seed. */
+  sheetRegens?: Record<string, number>;
+  /** The cast was approved; no panel is drawn before it is. */
+  castApproved?: boolean;
+  /** People whose sheet changed after approval: their panels are drawn again. */
+  recast?: string[];
+  /** Who the board treats as the lead, when the person chose. */
+  leadId?: string | null;
+  /** The pages the board is planned for, and its format and title. */
+  pageCount?: number;
+  format?: string;
+  chapterTitle?: string;
   /**
    * Still 1, and deliberately.
    *

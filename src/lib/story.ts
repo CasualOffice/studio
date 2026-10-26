@@ -1,4 +1,5 @@
 import type { Panel } from "./types";
+import type { Coverage } from "./boardDraft";
 
 export interface StoryCharacter {
   id: string;
@@ -55,10 +56,13 @@ export interface StoryChapter {
   analysis?: "voice";
 }
 export interface CharacterReference {
-  kind?: "identity-face-v1";
+  /** "cast-sheet-v2": a full-body sheet in the chapter's outfit. The older
+   *  face study ("identity-face-v1") carried no costume and is drawn again. */
+  kind?: "identity-face-v1" | "cast-sheet-v2";
   image: string;
   style_words: string;
   visual: string;
+  outfit?: string;
 }
 export interface StoryBook {
   references?: Record<string, CharacterReference>;
@@ -120,6 +124,8 @@ export interface StoryAnalysisResult {
   book: StoryBook;
   chapter_id: string;
   panels: Panel[];
+  /** What of the chapter the panels carry, sentence by sentence. */
+  coverage?: Coverage;
   /** Stop was pressed: finished passages are kept, the rest left unanalysed. */
   stopped?: boolean;
   unanalysed?: number;
@@ -157,20 +163,57 @@ export function keepBook(library: StoryLibrary, book: StoryBook): StoryLibrary {
   return { ...library, activeBookId: book.id, ...(audio ? { audio } : {}),
     books: [...library.books.filter((b) => b.id !== book.id && !superseded.has(b.id)), merged] };
 }
-export function castFromBook(book: StoryBook) {
-  // A first-person narrator is in nearly every scene but rarely listed as
-  // visible, and is added after everyone else -- so without this they fall
-  // past the cast sheet's four places. They stand next to the lead instead.
-  const narrator = book.characters.findIndex((c) => c.name === "Narrator");
-  const characters = narrator > 1
-    ? [book.characters[0], book.characters[narrator], ...book.characters.filter((_, i) => i !== 0 && i !== narrator)]
-    : book.characters;
-  return { people: characters.map((c, i) => ({
-    id: c.id, name: c.name, aliases: c.aliases, description: c.visual,
-    mentions: book.chapters.flatMap((ch) => ch.scenes.flatMap((s) => s.beats))
-      .filter((b) => b.visible.some((a) => a.character_id === c.id)).length,
-    tier: i === 0 ? 1 : 2,
-  })), places: [], words: book.chapters.at(-1)?.source.split(/\s+/).length ?? 0 };
+/** A first-person narrator: the generic Narrator, or a named person who says "I". */
+export function isNarrator(c: Pick<StoryCharacter, "name" | "aliases">): boolean {
+  return c.name === "Narrator" || c.aliases.some((a) => ["I", "me", "my"].includes(a));
+}
+
+/** How often a name or alias appears in the text, as a whole word. */
+function namedIn(text: string, c: StoryCharacter): number {
+  let n = 0;
+  for (const name of [c.name, ...c.aliases]) {
+    if (name.length < 3) continue;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    n += (text.match(new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "gu")) ?? []).length;
+  }
+  return n;
+}
+
+/**
+ * The Board's cast for one chapter: who leads, who recurs, and what each
+ * wears in it.
+ *
+ * The lead used to be whoever the analysis declared first. It is the
+ * protagonist: the first-person narrator when the story has one, otherwise
+ * whoever speaks most and is seen and named most. The board lets a person
+ * change it. Someone seen in two beats or more recurs, and gets a cast sheet;
+ * a voice heard once -- the guard calling the last train -- does not.
+ */
+export function castFromBook(book: StoryBook, chapterId?: string | null) {
+  const chapter = book.chapters.find((c) => c.id === chapterId) ?? book.chapters.at(-1);
+  const beats = chapter?.scenes.flatMap((s) => s.beats) ?? [];
+  const text = chapter?.source ?? "";
+  const stats = book.characters.map((c) => {
+    const seen = beats.filter((b) => b.visible.some((a) => a.character_id === c.id)).length;
+    const lines = beats.flatMap((b) => b.dialogue).filter((d) => d.speaker_id === c.id).length;
+    const outfit = beats.flatMap((b) => b.visible)
+      .find((a) => a.character_id === c.id && (a.appearance ?? "").trim())?.appearance?.trim() ?? "";
+    return { c, seen, lines, named: namedIn(text, c), outfit };
+  });
+  const score = (s: typeof stats[number]) => s.lines * 2 + s.seen + s.named;
+  const present = stats.filter((s) => s.seen || s.lines || s.named);
+  const lead = present.find((s) => isNarrator(s.c))
+    ?? [...present].sort((a, b) => score(b) - score(a))[0];
+  const ordered = [...stats].sort((a, b) =>
+    Number(b === lead) - Number(a === lead) || score(b) - score(a));
+  return { people: ordered.map((s) => {
+    const recurring = s === lead || s.seen >= 2;
+    return {
+      id: s.c.id, name: s.c.name, aliases: s.c.aliases, description: s.c.visual,
+      outfit: s.outfit, mentions: s.seen, recurring,
+      tier: s === lead ? 1 : recurring ? 2 : 3,
+    };
+  }), places: [], words: text.split(/\s+/).filter(Boolean).length };
 }
 
 const QWEN_VOICES: Record<string, string> = {
