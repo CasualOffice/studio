@@ -1,7 +1,7 @@
 {
   "name": "melp-model-studio",
   "private": true,
-  "license": "GPL-3.0-or-later",
+  "license": "Apache-2.0",
   "version": "0.3.0-preview.3",
   "type": "module",
   "scripts": {

@@ -11,7 +11,7 @@
 
   <p>
     <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Apple%20Silicon-black">
-    <img alt="licence" src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue">
+    <img alt="licence" src="https://img.shields.io/badge/licence-Apache--2.0-blue">
     <img alt="tests" src="https://img.shields.io/badge/tests-180-green">
   </p>
 </div>
@@ -108,16 +108,19 @@ first picture, most of it downloading.
 
 ## Licence
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE).
 
-Every dependency is permissively licensed and therefore compatible in this
-direction: MLX, mlx-gen and mlx-vlm are MIT, PyTorch and transformers are
-Apache-2.0, pillow-heif is BSD-3-Clause, and the Tauri and RustCrypto stacks
-are MIT OR Apache-2.0. Combining them under the GPL is allowed; the reverse
-would not be.
+The dependencies the app installs are permissively licensed: MLX, mlx-gen and
+mlx-vlm are MIT, PyTorch and transformers are Apache-2.0, pillow-heif is
+BSD-3-Clause, and the Tauri and RustCrypto stacks are MIT OR Apache-2.0.
 
-If you distribute a modified build, the GPL requires you to offer its source
-under the same terms.
+One exception is opt-in. Installing the Kokoro voices adds their text
+packages, which include `phonemizer-fork` (GPL-3.0-or-later). It is not
+shipped with Model Studio: it is downloaded on your Mac, from PyPI, when you
+choose Kokoro, and it is covered by its own licence.
+
+The site's typefaces (Bricolage Grotesque, Geist, Patrick Hand) are under the
+SIL Open Font License 1.1.
 
 ## Requirements
 

@@ -64,4 +64,4 @@ usually trying to work out whether their problem is the same one.
 
 ## Licence
 
-Contributions are accepted under GPL-3.0-or-later, matching the project.
+Contributions are accepted under Apache-2.0, matching the project.
