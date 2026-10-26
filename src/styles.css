@@ -665,6 +665,23 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .proposal .chip.drop { border-color: var(--warn-border); color: var(--warn);
                        text-decoration: line-through; }
 .proposal .seen { margin-top: 8px; color: var(--text-dim); font-size: var(--fs-caption); }
+/* Your words plain, the writer's marked. */
+.proposal .text.diff ins {
+  text-decoration: none; color: var(--good);
+  background: rgba(78,201,138,.10); border-radius: 3px;
+}
+.proposal .chip.lost { border-color: var(--warn-border); color: var(--warn); }
+.proposal .chip.toggle { cursor: pointer; }
+.proposal .chip.toggle.off { color: var(--text-faint); border-color: var(--border);
+                             text-decoration: line-through; }
+.proposal .variant-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 8px; }
+.proposal .variant-tab {
+  font-size: var(--fs-caption); padding: 3px 9px; border-radius: var(--radius);
+  background: var(--bg-sunk); border: 1px solid var(--border); color: var(--text-dim);
+  cursor: pointer;
+}
+.proposal .variant-tab[aria-selected="true"] { border-color: var(--accent); color: var(--text); }
+.proposal .variant-tab.lossy { border-style: dashed; }
 .proposal .row { display: flex; gap: 6px; margin-top: 10px; }
 
 .audiobook-workspace { display: grid; grid-template-columns: minmax(260px, 380px) minmax(300px, 1fr); gap: 24px; }

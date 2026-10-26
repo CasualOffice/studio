@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { mockVaultUrl } from "../mock/images";
 import type { BookFormat } from "./types";
-import type { AssistResult, CastPlace, EngineProgress, GenerateArgs, HostInfo, Lora, ModelStatus, Orphans, Panel, RepairReport, ResolvedLora, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus } from "./types";
+import type { AssistGoal, AssistResult, CastPlace, EngineProgress, GenerateArgs, HostInfo, Lora, ModelStatus, Orphans, Panel, RepairReport, ResolvedLora, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus } from "./types";
 
 /** Tauri rejects with our structured error; normalise it to a message. */
 export function errText(e: unknown): string {
@@ -241,9 +241,12 @@ export const api = {
   enginePing: () => invoke<Record<string, unknown>>("engine_ping"),
   cancelJob: (jobId: string) => invoke<void>("cancel_job", { jobId }),
 
-  assistPrompt: (jobId: string, prompt: string, mode: string, images: string[]) =>
+  /** Prompt help, written for `modelId` with the given goal. */
+  assistPrompt: (jobId: string, prompt: string, mode: string, images: string[],
+                 opts: { modelId?: string | null; goal?: AssistGoal } = {}) =>
     invoke<AssistResult>(
-      "assist_prompt", { jobId, prompt, mode, images }
+      "assist_prompt",
+      { jobId, prompt, mode, images, modelId: opts.modelId ?? null, goal: opts.goal ?? "enhance" }
     ),
 
   generate: (args: GenerateArgs) => invoke<string[]>("generate", { args }),

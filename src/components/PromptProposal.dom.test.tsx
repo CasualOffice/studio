@@ -1,10 +1,10 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import PromptProposal from "./PromptProposal";
-import type { AssistResult } from "../lib/types";
+import type { AssistResult, AssistVariant } from "../lib/types";
 
 /**
  * The first component test in this project, and the reason there is a harness.
@@ -24,6 +24,9 @@ const base: AssistResult = {
 };
 
 const noop = () => {};
+
+// Each test mounts its own card; without this they pile up in one document.
+afterEach(cleanup);
 
 function show(over: Partial<AssistResult>) {
   render(
@@ -95,5 +98,91 @@ describe("PromptProposal tells the user what it knows", () => {
       attempt: "a tabby cat sitting on a worn oak chair",
     });
     expect(screen.getByText(/sitting on a worn oak chair/)).toBeTruthy();
+  });
+});
+
+describe("PromptProposal offers versions to compare", () => {
+  const variants: AssistVariant[] = [
+    { kind: "faithful", label: "Faithful", prompt: "Two red cars without a sunroof.",
+      additions: [], missing: [], reworded: [] },
+    { kind: "enriched", label: "Enriched",
+      prompt: "Two red cars without a sunroof, parked on wet asphalt under a grey sky.",
+      additions: ["parked on wet asphalt", "under a grey sky"], missing: [], reworded: [] },
+    { kind: "stylistic", label: "Stylistic",
+      prompt: "Three red cars on wet asphalt. Pencil sketch.",
+      additions: ["Pencil sketch"], missing: ["2 red cars", "no sunroof"], reworded: [] },
+  ];
+  const reply: AssistResult = {
+    prompt: variants[1].prompt, original: "2 red cars with no sunroof", changed: true,
+    outcome: "proposal", variants, target_label: "FLUX.2 Klein 4B",
+  };
+
+  function mount(onAccept = vi.fn()) {
+    render(<PromptProposal result={reply} onAccept={onAccept} onDismiss={noop} />);
+    return onAccept;
+  }
+
+  it("opens on the version the engine put first, among tabs for all three", () => {
+    mount();
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs.map((t) => t.textContent)).toEqual(["Faithful", "Enriched", "Stylistic ⚠"]);
+    expect(tabs[1].getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText(/Suggested for FLUX.2 Klein 4B/)).toBeTruthy();
+  });
+
+  it("highlights what a version added to your words", () => {
+    mount();
+    const marked = [...screen.getByTestId("proposal-text").querySelectorAll("ins")]
+      .map((n) => n.textContent);
+    expect(marked).toContain("parked");
+    expect(marked).toContain("asphalt");
+    expect(marked).not.toContain("red");
+  });
+
+  it("flags what a version lost, from the checks and from your words", () => {
+    mount();
+    fireEvent.click(screen.getByRole("tab", { name: /Stylistic/ }));
+    expect(screen.getByText("no longer says")).toBeTruthy();
+    expect(screen.getByText("no sunroof")).toBeTruthy();
+    expect(screen.getByText("not in this version")).toBeTruthy();
+    expect(screen.getByText("sunroof")).toBeTruthy();
+  });
+
+  it("rebuilds the prompt when an addition is switched off, and uses that", () => {
+    const onAccept = mount();
+    const chip = screen.getByRole("button", { name: "under a grey sky" });
+    expect(chip.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(chip);
+    expect(chip.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByTestId("proposal-text").textContent)
+      .toBe("Two red cars without a sunroof, parked on wet asphalt.");
+    fireEvent.click(screen.getByRole("button", { name: "Use this" }));
+    expect(onAccept).toHaveBeenCalledWith(
+      "Two red cars without a sunroof, parked on wet asphalt.");
+  });
+
+  it("keeps each version's switches its own", () => {
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: "under a grey sky" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Faithful" }));
+    expect(screen.getByTestId("proposal-text").textContent)
+      .toBe("Two red cars without a sunroof.");
+    fireEvent.click(screen.getByRole("tab", { name: "Enriched" }));
+    expect(screen.getByRole("button", { name: "under a grey sky" })
+      .getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("says the picture model will load again", () => {
+    render(<PromptProposal result={{ ...reply, released: "FLUX.2 Klein 4B" }}
+                           onAccept={noop} onDismiss={noop} />);
+    expect(screen.getByText(/unloaded to make room for the writer/)).toBeTruthy();
+  });
+
+  it("says which region it read 'it' as", () => {
+    render(<PromptProposal
+      result={{ ...reply, saw_image: true, regions: ["man in a jacket (centre)"],
+                target_region: "man in a jacket (centre)" }}
+      onAccept={noop} onDismiss={noop} />);
+    expect(screen.getByText(/“it” read as man in a jacket/)).toBeTruthy();
   });
 });

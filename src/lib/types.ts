@@ -445,6 +445,25 @@ export type AssistOutcome =
   | "rewrite_rejected"  // it tried, and what it wrote was worse
   | "unclear";          // the request names nothing that could be drawn
 
+/**
+ * What the person wants from prompt help: a fuller description, the same
+ * request said clearly, or other looks for the same picture.
+ */
+export type AssistGoal = "enhance" | "tighten" | "style";
+
+/** One version of the prompt, offered alongside the others. */
+export interface AssistVariant {
+  kind: "faithful" | "enriched" | "stylistic";
+  label: string;
+  prompt: string;
+  /** Phrases the writer added, each verbatim in `prompt`, so each can be left out. */
+  additions: string[];
+  /** Things the request fixed that this version no longer says. */
+  missing: string[];
+  /** Checks the wording failed but the writer judged to be the same request. */
+  reworded: string[];
+}
+
 export interface AssistResult {
   /**
    * Which contract this reply was written against.
@@ -483,4 +502,19 @@ export interface AssistResult {
   description?: string;
   unclear?: boolean;
   note?: string;
+  // Version 2. Optional for the same reason as above.
+  goal?: AssistGoal;
+  mode?: "generate" | "edit" | "video";
+  /** The model the prompt was written for, by name. */
+  target_label?: string;
+  /** Faithful, enriched and stylistic versions; `prompt` is the one shown first. */
+  variants?: AssistVariant[];
+  /** What the request fixed and every variant was checked for. */
+  locked?: string[];
+  /** What the reader saw, with where it is. */
+  regions?: string[];
+  /** The region "it" was read as, when the request said "it". */
+  target_region?: string;
+  /** The model released to make room for the writer; it loads again next run. */
+  released?: string;
 }

@@ -76,6 +76,27 @@ const answers: Record<string, unknown> = {
     .map((id) => ({ id, language: { h: "Hindi / Indian English", a: "English (US)", b: "English (UK)" }[id[0]] })) },
   hf_token_status: { present: false, hint: null },
   storage_info: { models_root: "/mock/models", models_bytes: 2.4e10, volume_free_gib: 180, is_external: false },
+  // Prompt help, whatever was typed: enough to look at the card.
+  assist_prompt: {
+    version: 2, outcome: "proposal", changed: true, goal: "enhance", mode: "generate",
+    original: "2 red cars with no sunroof, plain white background",
+    prompt: "Two red cars side by side, neither with a sunroof, on a plain white background, lit by soft even studio light from above, seen at eye level.",
+    target_label: "FLUX.2 Klein 4B", released: "FLUX.2 Klein 4B",
+    locked: ["2 red cars", "no sunroof", "red cars", "white background"],
+    variants: [
+      { kind: "faithful", label: "Faithful", prompt: "Two red cars without a sunroof on a plain white background.",
+        additions: [], missing: [], reworded: [] },
+      { kind: "enriched", label: "Enriched",
+        prompt: "Two red cars side by side, neither with a sunroof, on a plain white background, lit by soft even studio light from above, seen at eye level.",
+        additions: ["side by side", "lit by soft even studio light from above", "seen at eye level"], missing: [], reworded: [] },
+      { kind: "stylistic", label: "Stylistic",
+        prompt: "Two red cars side by side, neither with a sunroof, on a plain white background, lit by soft even studio light from above, seen at eye level. Gouache illustration with flat colour.",
+        additions: ["side by side", "lit by soft even studio light from above", "seen at eye level", "Gouache illustration with flat colour"],
+        missing: [], reworded: [] },
+    ],
+    added: [], dropped: [], corrected: [], removed: [], saw_image: false, unclear: false,
+    description: "", note: "", attempt: "", rejected_because: "", regions: [], target_region: "",
+  },
 };
 
 export async function invoke(cmd: string): Promise<unknown> {

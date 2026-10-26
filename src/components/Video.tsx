@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, errText, isCancelled, fmtDuration, newJobId, onEngineProgress, onEnginePreview, vaultUrl } from "../lib/api";
-import type { AssistResult, EngineProgress, ModelStatus } from "../lib/types";
+import type { AssistGoal, AssistResult, EngineProgress, ModelStatus } from "../lib/types";
 import { humanDuration } from "../lib/presets";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
 import { loadPref, savePref } from "../lib/prefs";
-import PromptProposal from "./PromptProposal";
+import PromptProposal, { PromptGoal } from "./PromptProposal";
+import { ANALYST_IDS } from "../lib/story";
 import Field from "./Field";
 import { LiveStatus, ResultStrip, RunError, useRunShortcut, useStatus, type Made } from "./creation";
 
@@ -131,9 +132,12 @@ export default function Video({
     // The writer, specifically. There are two assist models now, and `.some`
     // was satisfied by the picture-reader alone -- so the button looked ready
     // and then failed with "the prompt writer is not installed".
-    () => models.some((m) => m.id === "qwen3-4b-instruct-4bit" && m.installed),
+    // Any writer: the engine uses the best one installed.
+    () => models.some((m) => ANALYST_IDS.includes(m.id) && m.installed && !m.hopeless),
     [models]
   );
+  const [goal, setGoal] = useState<AssistGoal>(() => loadPref("promptGoal", "enhance" as AssistGoal));
+  useEffect(() => { savePref("promptGoal", goal); }, [goal]);
 
   /** Add the motion a video model is steered by, keeping the user's words. */
   const improve = async () => {
@@ -160,7 +164,8 @@ export default function Video({
       // it could decline without rewriting anything both reported
       // "made your prompt specific", which was untrue and is most of why this
       // button reads as doing nothing.
-      setProposal(await api.assistPrompt(id, prompt, "video", firstFrame));
+      setProposal(await api.assistPrompt(id, prompt, "video", firstFrame,
+                                         { modelId: model?.id ?? null, goal }));
       setStatus("Suggestion ready, below the prompt.");
     } catch (e) {
       notify(errText(e), true);
@@ -321,16 +326,21 @@ export default function Video({
                 Undo the rewrite
               </button>
             )}
+            <PromptGoal value={goal} onChange={(g) => { setGoal(g); setProposal(null); }}
+                        disabled={assisting} />
             <button
               className="btn small full"
               style={{ marginTop: 7 }}
               disabled={assisting || running || !prompt.trim()}
               onClick={improve}
               title={assistantReady
-                ? "Keeps your words and adds the motion a video model needs"
-                : "Needs the prompt assistant from the Models tab"}
+                ? "Keeps the pace you asked for and says how the subject and the "
+                  + "camera move. Shown next to your words before anything changes."
+                : "Needs the prompt writer from the Models tab"}
             >
-              {assisting ? "Thinking…" : "✨ Make my prompt precise"}
+              {assisting ? "Thinking…"
+                : goal === "style" ? "Suggest styles"
+                : `${goal === "tighten" ? "Tighten" : "Enhance"} my prompt`}
             </button>
             {assisting && draft && (
               // Silent on purpose: read aloud, every token would interrupt

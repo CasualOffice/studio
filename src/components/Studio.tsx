@@ -1,12 +1,13 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, errDetail, errText, isCancelled, fmtDuration, newJobId, onEnginePreview, onEngineProgress, vaultUrl } from "../lib/api";
-import type { AssistResult, EngineProgress, ModelStatus, Recipe } from "../lib/types";
+import type { AssistGoal, AssistResult, EngineProgress, ModelStatus, Recipe } from "../lib/types";
 import { autoPick, estimateSeconds, humanDuration, QUALITY_LABEL, SHAPES, stepsFor, type Quality } from "../lib/presets";
 import { editKindFor, isOutpaintFill, OUTPAINT_FILLS, parseOutpaintPadding, type EditKind } from "../lib/recipe";
 import { exportItem, ImageDrop, JobProgress } from "./shared";
 import MaskCanvas from "./MaskCanvas";
 import SendTo, { type Destination } from "./SendTo";
-import PromptProposal from "./PromptProposal";
+import PromptProposal, { PromptGoal } from "./PromptProposal";
+import { ANALYST_IDS } from "../lib/story";
 import Loras from "./Loras";
 import Adjust from "./Adjust";
 import { loadPref, savePref } from "../lib/prefs";
@@ -52,12 +53,15 @@ export default function Studio({
   );
 
   const assistantReady = useMemo(
-    // The writer, specifically. There are two assist models now, and `.some`
-    // was satisfied by the picture-reader alone -- so the button looked ready
-    // and then failed with "the prompt writer is not installed".
-    () => models.some((m) => m.id === "qwen3-4b-instruct-4bit" && m.installed),
+    // A writer, specifically: any of them, since the engine uses the best one
+    // installed. `.some` over every assist model was satisfied by the
+    // picture-reader alone -- so the button looked ready and then failed with
+    // "the prompt writer is not installed".
+    () => models.some((m) => ANALYST_IDS.includes(m.id) && m.installed && !m.hopeless),
     [models]
   );
+  const [goal, setGoal] = useState<AssistGoal>(() => loadPref("promptGoal", "enhance" as AssistGoal));
+  useEffect(() => { savePref("promptGoal", goal); }, [goal]);
 
   const [advanced, setAdvanced] = useState(() => loadPref("advanced", false));
   const [modelId, setModelId] = useState<string>("");
@@ -238,8 +242,12 @@ export default function Studio({
       // existed meant you could not see what changed, and the three ways it
       // could decline -- yours was fine, the rewrite was worse, the request
       // named nothing -- were reported with one misleading sentence.
+      // Written for the model that will read it: FLUX.2, Qwen-Image and
+      // Z-Image each want a different prompt, and an edit model wants an
+      // instruction rather than a scene.
       const r = await api.assistPrompt(
-        id, prompt, mode, mode === "edit" ? images : []);
+        id, prompt, mode, mode === "edit" ? images : [],
+        { modelId: model?.id ?? null, goal });
       setProposal(r);
       // Said once, at the end. The draft above is silent on purpose.
       setStatus("Suggestion ready, below the prompt.");
@@ -550,20 +558,29 @@ export default function Studio({
                   Undo the rewrite
                 </button>
               )}
+              <PromptGoal value={goal} onChange={(g) => { setGoal(g); setProposal(null); }}
+                          disabled={assisting} />
               <button
                 className="btn small full"
                 style={{ marginTop: 7 }}
                 disabled={assisting || running || !prompt.trim()}
                 onClick={improve}
+                // Said as it is. The old tooltip promised it added no objects
+                // while its instructions told the writer to choose a room,
+                // a light and a medium for every request.
                 title={assistantReady
-                  ? "Makes your request precise. Adds no objects you did not ask for"
+                  ? `Written for ${model?.name ?? "the selected model"}. Shown `
+                    + "next to your words before anything changes. The picture "
+                    + "model is unloaded while the writer runs and loads again "
+                    + "on your next run."
                   : "Needs the prompt writer from the Models tab"}
               >
                 {assisting
                   ? "Thinking…"
-                  : mode === "edit" && images.length > 0
-                    ? "Make this precise using my picture"
-                    : "Make my prompt precise"}
+                  : goal === "style"
+                    ? "Suggest styles"
+                    : `${goal === "tighten" ? "Tighten" : "Enhance"} my prompt`
+                      + (mode === "edit" && images.length > 0 ? " using my picture" : "")}
               </button>
               {assisting && draft && (
                 // Silent on purpose: read aloud, every token would interrupt
