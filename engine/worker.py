@@ -5880,6 +5880,11 @@ def op_audiobook(req_id, req):
 
 
 def op_character_reference(req_id, req):
+    """Two to eight cast sheets side by side, in the order given: the lineup
+    a panel with several people is drawn against when the model takes one
+    reference. The sheets are full-body figures drawn at 2:3, so each fills
+    its tile, and the board sends them in the order the people stand, left
+    to right, which is how the panel prompt names them."""
     from PIL import Image, ImageOps
     import vaultcrypto as vc
     inputs = req.get("vault_inputs") or []

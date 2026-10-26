@@ -94,10 +94,32 @@ to see what asked for it.
 
 ## Implemented workflow
 
-The UI exposes five review gates: **Read story → Plan panels → Prepare briefs →
-Draw → Compose**. Story edits invalidate all derived work. Panel edits invalidate
-only that panel's image and any composed pages. Drawing is resumable in small
-batches, reuses cast and place references, and composition is available only
-when every panel has an image. The manuscript, cast, prompts, corrections,
-references, outputs, and coverage report are stored as an encrypted vault draft;
-only interface choices such as layout and batch size remain in preferences.
+As of 2026-10-27 the board is one button and one gate:
+
+1. **Make comic.** Paste the story, pick a style and a page count (four by
+   default). One pass analyses the story (`story.py`) and plans the panels
+   (`director.py`): about one panel per 55 words, never more than the pages
+   hold (manga four a page, comics five), merging the least important moments
+   into their neighbours. Every spoken line survives a merge; merged sentences
+   are lettered as captions while a panel has words to spare (25 words in
+   manga, 35 otherwise, at most 25 a balloon) and are otherwise reported as
+   missing. Every panel gets a visual brief built from the analysis; a writer
+   rewrites only the briefs the rules could not make drawable, ten at a time.
+   Shot, angle, framing, blocking, layout and lettering are the rules' alone.
+2. **Cast.** One full-body sheet per recurring person, in the outfit stated
+   or chosen for the chapter, seeded by character id. Look, outfit, name and
+   lead are editable; a sheet can be drawn again or replaced by a picture.
+   Nothing is drawn before the cast is approved.
+3. **Draw.** Page one first, at each cell's own shape (`layout.ts`), composed
+   as soon as it is finished; later pages follow by themselves. Stop leaves
+   the board ready to continue.
+4. **Fix in place.** Two to four versions of a panel from new seeds to pick
+   from, a painted repair, or its history. Captions and balloons are set on
+   the page, so changing them never redraws. Drawing one person's sheet again
+   after approval redraws only their panels.
+
+Coverage is counted sentence by sentence -- drawn, captioned or in a balloon --
+and recounted after every edit, with what is missing listed. Balloons sit on
+their speaker's side with the tail toward them and no name labels; manga pages
+and balloons read right to left. The writer's shot list, the cast read and the
+enrichment stage are gone; a board saved by them opens read-only.
