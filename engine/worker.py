@@ -1573,131 +1573,6 @@ def _significant(text: str) -> list[str]:
 # Storyboard
 # --------------------------------------------------------------------------
 
-SHOTLIST_SYSTEM = (
-    "You are a storyboard artist. You break prose into panels a camera could "
-    "photograph.\n\n"
-    "Rules:\n"
-    "1. Never invent an event the story does not contain. You are dividing "
-    "what is there, not writing more of it.\n"
-    "2. Cover the whole story, in order, from the first beat to the last. Do "
-    "not spend every panel on the ending.\n"
-    "3. Each panel is one moment. No cuts inside a panel, no passage of time.\n"
-    "4. Vary the shot sizes. A page of close-ups reads as flat as a page of "
-    "wides.\n"
-    "5. Group the panels into scenes. A scene is a continuous stretch in one "
-    "place: when the story moves somewhere else, or time passes, a new scene "
-    "begins. Number them from 1, in order, and give each a short title.\n"
-    "6. A caption carries what the picture cannot: what is felt, known, or "
-    "about to happen. Never write a caption that describes the panel -- the "
-    "reader is looking at it.\n"
-    "7. Every action must be something a camera records. A story beat that is "
-    "heard, thought or felt has to become the visible thing that goes with "
-    "it, or the panel is drawn as nonsense: \"hears the tap\" was rendered "
-    "once as a flooded kitchen.\n\n"
-    "Converting the invisible:\n"
-    "  hears the tap running   -> turns toward the kitchen doorway\n"
-    "  realises she is not alone -> stops still, head lifted\n"
-    "  remembers the argument  -> stares past the camera, jaw set\n"
-    "  the room feels wrong    -> stands in the doorway, not entering\n"
-)
-
-
-def _shotlist_instruction(story: str, count: int) -> str:
-    return (
-        f"Break this story into exactly {count} panels.\n\n"
-        "Reply with only a JSON array of exactly "
-        f"{count} objects, each with:\n"
-        '  "shot": one of "wide", "medium", "close-up"\n'
-        '  "purpose": what this panel is for -- one of "establishing" (shows '
-        'the reader where they are), "action" (something happens), "reaction" '
-        '(someone registers what just happened), "detail" (one object or a '
-        'part of one, no people), "dialogue" (the panel exists to carry what '
-        'is said)\n'
-        '  "subject": who or what is in frame\n'
-        '  "action": what is happening, as a short phrase\n'
-        '  "setting": where it takes place\n'
-        '  "character_in_frame": true if the person we follow is visible in '
-        'this panel, false if it shows something else\n'
-        '  "characters": an array naming every person visible in this panel, '
-        'using exactly how the story refers to them\n'
-        '  "source": an exact short quote from the sentence or beat this panel '
-        'covers. Never paraphrase it\n'
-        '  "caption": one short line to sit under the panel, in the voice of '
-        'the story. Narration, not description -- the reader can already see '
-        'the picture. Six to fourteen words. Empty string if the panel needs '
-        'no words. It must belong to THIS panel: never a line about something '
-        'that happens in a later one.\n'
-        '  "scene": the number of the scene this panel belongs to, from 1\n'
-        '  "scene_title": a short name for that scene, the same on every panel '
-        'of it\n'
-        '  "dialogue": an array of what is spoken aloud in this panel, each '
-        '{"speaker": who says it, "text": the words}. Use the story\'s own '
-        'words where it has them. Empty array when nobody speaks -- most '
-        'panels. At most two lines, each under twelve words.\n\n'
-        "No prose before or after the JSON.\n\n"
-        f"Story:\n{story}"
-    )
-
-
-def _plain(text: str) -> str:
-    """Text with its typography flattened, for comparing one copy to another.
-
-    A writer asked to quote the story back retypes it, and retyping changes
-    the characters without changing the words: a curly apostrophe becomes a
-    straight one, an em dash becomes a hyphen, a comma is dropped. Comparing
-    the two literally then says the quote is invented.
-    """
-    out = []
-    for c in text.lower():
-        if c in "\u2018\u2019\u02bc`":
-            out.append("'")
-        elif c in "\u201c\u201d":
-            out.append('"')
-        elif c in "\u2013\u2014\u2212":
-            out.append("-")
-        elif c.isalnum() or c.isspace() or c in "'\"-":
-            out.append(c)
-        else:
-            out.append(" ")
-    return " ".join("".join(out).split())
-
-
-def _quotes_story(source: str, story: str) -> bool:
-    """Whether this quote came out of the story rather than out of the model.
-
-    Exact containment first, on flattened text. Failing that, a quote whose
-    content words are nearly all in the story is a real quote that was retyped
-    loosely; a quote that invents its subject is not, and is the thing this
-    exists to catch.
-    """
-    if not source:
-        return False
-    flat_story = _plain(story)
-    if _plain(source) in flat_story:
-        return True
-    words = _significant(source)
-    if not words:
-        return False
-    story_words = _significant(story)
-    if not story_words:
-        return False
-    # One contiguous run of the story's own words, not a bag of them.
-    #
-    # The test was `hits / len(words) >= 0.8` counted against a *set*, which
-    # asked only whether the words existed somewhere -- in any order, at any
-    # distance. Against prose reading "Anna opened the door slowly. A grey cat
-    # slept on the mat by the fire." it accepted "Anna slept on the mat" (it
-    # was the cat) and even the scrambled "the door opened Anna slowly". A
-    # passage retyped loosely still appears as one run of the story; a
-    # recombination of its words does not, which is the whole distinction this
-    # function exists to make.
-    import difflib
-
-    match = difflib.SequenceMatcher(a=words, b=story_words, autojunk=False) \
-        .find_longest_match(0, len(words), 0, len(story_words))
-    return match.size / len(words) >= 0.8
-
-
 def _as_scene(value: Any) -> int:
     """Scene number from whatever the writer put in the field.
 
@@ -1720,421 +1595,6 @@ def _as_scene(value: Any) -> int:
         if re.search(rf"\b{word}\b", lowered):
             return n
     return 1
-
-
-def _shotlist_beats(raw: str) -> list[Any]:
-    """Locate and parse the panel array, without bounding or cleaning it.
-
-    Split out so the caller can see how many beats the writer actually
-    returned. The parse used to slice to the requested count before anything
-    counted, and two things followed from that. The tail of a division that
-    overshot was dropped with nothing said -- a story the writer divided into
-    twenty-six beats became the first twenty, and the ending was simply not in
-    the board. And `out_of_range`, the check written for exactly this, compared
-    the already-truncated length against the range it had just been truncated
-    into, so it could never fire.
-
-    Models fence JSON in backticks and preface it with a sentence however
-    firmly they are told not to, so the array is located rather than assumed.
-    """
-    body = raw.strip()
-    if "```" in body:
-        parts = body.split("```")
-        if len(parts) > 1:
-            body = parts[1]
-            if body.lstrip().lower().startswith("json"):
-                body = body.lstrip()[4:]
-    start, end = body.find("["), body.rfind("]")
-    if start < 0 or end <= start:
-        raise ValueError("the writer did not return a panel list")
-
-    try:
-        panels = json.loads(body[start:end + 1])
-    except json.JSONDecodeError:
-        # The reply ran out of tokens partway through a panel.
-        #
-        # `rfind("]")` then lands on the closing bracket of the last panel's
-        # own `dialogue` array rather than the end of the outer one, so the
-        # slice is a list with a half-written object on the end and the parse
-        # fails -- throwing away every complete panel in front of it. Measured
-        # on a 310-word story: the writer returned fourteen whole panels and
-        # was cut off inside the fifteenth, and all fourteen were discarded
-        # after minutes of waiting. Salvaging them is the difference between a
-        # division the user can correct and an error that names nothing.
-        panels = _salvage_objects(body[start:])
-        if not panels:
-            raise
-    if not isinstance(panels, list) or not panels:
-        raise ValueError("the writer returned no panels")
-    return panels
-
-
-def _salvage_objects(text: str) -> list[Any]:
-    """Every complete top-level object in a possibly truncated JSON array.
-
-    Depth-counted rather than pattern-matched, because a panel contains nested
-    objects (its dialogue) and braces inside strings (rare, but a caption is
-    free text). Anything still open when the text runs out is dropped.
-    """
-    out: list[Any] = []
-    depth = 0
-    start = -1
-    in_string = False
-    escaped = False
-    for i, ch in enumerate(text):
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0 and start >= 0:
-                try:
-                    out.append(json.loads(text[start:i + 1]))
-                except json.JSONDecodeError:
-                    pass
-                start = -1
-            elif depth < 0:
-                break
-    return out
-
-
-def _array_body(text: str, start: int) -> str:
-    """What is inside an array whose opening bracket sits just before `start`.
-
-    Runs to the matching close bracket, or to the end of the text when the
-    reply was cut off before it arrived -- which is the case this exists for.
-    Bounding the slice matters because the caller salvages objects out of it,
-    and an unbounded scan would collect the objects of the *next* array as
-    well: a cast reply holds "people" and "places" one after the other, and
-    reading past the end of the first put every place into the cast.
-    """
-    depth = 0
-    in_string = False
-    escaped = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch in "[{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-        elif ch == "]":
-            if depth == 0:
-                return text[start:i]
-            depth -= 1
-    return text[start:]
-
-
-def _clean_shotlist(beats: list[Any], story: str) -> list[dict[str, Any]]:
-    """Every beat pulled into the shape the board expects."""
-    cleaned: list[dict[str, Any]] = []
-    for p in beats:
-        if not isinstance(p, dict):
-            continue
-        try:
-            cleaned.append(_clean_panel(p, story))
-        except Exception:
-            # One malformed panel is not a reason to throw away the division.
-            # The writer occasionally returns a field as something unexpected,
-            # and losing every other panel to it wastes the whole wait.
-            continue
-    if not cleaned:
-        raise ValueError("the writer returned no usable panels")
-    return cleaned
-
-
-def _parse_shotlist(raw: str, count: int, story: str = "") -> list[dict[str, Any]]:
-    """Locate, bound and clean in one step, for the fixed-count path."""
-    return _clean_shotlist(_shotlist_beats(raw)[:count], story)
-
-
-def _clean_panel(p: dict[str, Any], story: str) -> dict[str, Any]:
-    """One panel, with every field pulled into the shape the board expects.
-
-    Separate from the loop so that a panel this cannot make sense of can be
-    dropped on its own.
-    """
-    shot = str(p.get("shot", "medium")).strip().lower()
-    if shot not in ("wide", "medium", "close-up"):
-        shot = "medium"
-    # Whether the person we follow is in frame decides whether their
-    # description belongs in the prompt at all. A panel whose subject is
-    # a running tap, given the protagonist's description, draws her
-    # running instead.
-    in_frame = p.get("character_in_frame")
-    raw_characters = p.get("characters")
-    characters: list[str] = []
-    if isinstance(raw_characters, list):
-        for value in raw_characters:
-            name = " ".join(str(value).split())[:80]
-            if name and (not story or _mentions(story, name) > 0):
-                characters.append(name)
-    # Worked out before the record is built, because the in-frame default
-    # below depends on it. The stated one is kept apart from the inferred one:
-    # inference is good enough to label a panel and not good enough to decide
-    # who is in it.
-    stated_purpose = str(p.get("purpose") or "").strip().lower()
-    if stated_purpose not in PURPOSES:
-        stated_purpose = ""
-    purpose = _purpose_of({**p, "characters": characters})
-    source = " ".join(str(p.get("source", "")).split())[:240]
-    if story and source and not _quotes_story(source, story):
-        # Not a quote. Match the paraphrase back onto the prose rather than
-        # dropping the anchor: the sentence exists in what the user pasted, and
-        # storing their words instead of the writer's is the whole point of
-        # anchoring. Empty only when nothing in the story matches, which means
-        # the beat was invented and is worth seeing.
-        source = _snap_source(source, story)
-    if story and source:
-        # Too short to anchor anything. A bare name is a substring of the
-        # prose, so it passes as a quote -- and then credits a whole sentence
-        # in the coverage figure while telling the reader nothing about which
-        # moment the panel came from. A whole sentence of the story is kept
-        # however short it is; a fragment has to carry two content words.
-        if (len(_significant(source)) < 2
-                and source not in _story_units(story)):
-            source = ""
-    return {
-        "shot": shot,
-        "subject": str(p.get("subject", "")).strip(),
-        "action": str(p.get("action", "")).strip(),
-        "setting": str(p.get("setting", "")).strip(),
-        # Default to showing them: a board is mostly about its character,
-        # and a missing flag should not quietly write them out. Except on a
-        # panel the writer has called a detail -- one object, or part of one --
-        # where the default was a coin flip in favour of putting her in a frame
-        # that exists precisely because she is not in it. That is the failure
-        # the character sheet is already withheld to avoid, arrived at from the
-        # other direction.
-        "character_in_frame": (
-            # Only on the writer's own word, never on our inference. A wide
-            # shot whose subject is "Mira" is not an establishing shot merely
-            # because the characters array was left empty, and guessing it was
-            # writes her out of her own panel. `stated_purpose` is true only
-            # when the writer named one of the five itself.
-            False if stated_purpose in ("detail", "establishing")
-            and in_frame is None and not characters
-            else bool(characters) or (True if in_frame is None else bool(in_frame))
-        ),
-        "purpose": purpose,
-        "characters": characters,
-        "source": source,
-        # Narration, kept short. A caption that restates the picture is
-        # worse than none, and a long one stops being a caption.
-        "caption": " ".join(str(p.get("caption", "")).split())[:120],
-        # What is actually said aloud. Bubbles are drawn over the panel, so
-        # a long line covers the picture it belongs to -- hence the cap.
-        "dialogue": _clean_dialogue(p.get("dialogue")),
-        # Which continuous stretch of story this belongs to. Pages are
-        # broken on scene boundaries, so this decides the shape of the
-        # finished thing more than any other field.
-        "scene": _as_scene(p.get("scene", 1)),
-        "scene_title": " ".join(str(p.get("scene_title", "")).split())[:60],
-    }
-
-
-def _story_units(story: str) -> list[str]:
-    """The story as the sentences coverage and anchoring are measured in."""
-    return [" ".join(s.split())
-            for s in re.split(r"(?<=[.!?])\s+|\n+", story) if s.strip()]
-
-
-def _snap_source(source: str, story: str) -> str:
-    """The passage of the story a panel is really about, in the story's words.
-
-    The writer is told to quote the prose exactly and often does, but it also
-    paraphrases -- "Marta pours tea and sits" for "She poured the tea and sat
-    down without drinking it." That used to be thrown away: `_clean_panel`
-    blanked any source that did not quote the story, so the panel arrived with
-    no anchor, the rail said "No exact source quote was returned", and coverage
-    counted the sentence as unanchored even though a panel was about it. The
-    stricter the quote check got, the more often that happened.
-
-    Blanking is the wrong repair, because the information is not missing -- the
-    sentence is right there in what the user pasted. So the paraphrase is
-    matched back onto the prose and the prose wins. What the board stores is
-    always the user's own words, which is what makes the anchor worth showing
-    and the coverage figure worth trusting.
-
-    Returns "" only when nothing in the story is a plausible match, which is
-    the case worth surfacing: the writer invented a beat.
-    """
-    if not source or not story:
-        return ""
-    units = _story_units(story)
-    if not units:
-        return ""
-    # Stems, because a paraphrase is mostly the same words in another tense:
-    # "pours" for "poured", "opens" for "opened".
-    wanted = {_stem(w) for w in _significant(source)}
-    if not wanted:
-        return ""
-
-    best, best_shared = "", 0
-    best_score = 0.0
-    for unit in units:
-        got = {_stem(w) for w in _significant(unit)}
-        if not got:
-            continue
-        shared = len(wanted & got)
-        score = shared / len(wanted)
-        if score > best_score or (score == best_score and shared > best_shared):
-            best, best_score, best_shared = unit, score, shared
-
-    # Content words in common, not characters in common. Scoring by character
-    # similarity anchored "Marta boarded a train to Leeds" -- a beat that is
-    # nowhere in the story -- onto "Marta opened the kitchen door.", because
-    # the two strings look alike. Fabricating an anchor is worse than having
-    # none: it is the failure this whole mechanism exists to make visible.
-    #
-    # Half the paraphrase's content words, and at least two of them, so a
-    # single shared name cannot carry a match on its own.
-    enough = best_shared >= min(2, len(wanted))
-    return best if best_score >= 0.5 and enough else ""
-
-
-PURPOSES = ("establishing", "action", "reaction", "detail", "dialogue")
-
-
-def _purpose_of(panel: dict[str, Any]) -> str:
-    """What a panel is for, asked of the writer and inferred when it declines.
-
-    `shot` says how far away the camera is. It does not say what the panel is
-    *doing*, and the two are not the same question: a close-up of a face
-    registering bad news and a close-up of a dripping tap want opposite
-    treatment -- one needs the character held exactly, the other must not have
-    her anywhere near it. The pipeline had only distance, so it gave both the
-    same references and the same brief rules.
-
-    Inference is deliberately conservative. It only claims what the panel
-    already states outright, and falls back to "action", which is what every
-    panel was implicitly treated as before.
-    """
-    stated = str(panel.get("purpose") or "").strip().lower()
-    if stated in PURPOSES:
-        return stated
-    if panel.get("dialogue"):
-        return "dialogue"
-    # Nobody in frame and nothing named to follow: this is a thing, not a
-    # person doing something.
-    if not panel.get("characters") and not panel.get("character_in_frame"):
-        return "detail" if panel.get("shot") == "close-up" else "establishing"
-    if panel.get("shot") == "wide" and not panel.get("characters"):
-        return "establishing"
-    return "action"
-
-
-def _shot_mix(panels: list[dict[str, Any]]) -> dict[str, Any]:
-    """How varied the shots are, reported the way story coverage is.
-
-    The writer is told "vary the shot sizes -- a page of close-ups reads as
-    flat as a page of wides", and nothing checked whether it had. Coverage gets
-    a full report; this got none, so twelve close-ups in a row went unnoticed
-    until forty minutes of drawing had been spent on them.
-
-    Reported, never enforced. The right number of wides is a judgement about a
-    particular story, and refusing a division on it would be this tool telling
-    a writer how to direct.
-    """
-    counts = {shot: 0 for shot in ("wide", "medium", "close-up")}
-    for panel in panels:
-        shot = str(panel.get("shot") or "medium")
-        if shot in counts:
-            counts[shot] += 1
-    total = sum(counts.values())
-    if total == 0:
-        return {"counts": counts, "total": 0, "uniform": None}
-    dominant, most = max(counts.items(), key=lambda kv: kv[1])
-    # Four is where a page starts to read as a page. Below it a run of one shot
-    # size is a short scene, not a flat one.
-    uniform = dominant if total >= 4 and most / total > 0.7 else None
-    return {"counts": counts, "total": total, "uniform": uniform,
-            "purposes": _purpose_counts(panels)}
-
-
-def _purpose_counts(panels: list[dict[str, Any]]) -> dict[str, int]:
-    counts = {p: 0 for p in PURPOSES}
-    for panel in panels:
-        counts[_purpose_of(panel)] += 1
-    return counts
-
-
-def _story_coverage(story: str, panels: list[dict[str, Any]]) -> dict[str, Any]:
-    """Report which prose units are anchored by a panel's exact source quote.
-
-    This is the only guarantee against a board that quietly loses the middle of
-    the story, so it has to be wrong in neither direction. It was wrong in both.
-
-    A quote used to be reusable, so one source could be credited against every
-    sentence it resembled: four distinct sentences with a single quote supplied
-    reported 100% covered and nothing missing, when three had been dropped. A
-    fuzzy match is now spent by the sentence it anchors. A quote that genuinely
-    *contains* a sentence is not spent, because one passage can legitimately
-    span several.
-
-    And a sentence with no content words -- "It is." -- can never be anchored by
-    any quote, so counting it as uncovered made a board that quoted every
-    sentence verbatim report 67%. Those are not prose that can go missing, so
-    they are not in the denominator.
-    """
-    units = _story_units(story)
-    sources = [str(p.get("source", "")).lower() for p in panels if p.get("source")]
-    scorable = [(index, unit) for index, unit in enumerate(units)
-                if _significant(unit)]
-    spent = [False] * len(sources)
-    covered: set[int] = set()
-    for index, unit in scorable:
-        words = set(_significant(unit))
-        low = unit.lower()
-        for position, source in enumerate(sources):
-            if low in source:
-                covered.add(index)
-                # A passage longer than the sentence legitimately spans several,
-                # so it is not used up by anchoring one of them. A quote that is
-                # just this sentence is a one-to-one anchor and is spent -- left
-                # unspent it went on to fuzzily match the next sentence too,
-                # which is the double-counting this function is fixing.
-                if len(source.strip()) <= len(low) + 2:
-                    spent[position] = True
-                break
-            if spent[position]:
-                continue
-            source_words = set(_significant(source))
-            overlap = len(words & source_words) / len(words)
-            if source in low or overlap >= 0.45:
-                covered.add(index)
-                spent[position] = True
-                break
-    missing = [unit for index, unit in scorable if index not in covered]
-    total = len(scorable)
-    return {
-        "covered": len(covered), "total": total,
-        "percent": round(100 * len(covered) / total) if total else 100,
-        "missing": missing[:20],
-        # The real count, because the list above is truncated and the interface
-        # was reporting the length of the truncation as the number lost.
-        "missing_total": len(missing),
-    }
 
 
 # Fonts that ship with macOS, in order of preference. A board that falls back
@@ -2429,11 +1889,17 @@ def _split_run(run: list[int]) -> list[list[int]]:
 def _tiers(shots: list[str]) -> list[list[int]]:
     """Arrange one page's panels into tiers, as a comic page is built.
 
-    Print pages are read as horizontal bands: three of them, holding one to
-    three panels each. A wide shot takes its whole tier -- that is what makes
-    it establishing, and a large panel is what slows a reader down. Tighter
-    shots share, which speeds the page up. The alternation is the pacing.
+    Print pages are read as horizontal bands. A wide shot takes its whole
+    tier -- that is what makes it establishing, and a large panel is what
+    slows a reader down. Tighter shots share, which speeds the page up. The
+    alternation is the pacing.
+
+    Two to a tier, three only on a crowded page, and four tiers at most: the
+    page is portrait and its tiers fill it, so three panels across one band
+    made cells four times taller than wide. layout.ts arranges a page the
+    same way, and a shared fixture holds the two together.
     """
+    per = 2 if len(shots) <= 8 else 3
     tiers: list[list[int]] = []
     i = 0
     while i < len(shots):
@@ -2441,17 +1907,20 @@ def _tiers(shots: list[str]) -> list[list[int]]:
             tiers.append([i])
             i += 1
             continue
-        # Take up to three consecutive tight shots, but never leave a single
-        # panel stranded as the last tier of a page.
         group = [i]
         i += 1
-        while i < len(shots) and shots[i] != "wide" and len(group) < 3:
+        while i < len(shots) and shots[i] != "wide" and len(group) < per:
             remaining = sum(1 for j in range(i, len(shots)) if shots[j] != "wide")
-            if len(group) == 2 and remaining == 2:
+            if per == 3 and len(group) == 2 and remaining == 2:
                 break   # leave two for the next tier rather than 3 + 1
             group.append(i)
             i += 1
         tiers.append(group)
+    # Past four bands a page is a ladder of slivers: join the two adjacent
+    # tiers holding the fewest panels until it is not.
+    while len(tiers) > 4:
+        k = min(range(len(tiers) - 1), key=lambda t: len(tiers[t]) + len(tiers[t + 1]))
+        tiers[k:k + 2] = [tiers[k] + tiers[k + 1]]
     return tiers
 
 
@@ -2500,8 +1969,11 @@ def _caption_width(cell_w: int) -> int:
 
 
 def _bubble_width(cell_w: int) -> int:
-    """How wide a speech balloon may be in a cell this wide."""
-    return min(cell_w - 40, 380)
+    """How wide a speech balloon may be in a cell this wide.
+
+    Narrower than the cell by design: a balloon sits on its speaker's side of
+    the panel, which it cannot do while spanning the whole width."""
+    return max(1, min(cell_w - 24, max(160, int(cell_w * 0.62)), 380))
 
 
 def _caption_lines(draw: Any, text: str, font: Any, w: int, line_h: int,
@@ -2543,9 +2015,29 @@ def _caption_box(draw: Any, text: str, font: Any, box: tuple[int, int, int, int]
     return bh
 
 
-def _bubble(draw: Any, text: str, speaker: str, font: Any, small: Any,
-            cx: int, top: int, max_w: int, line_h: int, tail_down: bool) -> int:
-    """A speech balloon with a tail, returning the height it used."""
+# Where in a panel a speaker stands, from the board's blocking, as a fraction
+# of the cell's width: the balloon sits on that side and its tail points there.
+_SIDE_AT = {"left": 0.28, "right": 0.72, "centre": 0.5}
+
+
+def _side(position: str) -> str:
+    """"left third", "far right", "centre" or "off" (heard, not seen)."""
+    position = str(position or "").lower()
+    return "left" if "left" in position else "right" if "right" in position \
+        else "centre" if "centre" in position or "center" in position else "off"
+
+
+def _bubble(draw: Any, text: str, font: Any, cell: tuple[int, int, int, int],
+            top: int, max_w: int, line_h: int, side: str = "centre") -> int:
+    """A speech balloon on its speaker's side of the cell, its tail pointing
+    at them, returning the height it used.
+
+    Balloons used to be stacked down the middle of every panel with their
+    tails straight down, whoever was talking, each with a black name label
+    under it -- a caption's job done badly, over the picture. The reader
+    knows who speaks from where the tail points. A line heard from off panel
+    has no tail at all."""
+    x, _y, w_cell, _h = cell
     lines = _wrap(draw, text, font, max_w - 26)
     tw = max((draw.textlength(l, font=font) for l in lines), default=0)
     # Never wider than the space it was given. The balloon sized itself from
@@ -2554,31 +2046,25 @@ def _bubble(draw: Any, text: str, speaker: str, font: Any, small: Any,
     # it. Clamped here as well, because the balloon is what covers the picture.
     w = min(int(tw) + 26, max_w)
     h = len(lines) * line_h + 16
-    x0, y0 = cx - w // 2, top
+    # Centred over the speaker where the cell allows, so the tail is short;
+    # a line from off panel sits in the middle.
+    target = x + round(w_cell * _SIDE_AT.get(side, 0.5))
+    x0 = max(x + 12, min(x + w_cell - 12 - w, target - w // 2))
+    y0 = top
     draw.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=min(16, h // 2),
                            fill=(252, 252, 250), outline=(20, 20, 22), width=2)
-    # The tail points at whoever is speaking, which is why it has a direction.
-    ty = y0 + h if tail_down else y0
-    dy = 14 if tail_down else -14
-    draw.polygon([(cx - 9, ty), (cx + 9, ty), (cx + 1, ty + dy)],
-                 fill=(252, 252, 250), outline=(20, 20, 22))
+    if side in _SIDE_AT:
+        base = max(x0 + 16, min(x0 + w - 16, target))
+        draw.polygon([(base - 8, y0 + h - 1), (base + 8, y0 + h - 1), (target, y0 + h + 14)],
+                     fill=(252, 252, 250), outline=(20, 20, 22))
     for n, line in enumerate(lines):
         lw = draw.textlength(line, font=font)
-        draw.text((cx - lw / 2, y0 + 8 + n * line_h), line, font=font,
+        draw.text((x0 + (w - lw) / 2, y0 + 8 + n * line_h), line, font=font,
                   fill=(20, 20, 22))
-    used = h + 18
-    if speaker:
-        # Below the balloon, not above it: narration boxes live at the top of
-        # a panel, and a label set there collides with them and is unreadable.
-        sw = draw.textlength(speaker, font=small)
-        sy = y0 + h + (14 if tail_down else 0) + 3
-        draw.rectangle([x0, sy, x0 + sw + 12, sy + 19], fill=(20, 20, 22))
-        draw.text((x0 + 6, sy + 3), speaker, font=small, fill=(248, 248, 245))
-        used += 24
-    return used
+    return h + 18
 
 
-def _bubble_height(draw: Any, text: str, speaker: str, font: Any,
+def _bubble_height(draw: Any, text: str, font: Any,
                    max_w: int, line_h: int) -> int:
     """What `_bubble` will take, without drawing it.
 
@@ -2587,10 +2073,7 @@ def _bubble_height(draw: Any, text: str, speaker: str, font: Any,
     numbers being the same is the whole point of the check.
     """
     lines = _wrap(draw, text, font, max_w - 26)
-    used = len(lines) * line_h + 16 + 18
-    if speaker:
-        used += 24
-    return used
+    return len(lines) * line_h + 16 + 18
 
 
 # How much of a cell's height the caption and the balloons may take between
@@ -2600,7 +2083,10 @@ def _bubble_height(draw: Any, text: str, speaker: str, font: Any,
 # needs) plus two balloons came to more than the cell was tall: both spilled
 # into the tier below, and the second line of dialogue was drawn off the bottom
 # of the page and lost.
-_TEXT_COVER = 0.7
+_TEXT_COVER = 0.35
+# The most a crowded cell may give its words before a line is left off and
+# reported. Past this the panel is a block of text with a picture behind it.
+_TEXT_LIMIT = 0.6
 # How much of the block the narration box may take when there is dialogue to
 # go under it. Without a share, a long caption filled the block on its own and
 # both balloons were dropped -- which is the same loss the other way round.
@@ -2657,7 +2143,7 @@ def _cell_text_plan(probe: Any, cap: str, dialogue: list[Any],
     cap_w, bub_w = _caption_width(cell_w), _bubble_width(cell_w)
     wanted = list(dialogue)
     best: tuple[tuple[int, bool], int, int, int] | None = None
-    for cover in (max(0, int(cell_h * _TEXT_COVER)), max(0, cell_h - 20)):
+    for cover in (max(0, int(cell_h * _TEXT_COVER)), max(0, int(cell_h * _TEXT_LIMIT))):
         cap_room = cover if not wanted else int(cover * _CAPTION_SHARE)
         for step in _TEXT_STEPS:
             size = max(_MIN_TEXT_SIZE, int(round(base * step)))
@@ -2675,7 +2161,6 @@ def _cell_text_plan(probe: Any, cap: str, dialogue: list[Any],
             for line in wanted:
                 text = str(line.get("text", ""))
                 height = _bubble_height(probe, text,
-                                        str(line.get("speaker", "")),
                                         _lettering(text, size, default),
                                         bub_w, line_h)
                 if used + height > room:
@@ -2694,107 +2179,111 @@ def _cell_text_plan(probe: Any, cap: str, dialogue: list[Any],
     return size, cap_h, count, bool(score[1])
 
 
-def _page_plan(shots: list[str], style: dict[str, Any]) -> tuple[list[Any], int]:
-    """The cells one page needs, and the height they come to.
+# A page's inner area, width over height: a comic page is about 2:3. Every
+# page of a board is this shape, so a book of them prints and reads as one.
+INNER_ASPECT = 2 / 3
+# The gutter between cells, as a fraction of the inner width.
+GUTTER = 0.02
+# A tier holding one large panel -- an establishing shot or a Peak -- is
+# taller than the others, which is what slows the reader down on it.
+WIDE_TIER = 1.3
 
-    Split out of `_render_page` so the height can be known before anything is
-    drawn -- which is what lets every page of a board share one.
-    """
-    margin, gutter = style["margin"], style["gutter"]
-    inner = style["width"] - margin * 2
-    plan, total_h = [], margin
-    for tier in _tiers(shots):
-        cell_w = (inner - gutter * (len(tier) - 1)) // len(tier)
-        # One WIDE panel across the page is an establishing beat, and is set
-        # shallower so the page does not become a ladder of squares.
-        #
-        # Keyed off the shot, not off the tier size. `len(tier) == 1` alone was
-        # the wrong test: `_tiers` strands a tight shot alone whenever it has no
-        # tight neighbour to pair with, and 562 of the 1092 shot layouts up to
-        # six panels do exactly that -- so a close-up got the shallow cell and
-        # lost 42% of its height to the centre crop, which on a face is the top
-        # of the head and the chin. An establishing shot is shallow because it
-        # is establishing, not because it happens to be by itself.
-        establishing = len(tier) == 1 and shots[tier[0]] == "wide"
-        cell_h = round(cell_w * (0.58 if establishing else 1.0))
-        plan.append((tier, cell_w, cell_h))
-        total_h += cell_h + gutter
-    return plan, total_h + margin - gutter
+
+def _page_cells(shots: list[str], rtl: bool = False) -> list[tuple[float, float, float, float]]:
+    """Each panel's cell on one page, as (x, y, w, h) fractions of the inner
+    area, filling the page.
+
+    The board computes the same layout before anything is drawn (layout.ts)
+    and draws each panel at its cell's shape; this is the fallback for a
+    caller that sends no cells, and the two are checked against one fixture.
+    Cells used to be squares, with a wide tier set at 0.58 of its width: a
+    square panel in that cell lost 42% of its height to the crop.
+
+    Manga is read right to left, so a tier's cells run from the right."""
+    tiers = _tiers(shots)
+    gy = GUTTER * INNER_ASPECT
+    weights = [WIDE_TIER if len(t) == 1 and shots[t[0]] == "wide" else 1.0 for t in tiers]
+    room = 1 - gy * (len(tiers) - 1)
+    cells: list[Any] = [None] * len(shots)
+    y = 0.0
+    for tier, weight in zip(tiers, weights):
+        h = room * weight / sum(weights)
+        w = (1 - GUTTER * (len(tier) - 1)) / len(tier)
+        for k, i in enumerate(tier):
+            x = k * (w + GUTTER)
+            cells[i] = (round(1 - x - w if rtl else x, 6), round(y, 6), round(w, 6), round(h, 6))
+        y += h + gy
+    return cells
+
+
+def _cell_px(cell: Any, style: dict[str, Any]) -> tuple[int, int, int, int]:
+    """A cell in pixels on a page of this style."""
+    margin = style["margin"]
+    inner_w = style["width"] - margin * 2
+    inner_h = round(inner_w / INNER_ASPECT)
+    x, y, w, h = (float(v) for v in cell)
+    left, top = margin + round(x * inner_w), margin + round(y * inner_h)
+    return left, top, max(1, margin + round((x + w) * inner_w) - left), max(1, margin + round((y + h) * inner_h) - top)
+
+
+def _letter_cell(draw: Any, probe: Any, cap: str, dialogue: list[Any], cell: tuple[int, int, int, int],
+                 style: dict[str, Any], rtl: bool) -> dict[str, Any] | None:
+    """Letter one panel: the caption in the corner a reader starts from, the
+    balloons below it in reading order, each on its speaker's side. Returns a
+    record of what would not fit, or None when everything was lettered."""
+    x, y, cell_w, cell_h = cell
+    font, base = style["font"], _text_size(style)
+    size, cap_h, bubbles, whole = _cell_text_plan(probe, cap, dialogue, style, cell_w, cell_h)
+    line_h = max(1, int(size * 1.4))
+    body = font if size == base else _caption_font(size)
+    if cap:
+        width = _caption_width(cell_w)
+        _caption_box(draw, cap, _lettering(cap, size, body),
+                     (x + cell_w - 10 - width if rtl else x + 10, y + 10, width, 0),
+                     line_h, max_h=cap_h)
+    # Below the caption that was actually drawn, rather than below a guess at
+    # how tall it might be.
+    by = y + (10 + cap_h + 8 if cap else 16)
+    for line in dialogue[:bubbles]:
+        text = str(line.get("text", ""))
+        by += _bubble(draw, text, _lettering(text, size, body), cell, by,
+                      _bubble_width(cell_w), line_h, _side(line.get("side", "centre" if not line.get("offscreen") else "off")))
+    if bubbles < len(dialogue) or not whole:
+        return {"spoken": len(dialogue), "lettered": bubbles, "caption_clipped": bool(cap) and not whole}
+    return None
 
 
 def _render_page(panels: list[Any], idx: list[int], meta: dict[str, list[Any]],
                  style: dict[str, Any]) -> tuple[Any, list[dict[str, Any]]]:
-    """Draw one page of panels as tiers, and report what would not fit on it.
+    """Draw one page of panels in their cells, and report what would not fit.
 
-    The second return is one record per panel that lost text -- which panel,
-    how many spoken lines it was given, how many were lettered, and whether the
-    caption was cut short. Empty is the ordinary case and the only one that
-    should reach an exported chapter.
+    The cells are the board's own layout, the one each panel was drawn for,
+    so a panel fills its cell without a crop. The second return is one record
+    per panel that lost text -- which panel, how many spoken lines it was
+    given, how many were lettered, and whether the caption was cut short.
+    Empty is the ordinary case and the only one that should reach an
+    exported chapter.
     """
     from PIL import Image, ImageDraw
 
-    page_w, margin, gutter = style["width"], style["margin"], style["gutter"]
-    font, small, base = style["font"], style["small"], _text_size(style)
-    shots = [meta["shots"][i] for i in idx]
-
+    page_w, margin = style["width"], style["margin"]
+    rtl = style.get("direction") == "rtl"
+    total_h = round((page_w - margin * 2) / INNER_ASPECT) + margin * 2
+    fallback = _page_cells([meta["shots"][i] for i in idx], rtl)
     probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
-    plan, natural_h = _page_plan(shots, style)
-    # One height for every page of a board.
-    #
-    # Page height used to be whatever its own tiers summed to, so the pages of
-    # a single board came out at wildly different shapes -- a two-panel page
-    # holding a wide shot is three times the height of one holding two tight
-    # shots, and a six-wide-shot board produced a 1:3.4 strip. That is not
-    # something anyone can read as a book or print. The caller measures every
-    # page first and passes the tallest; short pages carry paper at the bottom
-    # rather than having their panels stretched to fill, because a panel
-    # stretched to fit the book is the defect this pass exists to remove.
-    total_h = max(natural_h, int(style.get("page_height") or 0))
-
     page = Image.new("RGB", (page_w, total_h), PAGE_GROUND)
     draw = ImageDraw.Draw(page)
     short: list[dict[str, Any]] = []
-    # A page shorter than the board's tallest carries its spare paper split
-    # top and bottom. All of it at the bottom reads as a page that ran out;
-    # centred, a sparse page reads as a deliberately quiet one.
-    y = margin + max(0, total_h - natural_h) // 2
-    for tier, cell_w, cell_h in plan:
-        x = margin
-        for local in tier:
-            src = idx[local]
-            page.paste(_fit(panels[src], cell_w, cell_h), (x, y))
-            draw.rectangle([x, y, x + cell_w, y + cell_h],
-                           outline=(20, 20, 22), width=3)
-            cap = meta["captions"][src].strip()
-            dialogue = list(meta["dialogue"][src])
-            # What this cell can actually hold: a smaller face, and fewer
-            # balloons, rather than lettering drawn over the tier below.
-            size, cap_h, bubbles, whole = _cell_text_plan(
-                probe, cap, dialogue, style, cell_w, cell_h)
-            if bubbles < len(dialogue) or not whole:
-                short.append({"panel": src, "spoken": len(dialogue),
-                              "lettered": bubbles,
-                              "caption_clipped": bool(cap) and not whole})
-            line_h = max(1, int(size * 1.4))
-            body = font if size == base else _caption_font(size)
-            label = small if size == base else _caption_font(max(9, size - 6))
-            if cap:
-                _caption_box(draw, cap, _lettering(cap, size, body),
-                             (x + 10, y + 10, _caption_width(cell_w), 0),
-                             line_h, max_h=cap_h)
-            # Below the caption that was actually drawn, rather than below a
-            # guess at how tall it might be.
-            by = y + (10 + cap_h + 8 if cap else 16)
-            for line in dialogue[:bubbles]:
-                text = str(line.get("text", ""))
-                speaker = str(line.get("speaker", ""))
-                by += _bubble(draw, text, speaker,
-                              _lettering(text, size, body),
-                              _lettering(speaker, max(9, size - 6), label),
-                              x + cell_w // 2, by, _bubble_width(cell_w),
-                              line_h, tail_down=True)
-            x += cell_w + gutter
-        y += cell_h + gutter
+    for local, src in enumerate(idx):
+        given = (meta.get("cells") or [None] * (src + 1))[src]
+        cell = _cell_px(given if given else fallback[local], style)
+        x, y, cell_w, cell_h = cell
+        page.paste(_fit(panels[src], cell_w, cell_h), (x, y))
+        draw.rectangle([x, y, x + cell_w, y + cell_h], outline=(20, 20, 22), width=3)
+        lost = _letter_cell(draw, probe, meta["captions"][src].strip(), list(meta["dialogue"][src]),
+                            cell, style, rtl)
+        if lost:
+            short.append({"panel": src, **lost})
     return page, short
 
 
@@ -2807,41 +2296,38 @@ def _render_strip(panels: list[Any], meta: dict[str, list[Any]],
     tempo: a short gap reads as a beat, a long one as a held breath. So the
     gutter widens wherever the scene changes, and stays tight within one.
 
-    Reports what would not fit, in the same shape a page does. A scroll has no
-    tier below to letter into, so the balloons here were never measured against
-    anything at all -- they were simply capped at two and drawn. Uncapped, the
-    third one runs past the bottom of its own panel and into the gap, where it
-    reads as belonging to the panel after it.
+    Each panel keeps its own shape -- it was drawn for the scroll -- rather
+    than being cut to one fixed band. Reports what would not fit, in the
+    same shape a page does.
     """
     from PIL import Image, ImageDraw
 
     width, margin = style["width"], style["margin"]
-    font, small, line_h = style["font"], style["small"], style["line_h"]
+    font, line_h = style["font"], style["line_h"]
     base = _text_size(style)
     beat, breath = 46, 190
+    rtl = style.get("direction") == "rtl"
 
     sized, gaps = [], []
+    inner = width - margin * 2
     for i, im in enumerate(panels):
-        sized.append(_fit(im, width - margin * 2, round((width - margin * 2) * 0.78)))
+        sized.append(_fit(im, inner, max(1, round(inner * im.height / im.width))))
         if i:
             same = meta["scenes"][i] == meta["scenes"][i - 1]
             gaps.append(beat if same else breath)
 
     probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
     # The face per caption, kept so the pass that measures a caption and the
-    # pass that draws it use the same one. A face chosen for the scroll as a
-    # whole letters a Japanese caption in boxes, and a caption wrapped with one
-    # face and drawn with another is measured wrong everywhere it differs.
+    # pass that draws it use the same one.
     cap_fonts = [_lettering(meta["captions"][i].strip(), base, font)
                  for i in range(len(panels))]
-    caps = [_wrap(probe, meta["captions"][i].strip(), cap_fonts[i],
-                  width - margin * 2 - 40)
+    caps = [_wrap(probe, meta["captions"][i].strip(), cap_fonts[i], inner - 40)
             if meta["captions"][i].strip() else [] for i in range(len(panels))]
 
     total = margin + sum(im.height for im in sized) + sum(gaps)
     total += sum(len(c) * line_h + 18 for c in caps if c) + margin
 
-    page = Image.new("RGB", (width, total), (243, 241, 236))
+    page = Image.new("RGB", (width, total), PAGE_GROUND)
     draw = ImageDraw.Draw(page)
     short: list[dict[str, Any]] = []
     y = margin
@@ -2849,27 +2335,10 @@ def _render_strip(panels: list[Any], meta: dict[str, list[Any]],
         page.paste(im, (margin, y))
         draw.rectangle([margin, y, margin + im.width, y + im.height],
                        outline=(20, 20, 22), width=3)
-        spoken = list(meta["dialogue"][i])
-        bub_w = min(im.width - 40, 420)
-        by, used, lettered = y + 16, 0, 0
-        for line in spoken:
-            text = str(line.get("text", ""))
-            speaker = str(line.get("speaker", ""))
-            height = _bubble_height(probe, text, speaker,
-                                    _lettering(text, base, font),
-                                    bub_w, line_h)
-            if used + height > im.height - 16:
-                break
-            used += height
-            lettered += 1
-            by += _bubble(draw, text, speaker,
-                          _lettering(text, base, font),
-                          _lettering(speaker, max(9, base - 6), small),
-                          margin + im.width // 2, by, bub_w, line_h,
-                          tail_down=True)
-        if lettered < len(spoken):
-            short.append({"panel": i, "spoken": len(spoken),
-                          "lettered": lettered, "caption_clipped": False})
+        lost = _letter_cell(draw, probe, "", list(meta["dialogue"][i]),
+                            (margin, y, im.width, im.height), style, rtl)
+        if lost:
+            short.append({"panel": i, **lost})
         y += im.height
         if caps[i]:
             for n, line in enumerate(caps[i]):
@@ -2879,6 +2348,17 @@ def _render_strip(panels: list[Any], meta: dict[str, list[Any]],
         if i < len(gaps):
             y += gaps[i]
     return page, short
+
+
+def _as_cell(value: Any) -> tuple[float, float, float, float] | None:
+    """A cell as sent by the board, or None when it is missing or unusable."""
+    try:
+        x, y, w, h = (float(v) for v in value)
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= x < 1 and 0 <= y < 1 and 0 < w <= 1 and 0 < h <= 1):
+        return None
+    return (x, y, min(w, 1 - x), min(h, 1 - y))
 
 
 def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
@@ -2914,6 +2394,11 @@ def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         "shots": [str(x or "medium") for x in column("shots", "medium")],
         "dialogue": [list(d or []) for d in column("dialogue", [])],
         "scenes": [_as_scene(x) for x in column("scenes", 1)],
+        # The board's own layout: each panel's page and cell, the shape it
+        # was drawn at. Without them the pages are laid out here.
+        "pages": [int(x) if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+                  for x in column("pages", None)],
+        "cells": [_as_cell(c) for c in column("cells", None)],
     }
     layout = str(req.get("layout") or "page")
     # Clamped rather than trusted. These have no control in the app today, so
@@ -2947,9 +2432,12 @@ def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         # 768, every establishing shot was upscaled 1.49x -- a page that was
         # nominally 1240 wide but carried only 768 of real detail. Derived, the
         # number is smaller and every pixel on it is one the model drew.
-        widest = max((im.width for im in panels), default=768)
+        # With cells, the page is as wide as it needs to be for each panel to
+        # land in its cell at its own size.
+        widest = max((im.width / (cell[2] if cell and layout == "page" else 1)
+                      for im, cell in zip(panels, meta["cells"])), default=768)
         style = {
-            "width": _dim("page_width", widest + margin * 2, 320, 8192),
+            "width": _dim("page_width", min(4096, round(widest)) + margin * 2, 320, 8192),
             "margin": margin,
             "gutter": gutter,
             "font": _caption_font(size),
@@ -2958,23 +2446,21 @@ def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
             # The size itself, because a cell that cannot hold its lettering
             # needs to letter it smaller, and `line_h` only implies it.
             "size": size,
+            "direction": "rtl" if req.get("direction") == "rtl" else "ltr",
         }
 
-        pages = (_paginate(meta["scenes"]) if layout == "page"
-                 else [list(range(n))])
+        if layout != "page":
+            pages = [list(range(n))]
+        elif all(x is not None for x in meta["pages"]):
+            # The board's own page breaks, the ones its panels were drawn for.
+            order = list(dict.fromkeys(meta["pages"]))
+            pages = [[i for i in range(n) if meta["pages"][i] == k] for k in order]
+        else:
+            pages = _paginate(meta["scenes"])
         if len(pages) > len(slots):
             raise ValueError(
                 f"this board makes {len(pages)} pages but only {len(slots)} "
                 "were reserved; ask for that many again"
-            )
-
-        # Measure every page before drawing any, so they can all be set to one
-        # height. A board whose pages are different shapes is a stack of
-        # pictures rather than a comic.
-        if layout == "page":
-            style["page_height"] = max(
-                _page_plan([meta["shots"][i] for i in idx], style)[1]
-                for idx in pages
             )
 
         # Text the page could not hold, gathered across every page so the
@@ -3070,839 +2556,6 @@ def op_bind_comic(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
                 "pages": len(pages)}
     finally:
         _discard_staged(staged)
-
-
-PLACE_SYSTEM = (
-    "You are the background artist on a comic. You are told everything that "
-    "happens in one scene, and you describe the place it happens in -- once, "
-    "so every panel of that scene can be drawn as the same room.\n\n"
-    "Rules:\n"
-    "1. Describe the place, not the action. No people, no events.\n"
-    "2. Be specific about what does not change: the walls and what is on "
-    "them, the floor, the furniture, the windows and what is beyond them, and "
-    "where the light comes from.\n"
-    "3. Name materials and colours. 'A room' is drawn differently every time; "
-    "'dark green wallpaper with a repeating leaf pattern, bare oak boards' is "
-    "not.\n"
-    "4. If you are given what the story says about the place, every word of it "
-    "is fixed. Those are the author\'s own words and they outrank anything you "
-    "would otherwise choose: a story that says the kitchen is green does not "
-    "have a yellow kitchen.\n"
-    "5. Decide anything the story leaves open -- that is the job -- but never "
-    "contradict what it does say.\n"
-    "6. Never write 'beautiful', 'cinematic' or 'atmospheric'.\n\n"
-    "One paragraph, at most fifty words, no preamble.\n"
-)
-
-
-# Words that do not distinguish one room from another.
-_PLACE_NOISE = frozenset({
-    "the", "a", "an", "in", "at", "on", "of", "into", "inside", "outside",
-    "her", "his", "their", "my", "our", "its", "this", "that",
-})
-
-
-def _place_words(text: str) -> list[str]:
-    """The words that name a place, with the ones that do not dropped."""
-    flat = re.sub(r"[^a-z0-9 ]+", " ", " ".join(str(text).lower().split()))
-    return [w for w in flat.split() if w not in _PLACE_NOISE]
-
-
-def _snap_place(key: str, known: list[dict[str, Any]]) -> str:
-    """Fold a panel's setting onto one of the story's own places.
-
-    The writer names the same room differently from panel to panel -- one
-    reading gave "kitchen", "table in kitchen" and "kitchen table" for the one
-    kitchen, which is three rooms drawn, three chances to contradict each
-    other, and two and a half minutes of drawing spent disagreeing with
-    itself. `op_cast` has already read the places out of the prose and verified
-    them, so they are the list of rooms the story actually has, and a setting
-    that names one of them is that one.
-
-    Longest match wins, so "the station platform" prefers "the station
-    platform" over "the station" when the story names both.
-    """
-    words = set(_place_words(key))
-    if not words:
-        return key
-    best, best_len = key, 0
-    for place in known:
-        name = _place_words(place.get("name", ""))
-        if not name:
-            continue
-        # Every word of the story's name is in the setting, or the other way
-        # round: "kitchen table" names the kitchen; so does "table in kitchen".
-        named = set(name)
-        if named <= words or words <= named:
-            if len(named) > best_len:
-                best, best_len = " ".join(name), len(named)
-    return best
-
-
-def _place_key(panel: dict[str, Any],
-               known: list[dict[str, Any]] | None = None) -> str:
-    """Which place a panel is in, by identity rather than by scene number.
-
-    Rooms were keyed on the scene number the writer assigned, and that fails in
-    both directions at once. A writer that puts the whole story in scene 1 --
-    which it does, often -- gave one room to a story that moves house, so the
-    background never changed however far the story travelled. And the same
-    kitchen in scenes 1 and 5 got two separately invented kitchens, so coming
-    back to it did not look like coming back. Neither is a rare case; both were
-    reported from one reading.
-
-    Keyed on what the panel says the place is, both stop: two panels in "the
-    kitchen" share a room whatever scene they are in, and a panel on a station
-    platform gets its own whatever scene it is in. Articles and possessives are
-    dropped so "the kitchen", "kitchen" and "her kitchen" are one place.
-    """
-    words = _place_words(panel.get("setting", ""))
-    if words:
-        return _snap_place(" ".join(words), known or [])
-    title = " ".join(str(panel.get("scene_title", "")).lower().split())
-    if title:
-        return title
-    # Nothing says where this is. Fall back to the scene so panels that at
-    # least agree on a scene still agree on a room.
-    return f"scene {_as_scene(panel.get('scene', 1))}"
-
-
-def _place_described(key: str, known: list[dict[str, Any]]) -> str:
-    """What the story says about this place, if it says anything.
-
-    Matched on the same normalisation the key uses, so "the kitchen" from the
-    cast reader finds the panel whose setting was "Kitchen".
-    """
-    for place in known:
-        name = str(place.get("name", ""))
-        words = [w for w in re.sub(r"[^a-z0-9 ]+", " ", name.lower()).split()
-                 if w not in _PLACE_NOISE]
-        if not words:
-            continue
-        flat = " ".join(words)
-        if flat == key or flat in key or key in flat:
-            return str(place.get("description", "")).strip()
-    return ""
-
-
-def _establish_places(req_id: str, panels: list[dict[str, Any]],
-                      style: str, writer: str | None,
-                      known: list[dict[str, Any]] | None = None) -> dict[str, str]:
-    known = known or []
-    """Describe each scene's location once, for every panel in it to share.
-
-    Panels were described one at a time, so the same room came back as floral
-    wallpaper in one and cracked plaster in the next -- nothing was holding
-    the place still. Settling it per scene is what makes consecutive frames
-    look like the same house.
-    """
-    by_place: dict[str, list[dict[str, Any]]] = {}
-    for p in panels:
-        by_place.setdefault(_place_key(p, known), []).append(p)
-
-    places: dict[str, str] = {}
-    for n, (key, group) in enumerate(by_place.items()):
-        if is_cancelled(req_id):
-            raise Cancelled()
-        emit({"id": req_id, "type": "progress", "phase": "denoise",
-              "progress": n / max(len(by_place), 1),
-              "message": f"Settling the look of {key}"})
-
-        beats = "; ".join(
-            f"{p.get('action', '')} ({p.get('setting', '')})".strip()
-            for p in group if p.get("action") or p.get("setting")
-        )
-        title = next((p.get("scene_title") for p in group if p.get("scene_title")), "")
-        try:
-            said = _place_described(key, known or [])
-            raw = _write(req_id, PLACE_SYSTEM,
-                         f"Style: {style}\nScene: {title}\n"
-                         + (f"What the story says about this place, which is "
-                            f"fixed: {said}\n" if said else "")
-                         + f"What happens here: {beats}",
-                         max_tokens=150, temperature=0.4, repo=writer, label="Describing the place")
-            places[key] = " ".join(raw.strip().splitlines()[0].split())[:400]
-        except Cancelled:
-            raise
-        except Exception as exc:
-            log(req_id, f"place {key!r} not settled: {exc}", "warn")
-            places[key] = ""
-    return places
-
-
-ENRICH_SYSTEM = (
-    "You are a storyboard artist working up one panel into something that can "
-    "be drawn.\n\n"
-    "You are given the moment, the style the board is drawn in, and often the "
-    "place it happens in. Write what the camera sees.\n\n"
-    "Rules:\n"
-    "1. Everything the panel already states must survive. You are adding to "
-    "it, not replacing it.\n"
-    "2. If you are told the place, it is already settled. Use it. Do not "
-    "change the walls, the floor, the furniture or where the light comes "
-    "from -- every panel of this scene is the same room, and a reader notices "
-    "when it is not.\n"
-    "3. How much of the place you describe depends on the shot, the way it "
-    "does on a real page:\n"
-    "   - wide shot: the place in full. This is the frame that shows the "
-    "reader where they are.\n"
-    "   - medium shot: only what stands directly behind the figure. The "
-    "reader has already been shown the room.\n"
-    "   - close-up: none of it. At that distance the room is not in frame. "
-    "Describe the face, the hands, the one thing being looked at, and what "
-    "the light is doing to it -- nothing behind them.\n"
-    "4. Add only what the moment implies -- the surface a thing rests on, "
-    "what is behind it, how the light falls on it. Never a new character, "
-    "never an event.\n"
-    "5. Say where the light is and what it is doing. A panel with no stated "
-    "light is drawn with no light.\n"
-    "6. Describe only what is visible. No sound, no thought, no dialogue.\n"
-    "7. Never write 'beautiful', 'cinematic', 'dramatic', 'high quality' or "
-    "'masterpiece'. They describe nothing.\n\n"
-    "One paragraph, at most forty words, no preamble.\n\n"
-    "The same place at three distances. Notice how much of the room is in "
-    "each.\n\n"
-    "No name appears in these examples on purpose. Use the names you are "
-    "given for the panel and never a name from here: an example name gets "
-    "copied into the reply, and a panel about a letter came back describing "
-    "the face of a person who is not in the story at all.\n\n"
-    "Place: a narrow kitchen, dark green walls, bare oak boards, one window "
-    "over the sink.\n\n"
-    "Panel: wide shot. The sister comes into the kitchen. kitchen.\n"
-    "The narrow kitchen from the doorway, dark green walls, bare oak boards "
-    "running away to the sink, one window above it. Grey afternoon light "
-    "across the floor, no lamp lit. A figure small in the doorway.\n\n"
-    "Panel: medium shot. The sister stands at the kitchen window. kitchen.\n"
-    "She stands at the window over the sink, rain running down the glass, "
-    "grey light on her face and shoulders. The dark green wall directly "
-    "behind her, a cup steaming on the draining board.\n\n"
-    "Panel: close-up. The sister watches the rain. kitchen.\n"
-    "Her face turned to the glass, grey light along her cheek, her eyes "
-    "following one drop down. Rain-blurred brightness behind her, nothing "
-    "else in frame.\n"
-)
-
-
-def op_enrich_panels(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
-    """Work each panel up into a scene the generator can draw.
-
-    The division gives the moments, which are deliberately terse -- "stands in
-    the hallway" is the right level for judging whether the story was cut
-    correctly, and far too thin to draw. This is the stage between: it fills
-    in surface, background and light, and nothing else. Kept separate so the
-    result can be read and corrected before any of it is drawn, which is the
-    whole point of a pipeline over a single button.
-    """
-    panels: list[dict[str, Any]] = list(req.get("panels") or [])
-    if not panels:
-        raise ValueError("divide the story into panels first")
-
-    # One story panel makes this a story board. A panel added by hand, or one
-    # whose cast was cleared, used to send every panel down the legacy path,
-    # which rewrites `place`/`place_key` and breaks location continuity.
-    if any("cast" in p for p in panels):
-        # Light and surfaces belong to a place in a mood, not to a panel: one
-        # writer call per pair, shared by every panel there. Per panel, a
-        # long chapter's ~300 panels cost ~40 minutes before anything was drawn.
-        def where(panel):
-            return (panel.get("place_key") or str(panel.get("setting") or "").casefold(),
-                    str(panel.get("mood") or "").casefold())
-        keys = list(dict.fromkeys(where(p) for p in panels))
-        lit: dict[Any, str | None] = {}
-        for n, key in enumerate(keys):
-            if is_cancelled(req_id):
-                raise Cancelled()
-            panel = next(p for p in panels if where(p) == key)
-            emit({"id": req_id, "type": "progress", "phase": "denoise",
-                  "progress": n / len(keys), "message": f"Lighting place {n + 1} of {len(keys)}"})
-            try:
-                raw = _write(req_id,
-                    'Return only JSON {"lighting": string, "surfaces": string}. '
-                    'Describe visible light and surfaces matching the mood and setting. '
-                    'Do not repeat or change characters, actions, dialogue, or camera framing.',
-                    json.dumps({"setting": panel.get("setting"), "mood": panel.get("mood"),
-                                "state": panel.get("location_state"), "style": req.get("style")}),
-                    max_tokens=240, repo=req.get("writer"), label="Lighting the panel",
-                    fraction=n / len(keys))
-                surface = json.loads(raw)
-                if not isinstance(surface, dict) or any(not isinstance(surface.get(k), str) for k in ("lighting", "surfaces")):
-                    raise ValueError("invalid lighting description")
-                lit[key] = ". ".join(surface[k] for k in ("lighting", "surfaces") if surface[k])
-            except Cancelled:
-                raise
-            except Exception as exc:
-                log(req_id, f"place {n + 1} keeps its original structured brief: {exc}", "warn")
-                lit[key] = None
-        return {"panels": [{**p, "description": lit[where(p)]} if lit[where(p)] is not None else p
-                           for p in panels]}
-
-    style = (req.get("style") or "").strip()
-    writer = req.get("writer")
-    # The place first, then the panels within it. Order matters: a panel
-    # described before its room has nothing to be consistent with.
-    # What the story itself says about each place, read and verified by
-    # `op_cast`. It was extracted, checked against the prose, and then never
-    # used: the place writer invented a room from the panel actions alone, so a
-    # kitchen the story calls green came back "pale yellow walls, fluorescent
-    # light" and every panel of the scene was drawn that way.
-    known = req.get("places") or []
-    places = _establish_places(req_id, panels, style, writer, known)
-    out: list[dict[str, Any]] = []
-
-    for i, p in enumerate(panels):
-        if is_cancelled(req_id):
-            raise Cancelled()
-        emit({"id": req_id, "type": "progress", "phase": "denoise",
-              "progress": (i / len(panels)) if panels else None,
-              "message": f"Working up panel {i + 1} of {len(panels)}"})
-
-        moment = ". ".join(x for x in (
-            f"{p.get('shot', 'medium')} shot",
-            str(p.get("subject", "")).strip(),
-            str(p.get("action", "")).strip(),
-            str(p.get("setting", "")).strip(),
-        ) if x)
-        place = places.get(_place_key(p, known), "")
-        user = (f"Style: {style}\n"
-                + (f"Place, already settled: {place}\n" if place else "")
-                + f"Panel: {moment}.")
-        try:
-            raw = _write(req_id, ENRICH_SYSTEM, user, max_tokens=140,
-                         temperature=0.4, repo=writer, label="Working the panel up")
-        except Cancelled:
-            raise
-        except Exception as exc:
-            log(req_id, f"panel {i + 1} not enriched: {exc}", "warn")
-            out.append({**p, "description": "",
-                        "place": places.get(_place_key(p, known), ""),
-                        "place_key": _place_key(p, known)})
-            continue
-
-        text = " ".join(raw.strip().splitlines()[0].split())
-        # It repeats the shot back at us -- "Wide shot: Mira stands..." -- and
-        # the prompt already says the shot, so it arrives twice.
-        text = re.sub(r"^(wide|medium|close[- ]?up)(\s+shot)?\s*[:.,-]\s*",
-                      "", text, flags=re.I)
-        # An enrichment that dropped the moment is worse than none: the panel
-        # would be drawn as something the story does not contain.
-        #
-        # `_keeps_intent` is not the check for this. It passes when any single
-        # word of the moment has a four-letter prefix match anywhere in the
-        # reply, so it returned True for "A kitchen." against "medium shot.
-        # Mira. pours the tea. a narrow kitchen" -- and the prompt builder then
-        # *replaces* the action and setting with the brief, so the panel was
-        # drawn as an empty room with no Mira and no pouring. A guard that
-        # cannot fail is how the board stopped being about the story.
-        action = str(p.get("action", "")).strip()
-        if text and not _carries(action, text):
-            # Repaired rather than rejected. The brief is where the surface and
-            # the light come from, and those are what make a panel drawable at
-            # all -- so the thing that happens is put back in front of it
-            # instead of the whole paragraph being thrown away.
-            log(req_id, f"panel {i + 1} brief lost the action; restoring it", "warn")
-            text = f"{action}. {text}"
-        subject = str(p.get("subject", "")).strip()
-        if text and subject and not _carries(subject, text):
-            log(req_id, f"panel {i + 1} brief lost the subject; restoring it", "warn")
-            text = f"{subject}. {text}"
-        out.append({**p, "description": text[:400],
-                    "place": places.get(_place_key(p, known), ""),
-                    # The board draws one room per key and hands the same
-                    # picture to every panel that shares it.
-                    "place_key": _place_key(p, known)})
-
-    return {"panels": out}
-
-
-def _clean_dialogue(raw: Any) -> list[dict[str, str]]:
-    """Normalise spoken lines, and keep every one of them.
-
-    A bubble sits on top of the panel it belongs to, so there is a real bound
-    on how much speech a cell can carry. This used to enforce it here, keeping
-    the first two lines and the first ninety characters of each -- and that was
-    the wrong place twice over.
-
-    It cannot know the bound. A wide establishing cell on a roomy page holds
-    both lines at full size; a cell in a three-panel tier does not hold one.
-    The number that was enforced was a guess at the narrowest case, applied to
-    every case, and `_cell_text_plan` already measures the real one.
-
-    And it ran before anyone had read the line. A three-hander lost its third
-    speaker between the writer returning it and the board first drawing it, so
-    the cut was never a decision anybody made -- the panel simply arrived with
-    two speakers and no indication that it had ever had three. Cutting a line
-    of dialogue is an editorial choice and it belongs to the user.
-
-    So every line the writer returned is kept, whole, and what will not fit is
-    reported by the composer rather than removed by the parser.
-    """
-    if not isinstance(raw, list):
-        return []
-    out: list[dict[str, str]] = []
-    for item in raw:
-        if isinstance(item, str):
-            speaker, text = "", item
-        elif isinstance(item, dict):
-            speaker = str(item.get("speaker", ""))
-            text = str(item.get("text", ""))
-        else:
-            continue
-        text = " ".join(text.split()).strip('"\u201c\u201d')
-        if not text:
-            continue
-        out.append({"speaker": " ".join(speaker.split()), "text": text})
-    return out
-
-
-CAST_SYSTEM = (
-    "You are a script supervisor. You read a story and list who is in it and "
-    "where it happens. You do not interpret, summarise or invent.\n\n"
-    "Rules:\n"
-    "1. Only name people the story actually names or clearly describes. If a "
-    "person is never named, use the phrase the story itself uses for them "
-    "(\"the conductor\", \"her sister\"). Never invent a name.\n"
-    "2. A description is what someone LOOKS LIKE, and nothing else. Hair, "
-    "build, age, face, what they are wearing. Not what they do, not what they "
-    "want, not how they feel, not their part in the story. If the story never "
-    "says what they look like, return an empty description rather than filling "
-    "the gap -- that is the correct answer and the interface will ask.\n"
-    "   Wrong: \"She is the one who finds the letter and speaks to her "
-    "brother.\" That is her part in the plot. It goes into every panel as "
-    "drawing instructions, where it means nothing.\n"
-    "   Right: \"Tall, cropped dark hair, grey coat too big for her.\"\n"
-    "   Also right: \"\" -- when the story simply never says.\n"
-    "3. A place is somewhere a scene happens, not every noun. A room, a "
-    "street, a station platform. Not \"the armchair\".\n"
-    "4. List people in the order they first appear.\n"
-)
-
-
-def _cast_instruction(story: str) -> str:
-    return (
-        "List the people and places in this story.\n\n"
-        "Reply with only a JSON object with two keys:\n"
-        '  "people": an array of {"name": how the story refers to them, '
-        '"description": what the story says they look like or wear, empty '
-        'string if it never says}\n'
-        '  "places": an array of {"name": the place, "description": what the '
-        'story says it looks like, empty string if it never says}\n\n'
-        "Story:\n" + story
-    )
-
-
-def _json_block(raw: str, opener: str = "[", closer: str = "]") -> Any:
-    """Locate the JSON in a reply that was asked not to wrap it in prose.
-
-    Models fence JSON in backticks and preface it with a sentence however
-    firmly they are told not to, so it is found rather than assumed.
-    """
-    body = raw.strip()
-    if "```" in body:
-        parts = body.split("```")
-        if len(parts) > 1:
-            body = parts[1]
-            if body.lstrip().lower().startswith("json"):
-                body = body.lstrip()[4:]
-    start, end = body.find(opener), body.rfind(closer)
-    if start < 0 or end <= start:
-        raise ValueError("no JSON found in the reply")
-    return json.loads(body[start:end + 1])
-
-
-def _salvage_cast(raw: str) -> dict[str, list[Any]]:
-    """The complete entries of each cast array in a reply that was cut off.
-
-    The same salvage the division already does, for the shape the cast reader
-    asks for: an object with a "people" array and a "places" array rather than
-    a bare array. A story with a large cast overruns the token cap partway
-    through an entry, `rfind("}")` then lands on the last *complete* entry's
-    brace instead of the end of the object, and the parse fails on the
-    unbalanced slice -- throwing away every person in front of it and failing
-    the whole read, after minutes, with a raw JSON parser message. Each array
-    is bounded first and salvaged on its own, so a reply cut off inside
-    "places" still yields the people.
-    """
-    found: dict[str, list[Any]] = {}
-    for key in ("people", "places"):
-        opened = re.search(rf'"{key}"\s*:\s*\[', raw)
-        if opened is None:
-            continue
-        entries = _salvage_objects(_array_body(raw, opened.end()))
-        if entries:
-            found[key] = entries
-    return found
-
-
-def _whole_word_count(haystack: str, needle: str) -> int:
-    """Occurrences of `needle` as whole words rather than as a substring.
-
-    The boundary is only asserted at an end that is alphanumeric, so a name
-    carrying its own punctuation ("Mrs. Mallard") still matches: `\\b` between a
-    period and a space never holds.
-    """
-    if not needle:
-        return 0
-    lead = r"\b" if needle[0].isalnum() else ""
-    trail = r"\b" if needle[-1].isalnum() else ""
-    return len(re.findall(lead + re.escape(needle) + trail, haystack))
-
-
-def _mentions(story: str, name: str) -> int:
-    """How often the story refers to this person or place.
-
-    Counts the full name and each distinct word of it, so "Mrs. Mallard",
-    "Louise" and "Louise Mallard" all count toward the same person. Pronouns
-    are deliberately not counted: they cannot be attributed without resolving
-    them, and a wrong attribution here changes who the story is about.
-
-    Whole words throughout. The full-name count was `low.count(name.lower())`,
-    a raw substring count, and short names collected other words' letters:
-    "Ed" scored 5 against prose reading "Marta opened the door and turned on
-    the tap. The photographs were scattered." while Marta, the actual
-    protagonist, scored 1. This number sets the cast tiers, which pick the lead,
-    which fills the shared lineup sheet and every panel's cast brief -- so a
-    name the story never contains could dress every frame of the board. It is
-    also the check behind "verifies every name against the text before it is
-    kept", which a hallucinated name passed with a score of 5.
-    """
-    if not name.strip():
-        return 0
-    low = story.lower()
-    total = _whole_word_count(low, name.lower())
-    for word in re.findall(r"[A-Za-z][A-Za-z'-]{2,}", name):
-        if word.lower() in ("the", "her", "his", "mrs", "mr", "miss"):
-            continue
-        total = max(total, _whole_word_count(low, word.lower()))
-    return total
-
-
-def _tier(count: int, top: int) -> int:
-    """Which of three tiers a character belongs to.
-
-    Mention counts in a story are roughly Zipf-distributed: one or two people
-    dominate and the rest fall away fast. The tier decides how much work each
-    one is worth -- a full character sheet, a lighter reference, or a name
-    only -- so it is set by share of the leader rather than an absolute count,
-    which would misjudge both a vignette and a novel chapter.
-    """
-    if top <= 0:
-        return 3
-    share = count / top
-    if share >= 0.25:
-        return 1
-    if share >= 0.08:
-        return 2
-    return 3
-
-
-# Roughly how much prose one panel carries. Derived from the panel counts the
-# writer produces when asked to divide by beat rather than to a target: it
-# lands near seventy words a panel across short fiction. Used only to bound
-# the answer and to size the token budget, never to force a count.
-# Words of prose a panel is worth.
-#
-# 70 was a paragraph, not a beat. A comic panel holds one moment -- roughly a
-# sentence or two -- and the writer agrees: asked to divide a 310-word story it
-# returned fifteen beats, about twenty words each, and the bound built from 70
-# told it the story was worth two to eight. So the division was cut in half and
-# the second half of the story never reached the board at all, which reads
-# exactly like the tool picking a few scenes and drawing those.
-_WORDS_PER_PANEL = 30
-
-
-# As many panels as one board is worth reading in a sitting, and as many as
-# the page composer lays out sensibly.
-_MAX_PANELS = 60
-
-
-def _panel_bounds(words: int) -> tuple[int, int]:
-    """The range a division of this much prose should fall in.
-
-    Not a target. It exists so a writer that returns three panels for three
-    thousand words, or ninety for three hundred, is recognised as having
-    failed rather than believed.
-    """
-    mid = max(2, round(words / _WORDS_PER_PANEL))
-    # Sixty panels is as much as one board holds. Only the top of the range was
-    # capped, so past about 8,400 words the bottom overtook it: a long chapter
-    # was told it "usually lands between 714 and 60 panels", and every division
-    # of it was reported out of range because no count can sit inside an
-    # inverted range.
-    high = max(4, min(_MAX_PANELS, int(mid * 2.0)))
-    return min(max(2, int(mid * 0.5)), high), high
-
-
-def _shotlist_instruction_derived(story: str, low: int, high: int) -> str:
-    return (
-        "Break this story into panels, one panel per beat.\n\n"
-        "Do not aim for a particular number. The number of panels is whatever "
-        "the story turns out to need, and you will be judged on covering it "
-        "evenly, not on hitting a count. As a sanity check only, a story this "
-        f"length usually lands between {low} and {high} panels.\n\n"
-        "How many panels a beat is worth:\n"
-        "  an action, or anything with a before and an after -- two to four, "
-        "so the change is visible rather than asserted\n"
-        "  a passage of dialogue -- one panel each time a speaker changes what "
-        "they are trying to do, not one per line\n"
-        "  a description, or a statement of fact -- one\n"
-        "  a beat that happens off the page, or is only thought -- none, "
-        "unless something visible goes with it\n\n"
-        "Reply with only a JSON array of objects, each with:\n"
-        '  "shot": one of "wide", "medium", "close-up"\n'
-        '  "subject": who or what is in frame\n'
-        '  "action": what is happening, as a short phrase\n'
-        '  "setting": where it takes place\n'
-        '  "character_in_frame": true if the person we follow is visible in '
-        'this panel, false if it shows something else\n'
-        '  "characters": an array naming every person visible in this panel, '
-        'using exactly how the story refers to them\n'
-        '  "source": an exact short quote from the sentence or beat this panel '
-        'covers. Never paraphrase it\n'
-        '  "caption": one short line to sit under the panel, in the voice of '
-        'the story. Narration, not description. Six to fourteen words, or an '
-        'empty string if the panel needs no words. It must belong to THIS '
-        'panel, never to a later one.\n'
-        '  "scene": the number of the scene this panel belongs to, from 1\n'
-        '  "scene_title": a short name for that scene, the same on every panel '
-        'of it\n'
-        '  "dialogue": an array of what is spoken aloud, each {"speaker": who '
-        'says it, "text": the words}. The story\'s own words where it has '
-        'them. Empty array when nobody speaks -- most panels. At most two '
-        'lines, each under twelve words.\n\n'
-        "Story:\n" + story
-    )
-
-
-# A pronoun is not a character.
-#
-# The cast is verified by asking whether the name appears in the story, which
-# a pronoun always does -- so a story told in the first person came back with a
-# cast of "I", "her" and "she", each one "verified", each one a separate
-# person, and "she" and "her" the same person twice. Those names then went into
-# the reference sheet as "Character reference sheet, full body, neutral pose.
-# I." and into every panel prompt as "I: ; her: ". A character drawn from that
-# is a stranger in every frame.
-#
-# Only whole names are rejected. "her sister" and "the conductor" are exactly
-# what the cast reader is told to return when a story does not name someone.
-_PRONOUN_NAMES = frozenset({
-    "i", "me", "my", "mine", "myself",
-    "we", "us", "our", "ours", "ourselves",
-    "you", "your", "yours", "yourself",
-    "he", "him", "his", "himself",
-    "she", "her", "hers", "herself",
-    "it", "its", "itself",
-    "they", "them", "their", "theirs", "themselves",
-    "narrator", "the narrator", "protagonist", "the protagonist",
-    "someone", "somebody", "anyone", "anybody", "everyone", "nobody",
-})
-
-
-def _is_pronoun_name(name: str) -> bool:
-    flat = " ".join(name.lower().replace(".", " ").split())
-    return flat in _PRONOUN_NAMES
-
-
-def _is_first_person(story: str) -> bool:
-    """Whether the story is *narrated* by someone it never names.
-
-    A first-person story has no name for its own narrator, so the cast reader
-    has nothing to return for the person the whole story is about -- and the
-    board then draws its lead from nothing at all. Worth detecting so the
-    interface can ask for a name once, rather than the user discovering it from
-    the pictures.
-
-    Speech is removed before looking. Almost every story in the third person
-    contains "I" somewhere, because its characters talk to each other -- a
-    two-line exchange containing "I did tell you" is not a first-person story,
-    and asking its author to name the narrator is a question about a person who
-    does not exist. Checked against a third-person fixture with dialogue, which
-    is what caught this.
-    """
-    narration = re.sub(r"[\"“”‘’'].*?[\"“”‘’']",
-                       " ", story, flags=re.S).lower()
-    return any(_whole_word_count(narration, w) > 0
-               for w in ("i", "me", "my", "mine"))
-
-
-def op_cast(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
-    """Read a story and report who is in it and where it happens.
-
-    This runs on its own the moment a story arrives, because it costs a couple
-    of minutes of the text model and no picture time at all. Everything that
-    costs image time is asked for; this is not.
-
-    Every name the writer returns is checked against the story before it is
-    kept. A model asked to list characters will confidently add one that is
-    not there, and an invented person becomes an invented character sheet and
-    then appears, drawn, in panels of a story they were never in.
-    """
-    story = (req.get("story") or "").strip()
-    if not story:
-        raise ValueError("paste a story first, then it can be read")
-
-    if is_cancelled(req_id):
-        raise Cancelled()
-    emit({"id": req_id, "type": "progress", "phase": "denoise",
-          "progress": None, "message": "Reading the cast"})
-    raw = _write(req_id, CAST_SYSTEM, _cast_instruction(story),
-                 max_tokens=900, temperature=0.2, repo=req.get("writer"), label="Reading the cast")
-    try:
-        found = _json_block(raw, "{", "}")
-        if not isinstance(found, dict):
-            raise ValueError("the reply was not an object of people and places")
-    except Exception as exc:
-        # The reply ran out of tokens partway through an entry. Every entry in
-        # front of it is still good, and keeping them is the difference between
-        # a cast the user can correct and an error that names nothing after a
-        # couple of minutes of the writer.
-        found = _salvage_cast(raw)
-        if not found:
-            raise ValueError(f"could not read the cast from the story: {exc}")
-        log(req_id,
-            f"the cast reply was cut off; keeping the "
-            f"{len(found.get('people') or [])} people and "
-            f"{len(found.get('places') or [])} places that arrived whole",
-            "warn")
-
-    def collect(key: str) -> list[dict[str, Any]]:
-        out = []
-        seen = set()
-        for item in (found.get(key) or []):
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name", "")).strip()
-            if not name or name.lower() in seen:
-                continue
-            if key == "people" and _is_pronoun_name(name):
-                # A pronoun always appears in the story, so verification can
-                # never catch it, and it names nobody. The interface asks for a
-                # name instead -- see `first_person` below.
-                log(req_id, f"dropping person {name!r}: a pronoun is not a name",
-                    "warn")
-                continue
-            count = _mentions(story, name)
-            if count == 0:
-                # Not in the story. Dropped rather than drawn.
-                log(req_id, f"dropping {key[:-1]} {name!r}: not in the story",
-                    "warn")
-                continue
-            seen.add(name.lower())
-            out.append({"name": name,
-                        "description": str(item.get("description", "")).strip(),
-                        "mentions": count})
-        return out
-
-    people = collect("people")
-    places = collect("places")
-    people.sort(key=lambda p: -p["mentions"])
-    top = people[0]["mentions"] if people else 0
-    for p in people:
-        p["tier"] = _tier(p["mentions"], top)
-
-    log(req_id,
-        f"cast: {len(people)} people ("
-        + ", ".join(f"{p['name']} x{p['mentions']} t{p['tier']}"
-                    for p in people[:6])
-        + f"), {len(places)} places")
-    # A story told in the first person never names the person it is about, so
-    # there is nothing for the cast reader to return for the lead. Said here
-    # rather than left for the user to work out from the pictures.
-    first_person = _is_first_person(story)
-    if first_person:
-        log(req_id, "told in the first person: the narrator needs a name", "warn")
-    return {"people": people, "places": places,
-            "first_person": first_person,
-            "words": len(re.findall(r"\S+", story))}
-
-
-def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
-    """Turn a story into an ordered list of panels.
-
-    The riskiest step in the picture-board pipeline, because everything after
-    it is only as good as the division of the story. A 2B vision-language
-    model could not do it -- asked for four panels it returned one, and
-    skipped most of the story -- so this runs on the writer.
-    """
-    story = (req.get("story") or "").strip()
-    if not story:
-        raise ValueError("write the story first, then break it into panels")
-
-    words = len(re.findall(r"\S+", story))
-    asked = req.get("panels")
-
-    if asked is None:
-        # Derived, not set. A number chosen before anyone read the story is a
-        # guess, and a slider capped at twelve is why a whole chapter came
-        # back as twelve panels regardless of what was in it.
-        low, high = _panel_bounds(words)
-        emit({"id": req_id, "type": "progress", "phase": "denoise",
-              "progress": None, "message": "Dividing the story into beats"})
-        raw = _write(req_id, SHOTLIST_SYSTEM,
-                     _shotlist_instruction_derived(story, low, high),
-                     max_tokens=min(6000, 240 * high + 600), temperature=0.3,
-                     repo=req.get("writer"), label="Dividing the story")
-        # Counted before it is bounded, so an overshoot can be reported rather
-        # than quietly becoming a shorter board.
-        beats = _shotlist_beats(raw)
-        returned = len(beats)
-        # Bounded by what a board holds, not by the expected range.
-        #
-        # `_panel_bounds` says so itself: "Not a target. It exists so a writer
-        # that returns three panels for three thousand words, or ninety for
-        # three hundred, is recognised as having failed rather than believed."
-        # It was a check and it was being enforced -- the extra beats sliced
-        # off the end -- which is the opposite of recognising a division and
-        # reporting it.
-        #
-        # Measured on FX-01, whose answer key requires five essential beats.
-        # 74 words divides to a range of 2-4, so five was already impossible;
-        # the writer returned eight sensible beats and four were kept. The
-        # four dropped were the last four, because the slice takes the front,
-        # and the last four are where a scene keeps its reveal: the unlocking
-        # and the empty platform both went, and the board scored 67% with the
-        # ending missing. Asked for eight explicitly -- same story, same
-        # writer, same settings, the bound the only variable -- coverage was
-        # 83% and the one unanchored sentence was the one the key declares
-        # context that no panel has to draw.
-        #
-        # A ratio of one panel to thirty words is not a rule anyone here
-        # established. The project's own research register already says there
-        # is no supported fixed ratio of prose to panels; this is what
-        # enforcing one costs. The range is still computed and still reported
-        # through `out_of_range`, which is what it was written to do.
-        panels = _clean_shotlist(beats[:_MAX_PANELS], story)
-        dropped = max(0, returned - len(panels))
-        log(req_id, f"{words} words divided into {returned} beats, "
-                    f"{len(panels)} kept (expected {low}-{high})")
-        # More story than one board holds. Saying "usually makes 60 to 60"
-        # explains nothing; saying the board is a part of the story does.
-        too_long = words > _MAX_PANELS * _WORDS_PER_PANEL
-        return {"panels": panels, "asked": None, "derived": True,
-                "words": words, "expected_low": low, "expected_high": high,
-                "too_long": too_long,
-                # What the writer returned, not what survived the bound. The
-                # range check is about the division the writer made.
-                "returned": returned,
-                "truncated_from": returned if dropped else None,
-                "out_of_range": (not too_long
-                                 and not (low <= returned <= high)),
-                "shot_mix": _shot_mix(panels),
-                "coverage": _story_coverage(story, panels)}
-
-    count = max(2, min(int(asked), 60))
-    emit({"id": req_id, "type": "progress", "phase": "denoise",
-          "progress": None, "message": f"Breaking the story into {count} panels"})
-
-    raw = _write(req_id, SHOTLIST_SYSTEM, _shotlist_instruction(story, count),
-                 max_tokens=min(6000, 240 * count + 600), temperature=0.3,
-                 repo=req.get("writer"), label="Dividing the story")
-    panels = _parse_shotlist(raw, count, story)
-    if len(panels) < count:
-        log(req_id, f"asked for {count} panels, got {len(panels)}", "warn")
-    return {"panels": panels, "asked": count, "derived": False,
-            "shot_mix": _shot_mix(panels),
-            "words": words, "coverage": _story_coverage(story, panels)}
 
 
 # The version of the shape `_assist_reply` returns.
@@ -6209,15 +4862,66 @@ def req_format(req):
     return fmt if fmt in ("manga", "webtoon", "comic", "picture") else "manga"
 
 
+def req_pages(req):
+    """The pages the board is planned for: four unless asked, at most 200."""
+    try:
+        return max(1, min(200, int(req.get("pages") or 4)))
+    except (TypeError, ValueError):
+        return 4
+
+
+def _brief_writer(req_id, req):
+    """Writer and progress for the briefs the director's rules left weak.
+
+    One batch of panels per call, so a chapter costs a handful of short
+    replies rather than one per scene; Stop keeps the briefs done so far."""
+    import director
+    started = time.monotonic()
+    where = {"label": "Writing panel briefs", "fraction": None}
+    def progress(i, total):
+        label = f"Writing panel briefs {i + 1} of {total}"
+        if i:
+            label += f" · about {max(1, round((time.monotonic() - started) / i * (total - i) / 60))} min left"
+        where.update(label=label, fraction=i / total)
+        emit({"id": req_id, "type": "progress", "phase": "denoise", "progress": i / total, "message": label})
+    def write(system, user):
+        if is_cancelled(req_id):
+            raise director.Stop()
+        try:
+            return _write(req_id, system, user, max_tokens=1200, temperature=0.3, repo=req.get("writer"),
+                          label=where["label"], fraction=where["fraction"])
+        except Cancelled:
+            raise director.Stop()
+    return write, progress
+
+
+def _directed(req_id, req, book, chapter_id, refine):
+    """The chapter's panels and what of the story they carry.
+
+    The coverage is measured, sentence by sentence: the board used to report
+    100% whatever the plan had left out."""
+    import director
+    fmt, pages = req_format(req), req_pages(req)
+    if refine and req.get("writer"):
+        write, progress = _brief_writer(req_id, req)
+        panels = director.direct(book, chapter_id, fmt, write=write, progress=progress, pages=pages)
+    else:
+        panels = director.plan(book, chapter_id, fmt, pages)
+    return panels, director.coverage(director.script(book, chapter_id), panels)
+
+
 def _story_result(req_id, book, chapter_id, req=None):
     import story as story_model
-    book = story_model.ensure_narrator(book)
+    req = req or {}
+    book = story_model.ensure_cast(book)
     chapter = next(c for c in book["chapters"] if c["id"] == chapter_id)
     left = sum(1 for s in chapter["scenes"] if s.get("unanalysed"))
-    import director
-    return {"book": book, "chapter_id": chapter_id,
-            "panels": director.plan(book, chapter_id, req_format(req or {})),
-            "stopped": is_cancelled(req_id), "unanalysed": left}
+    stopped = is_cancelled(req_id)
+    # The briefs are part of the one automatic pass, while the writer is
+    # still loaded -- unless the analysis itself was stopped.
+    panels, covered = _directed(req_id, req, book, chapter_id, refine=not stopped)
+    return {"book": book, "chapter_id": chapter_id, "panels": panels, "coverage": covered,
+            "stopped": stopped, "unanalysed": left}
 
 
 def op_story_analyze(req_id, req):
@@ -6244,36 +4948,17 @@ def op_story_resume(req_id, req):
 
 
 def op_direct_story(req_id, req):
-    """The shot list for a chapter: the director's rules, refined scene by
-    scene by the story model when one is named. A refinement that fails or is
-    stopped keeps the rules' plan for the scenes it did not reach."""
-    import director
+    """The shot list for a chapter at the page count asked for: the
+    director's rules, with weak briefs rewritten by the story model when one
+    is named. A rewrite that fails or is stopped keeps the rules' briefs."""
     import story as story_model
-    fmt = req_format(req)
-    # A book analysed before a first-person narrator was a character gains
-    # them here; the book goes back so the board can draw their cast sheet.
-    book = story_model.ensure_narrator(req["book"])
+    # A book analysed before a self-named narrator was merged, or before a
+    # speaking role was a person, is put right here; the book goes back so
+    # the board can save it and cast the people it gained.
+    book = story_model.ensure_cast(req["book"])
     extra = {"book": book} if book is not req["book"] else {}
-    if not req.get("writer"):
-        return {"panels": director.plan(book, req["chapter_id"], fmt), **extra}
-    started = time.monotonic()
-    def progress(i, total):
-        label = f"Directing scene {i + 1} of {total}"
-        if i:
-            label += f" · about {max(1, round((time.monotonic() - started) / i * (total - i) / 60))} min left"
-        emit({"id": req_id, "type": "progress", "phase": "denoise", "progress": i / total, "message": label})
-        where.update(label=label, fraction=i / total)
-    where = {"label": "Directing", "fraction": None}
-    def write(system, user):
-        if is_cancelled(req_id):
-            raise director.Stop()
-        try:
-            return _write(req_id, system, user, max_tokens=1600, temperature=0.4, repo=req.get("writer"),
-                          label=where["label"], fraction=where["fraction"])
-        except Cancelled:
-            raise director.Stop()
-    panels = director.direct(book, req["chapter_id"], fmt, write=write, progress=progress)
-    return {"panels": panels, "stopped": is_cancelled(req_id), **extra}
+    panels, covered = _directed(req_id, req, book, req["chapter_id"], refine=True)
+    return {"panels": panels, "coverage": covered, "stopped": is_cancelled(req_id), **extra}
 
 
 def op_narration_script(req_id, req):
@@ -6532,6 +5217,11 @@ def op_audiobook_revoice(req_id, req):
 
 
 def op_character_reference(req_id, req):
+    """Two to eight cast sheets side by side, in the order given: the lineup
+    a panel with several people is drawn against when the model takes one
+    reference. The sheets are full-body figures drawn at 2:3, so each fills
+    its tile, and the board sends them in the order the people stand, left
+    to right, which is how the panel prompt names them."""
     from PIL import Image, ImageOps
     import vaultcrypto as vc
     inputs = req.get("vault_inputs") or []
@@ -6577,9 +5267,6 @@ OPS = {
     "video": op_video,
     "unload": op_unload,
     "assist": op_assist,
-    "cast": op_cast,
-    "shotlist": op_shotlist,
-    "enrich_panels": op_enrich_panels,
     "compose_board": op_compose_board,
     "bind_comic": op_bind_comic,
     "unload_assistant": op_unload_assistant,

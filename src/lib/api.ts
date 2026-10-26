@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { mockVaultUrl } from "../mock/images";
 import type { BookFormat } from "./types";
-import type { AssistGoal, AssistResult, AudioSpan, CastPlace, EngineProgress, GenerateArgs, HostInfo, Lora, ModelStatus, Orphans, Panel, RepairReport, ResolvedLora, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus } from "./types";
+import type { Coverage } from "./boardDraft";
+import type { AssistGoal, AssistResult, AudioSpan, EngineProgress, GenerateArgs, HostInfo, Lora, ModelStatus, Orphans, Panel, RepairReport, ResolvedLora, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus } from "./types";
 
 /** Tauri rejects with our structured error; normalise it to a message. */
 export function errText(e: unknown): string {
@@ -100,19 +101,21 @@ export const api = {
   storyLibrarySet: (value: string) => invoke<void>("story_library_set", { value }),
   analyzeStory: (jobId: string, source: string, title: string,
                  previous: StoryBook | null = null, modelId: string | null = null,
-                 mode: "full" | "voice" = "full", format: BookFormat = "manga") =>
+                 mode: "full" | "voice" = "full", format: BookFormat = "manga",
+                 pages: number | null = null) =>
     invoke<StoryAnalysisResult>("analyze_story", { jobId,
-      args: { source, title, previous, model_id: modelId, mode, format } }),
+      args: { source, title, previous, model_id: modelId, mode, format, pages } }),
   /** Continue an analysis, or with `again` analyse the whole chapter afresh in place. */
   resumeStory: (jobId: string, book: StoryBook, chapterId: string, modelId: string | null = null,
-                format: BookFormat = "manga", again = false) =>
+                format: BookFormat = "manga", again = false, pages: number | null = null) =>
     invoke<StoryAnalysisResult>("resume_story", { jobId,
-      args: { book, chapter_id: chapterId, model_id: modelId, format, again } }),
-  /** The director's shot list; `refine` has the story model improve it scene by scene. */
+      args: { book, chapter_id: chapterId, model_id: modelId, format, again, pages } }),
+  /** The director's shot list for `pages` pages; `refine` has the story
+   *  model rewrite the briefs the rules left weak. */
   directStory: (jobId: string, book: StoryBook, chapterId: string, format: BookFormat = "manga",
-                refine = false, modelId: string | null = null) =>
-    invoke<{ panels: Panel[]; stopped?: boolean; book?: StoryBook }>("direct_story", { jobId,
-      args: { book, chapter_id: chapterId, format, refine, model_id: modelId } }),
+                refine = false, modelId: string | null = null, pages: number | null = null) =>
+    invoke<{ panels: Panel[]; stopped?: boolean; book?: StoryBook; coverage?: Coverage }>("direct_story", { jobId,
+      args: { book, chapter_id: chapterId, format, refine, model_id: modelId, pages } }),
   audioPreview: (args: { model_id: string; voice: string; text: string; language?: string;
                          delivery?: string; direction?: string; rate: number }) =>
     invoke<{ wav_base64: string }>("audio_preview", { args }),
@@ -136,54 +139,6 @@ export const api = {
     invoke<{ script: string; stopped: boolean; suggestions?: ScriptSuggestion[] }>("narration_script", { jobId, source, devanagari, modelId }),
   characterReference: (jobId: string, images: string[]) =>
     invoke<string>("character_reference", { jobId, images }),
-  /** Who is in the story and where it happens. Free of picture time. */
-  storyCast: (jobId: string, story: string) =>
-    invoke<{
-      people: { name: string; description: string; mentions: number; tier: number }[];
-      places: { name: string; description: string; mentions: number }[];
-      words: number;
-    }>("story_cast", { jobId, story }),
-
-  shotList: (jobId: string, story: string, panels: number | null) =>
-    invoke<{
-      panels: Panel[];
-      asked: number | null;
-      derived: boolean;
-      words: number;
-      expected_low?: number;
-      expected_high?: number;
-      out_of_range?: boolean;
-      too_long?: boolean;
-      /** How many beats the writer returned, before the board's bound. */
-      returned?: number;
-      /** Set to that count when beats were dropped to fit the bound. */
-      truncated_from?: number | null;
-      // Not `Coverage` from boardDraft: that module imports this one, and the
-      // shape is small enough not to be worth the cycle.
-      /**
-       * How varied the shots are. The writer is told to vary them and nothing
-       * checked, so a page of close-ups went unnoticed until it had been
-       * drawn. `uniform` names the shot that dominates, or is null when the
-       * mix is fine. Reported, never enforced: the right number of wides is a
-       * judgement about a particular story.
-       */
-      shot_mix?: {
-        counts: Record<string, number>;
-        total: number;
-        uniform: string | null;
-        purposes?: Record<string, number>;
-      };
-      coverage?: {
-        covered: number; total: number; percent: number;
-        missing: string[]; missing_total?: number;
-      };
-    }>("shot_list", { jobId, story, panels }),
-  /** `places` is what the story said about each place, from the cast read.
-   *  Without it the place writer invents a room from the panel actions alone,
-   *  and a kitchen the story calls green comes back yellow. */
-  enrichPanels: (jobId: string, panels: Panel[], style: string,
-                 places: CastPlace[] = []) =>
-    invoke<{ panels: Panel[] }>("enrich_panels", { jobId, panels, style, places }),
   /**
    * Bind composed pages into one PDF, sealed into the vault.
    *
@@ -206,14 +161,17 @@ export const api = {
    */
   composeBoard: (
     jobId: string, panels: string[], captions: string[], shots: string[],
-    dialogue: { speaker: string; text: string }[][], scenes: number[],
-    layout: string, project: string | null, projectName: string
+    dialogue: { speaker: string; text: string; side?: string; offscreen?: boolean }[][], scenes: number[],
+    layout: string, project: string | null, projectName: string,
+    /** The board's own layout: page and cell of each panel, and the
+     *  reading direction. Absent, the engine lays the pages out itself. */
+    placed: { pages?: number[]; cells?: [number, number, number, number][]; direction?: "ltr" | "rtl" } = {},
   ) => invoke<{ pages: string[]; composition: string;
                 overflow: TextOverflow[] }>(
     "compose_board",
     { jobId, board: { panels, captions, shots, dialogue,
                       scenes, layout, project,
-                      project_name: projectName } }),
+                      project_name: projectName, ...placed } }),
   /**
    * Board state, encrypted in the vault.
    *

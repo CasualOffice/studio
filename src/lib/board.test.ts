@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { cameraWords, shotClass, compositions, drawBatch, CUSTOM_STYLE, isKnownStyle, lockCustomStyle, lockStyle,
-         panelPrompt,
-         panelReferences, panelSeed, placeKey, placePrompt, placeSeed,
-         reviveLock, sheetPrompt, shotBackground, styleHasMoved, styleWords,
-         STYLES } from "./board";
+import { cameraWords, castSeed, castSheetPrompt, shotClass, compositions, drawBatch, CUSTOM_STYLE,
+         lockCustomStyle, lockStyle, panelPrompt, panelReferences, panelSeed, placeKey, placeSeed,
+         reviveLock, shotBackground, styleHasMoved, STYLES } from "./board";
 import type { Panel, VaultItem } from "./types";
-
-const CHAR = "a young woman with short black hair and a red scarf";
 
 // A board is drawn from the words it pinned, not from a preset name, so these
 // are what the prompt builders take.
@@ -21,327 +17,6 @@ const panel = (over: Partial<Panel> = {}): Panel => ({
   character_in_frame: true,
   caption: "",
   ...over,
-});
-
-describe("panelPrompt", () => {
-  it("keeps the subject, which is not the same as the action", () => {
-    // The first version dropped `subject` entirely, so a panel about a tap
-    // was described only as "water running" and drawn as the character.
-    const out = panelPrompt(panel({ subject: "a kitchen tap" }), ANIME, CHAR);
-    expect(out).toContain("a kitchen tap");
-  });
-
-  it("carries a note, and puts it last so it can correct what came before", () => {
-    // The repair for a wrong frame is a sentence about that frame, not a new
-    // seed. It goes at the end because a correction has to follow the thing
-    // it corrects.
-    const out = panelPrompt(panel(), ANIME, CHAR, "older, grey at the temples");
-    expect(out).toContain("older, grey at the temples");
-    const noteAt = out.indexOf("older, grey");
-    expect(noteAt).toBeGreaterThan(out.indexOf("red scarf"));
-    expect(out.trimEnd().endsWith("temples.")).toBe(true);
-  });
-
-  it("is unchanged when there is no note", () => {
-    // A panel nobody has complained about must produce exactly what it did
-    // before notes existed, or every undrawn panel changes the day this ships.
-    expect(panelPrompt(panel(), ANIME, CHAR, "")).toBe(
-      panelPrompt(panel(), ANIME, CHAR));
-    expect(panelPrompt(panel(), ANIME, CHAR, "   ")).toBe(
-      panelPrompt(panel(), ANIME, CHAR));
-    expect(panelPrompt(panel(), ANIME, CHAR, undefined)).toBe(
-      panelPrompt(panel(), ANIME, CHAR));
-  });
-
-  it("names the character when they are in frame", () => {
-    expect(panelPrompt(panel(), ANIME, CHAR)).toContain("red scarf");
-  });
-
-  it("leaves the character out of a panel they are not in", () => {
-    // A close-up of a running tap, handed the protagonist's description,
-    // draws her running instead of the tap.
-    const out = panelPrompt(
-      panel({ subject: "a kitchen tap", action: "water running",
-              character_in_frame: false, shot: "close-up" }),
-      ANIME, CHAR);
-    expect(out).not.toContain("red scarf");
-    expect(out).toContain("a kitchen tap");
-    expect(out).toContain("close-up shot");
-  });
-
-  it("leads with the style, so every panel matches the others", () => {
-    for (const s of STYLES) {
-      expect(panelPrompt(panel(), lockStyle(s.id), CHAR).startsWith(s.words)).toBe(true);
-    }
-  });
-
-  it("drops empty parts rather than leaving stray punctuation", () => {
-    const out = panelPrompt(
-      panel({ action: "", setting: "" }), ANIME, CHAR);
-    expect(out).not.toContain("..");
-    expect(out).not.toContain(". .");
-    expect(out.endsWith(".")).toBe(true);
-  });
-
-  it("survives an empty character description", () => {
-    const out = panelPrompt(panel(), ANIME, "   ");
-    expect(out).toContain("Mira");
-    expect(out).not.toContain(", .");
-  });
-
-  it("never leaves a board with no style at all", () => {
-    // An unknown id used to resolve to the empty string, so every prompt lost
-    // the one thing that makes a board a board while the run went on looking
-    // like it had worked. It resolves to a real style now, and the caller is
-    // expected to say so rather than let the substitution pass unseen.
-    expect(styleWords("no-such-style")).toBe("");
-    expect(isKnownStyle("no-such-style")).toBe(false);
-    expect(isKnownStyle("anime")).toBe(true);
-
-    const lock = lockStyle("no-such-style");
-    expect(lock.id).toBe(STYLES[0].id);
-    expect(lock.words).toBe(STYLES[0].words);
-    expect(panelPrompt(panel(), lock, CHAR).startsWith(STYLES[0].words)).toBe(true);
-  });
-
-  it("leaves no stray punctuation when a lock carries no words", () => {
-    // Not reachable through `lockStyle`, but a draft is JSON and can hold
-    // anything. The framing still leads, because every panel is a panel
-    // whatever it is drawn in.
-    const out = panelPrompt(panel(), { ...ANIME, words: "" }, CHAR);
-    expect(out.startsWith("cropped composition")).toBe(true);
-    expect(out).not.toContain("..");
-    expect(out).not.toMatch(/^[.,;\s]/);
-  });
-
-  it("asks for a panel, not a picture of the moment", () => {
-    // Nothing used to say the picture was a panel, so each one came back as a
-    // standalone illustration: centred, complete, and the opposite of what a
-    // panel does. Pages looked like comics only because the compositor drew
-    // the borders afterwards.
-    const out = panelPrompt(panel(), ANIME, CHAR);
-    expect(out).toContain("cropped composition");
-    expect(out).toContain("full bleed");
-    // Measured: naming the format draws the frame. "a single comic book panel,
-    // sequential art" put a heavy black border inside the one the compositor
-    // draws, and removing the negations did not stop it.
-    expect(out).not.toContain("comic book panel");
-    expect(out).not.toContain("sequential art");
-    // Klein has no negative conditioning at guidance 1, so "no border" reads
-    // as "border" and draws one -- inside the border the compositor then draws.
-    // The way to not get a border is to never mention one.
-    expect(out).not.toContain("no border");
-    expect(out).not.toContain("no text");
-    expect(out).not.toContain("no speech");
-  });
-
-  it("does not frame the reference sheets as panels", () => {
-    // The sheet and the room are what every panel matches against. Framing
-    // them as panels would crop and dramatise the one thing that has to stay
-    // flat and neutral.
-    expect(sheetPrompt(ANIME, CHAR)).not.toContain("cropped composition");
-    expect(placePrompt(ANIME, "a parlour at dusk")).not.toContain("cropped composition");
-  });
-});
-
-describe("panelPrompt with a worked-up scene", () => {
-  it("uses the scene instead of the terse fields", () => {
-    // A worked-up scene already carries the setting and the light. Appending
-    // the thin version too describes the panel twice and leaves the model to
-    // reconcile them.
-    const out = panelPrompt(
-      panel({ action: "stands in the hallway", setting: "a flat",
-              description: "A narrow hallway, faded linoleum, dim light from a corner lamp." }),
-      ANIME, CHAR);
-    expect(out).toContain("faded linoleum");
-    expect(out).not.toContain("a flat");
-  });
-
-  it("falls back to the terse fields when the scene is empty", () => {
-    const out = panelPrompt(panel({ description: "" }), ANIME, CHAR);
-    expect(out).toContain("stands in the hallway");
-    expect(out).toContain("a narrow flat");
-  });
-
-  it("falls back when the scene is absent entirely", () => {
-    const p = panel();
-    delete (p as { description?: string }).description;
-    expect(panelPrompt(p, ANIME, CHAR)).toContain("a narrow flat");
-  });
-
-  it("still leaves the character out of a panel they are not in", () => {
-    const out = panelPrompt(
-      panel({ character_in_frame: false, subject: "a kitchen tap",
-              description: "Water running into a steel sink, grey daylight." }),
-      ANIME, CHAR);
-    expect(out).not.toContain("red scarf");
-    expect(out).toContain("a kitchen tap");
-  });
-});
-
-describe("the cast is described once, and the subject is not a garment", () => {
-  // Read off a real run. The subject was joined to the cast description with
-  // ", ", so a panel of Mira asked for "... oversized grey wool coat, dark
-  // green scarf, Mira" -- the name arriving in the middle of a list of clothes,
-  // and drawn as one more of them.
-  const MIRA = "Mira: young woman, short dark hair, thin face, "
-             + "oversized grey wool coat, dark green scarf";
-  const BOTH = `${MIRA}; Jonas: tall, stooped, grey overcoat, flat cap`;
-  const count = (text: string, needle: string) => text.split(needle).length - 1;
-
-  it("does not weld the subject's name onto the clothing", () => {
-    const out = panelPrompt(
-      panel({ subject: "Mira", action: "finds letter under sugar tin",
-              setting: "a narrow kitchen" }), ANIME, MIRA);
-    expect(out).not.toContain("scarf, Mira");
-    expect(count(out, "Mira")).toBe(1);
-    expect(out).toContain("dark green scarf");
-    expect(out).toContain("finds letter under sugar tin");
-  });
-
-  it("names a second person once as well", () => {
-    // The multi-character cast is written "Mira: ...; Jonas: ...", so the names
-    // are what stands before each colon.
-    const out = panelPrompt(panel({ subject: "Jonas" }), ANIME, BOTH);
-    expect(count(out, "Jonas")).toBe(1);
-    expect(out).not.toContain("flat cap, Jonas");
-    expect(out).toContain("dark green scarf");
-    expect(out).toContain("grey overcoat");
-  });
-
-  it("matches a name whatever its case or trailing punctuation", () => {
-    for (const subject of ["mira", "MIRA", "Mira."]) {
-      expect(count(panelPrompt(panel({ subject }), ANIME, MIRA), "ira")).toBe(1);
-    }
-  });
-
-  it("still says a subject the cast does not name", () => {
-    // Not everyone in a panel is in the cast description, and dropping a name
-    // the prompt is the only statement of would lose the person entirely.
-    const out = panelPrompt(panel({ subject: "the postman" }), ANIME, MIRA);
-    expect(out).toContain("the postman");
-  });
-
-  it("gives a thing in frame a clause of its own, not a slot in the wardrobe", () => {
-    const out = panelPrompt(
-      panel({ subject: "a kitchen tap", action: "water running" }), ANIME, MIRA);
-    expect(out).toContain("a kitchen tap");
-    expect(out).not.toContain("scarf, a kitchen tap");
-    expect(out).toContain("dark green scarf. a kitchen tap.");
-  });
-
-  it("still leaves the whole cast out of a panel nobody is in", () => {
-    const out = panelPrompt(
-      panel({ subject: "a kitchen tap", character_in_frame: false }), ANIME, BOTH);
-    expect(out).not.toContain("dark green scarf");
-    expect(out).not.toContain("Jonas");
-    expect(out).toContain("a kitchen tap");
-  });
-});
-
-describe("the prompt does not contradict or repeat itself", () => {
-  it("states the shot once, even when the brief says it again", () => {
-    // A real brief came back as "Mira stands in the narrow kitchen, wide shot.
-    // Pale green walls, ..." for a panel whose prompt already said "wide shot".
-    // Said twice it is noise; said differently by the writer and the enricher
-    // it asks for two distances at once.
-    const out = panelPrompt(
-      panel({ description: "Mira stands in the narrow kitchen, wide shot. "
-                         + "Pale green walls, scuffed lino." }), ANIME, CHAR);
-    expect(out.split("wide shot").length - 1).toBe(1);
-    expect(out).toContain("Mira stands in the narrow kitchen. Pale green walls");
-  });
-
-  it("takes the echo out of the front of a brief too", () => {
-    const out = panelPrompt(
-      panel({ shot: "close-up",
-              description: "Close-up shot. Her hands on the sugar tin." }),
-      ANIME, CHAR);
-    expect(out).toContain("Her hands on the sugar tin");
-    expect(out.split(" shot").length - 1).toBe(1);
-    expect(out).not.toContain("Close-up shot.");
-  });
-
-  it("leaves a shot named mid-sentence alone rather than mangling the grammar", () => {
-    // Cutting it out here would take the grammar with it: "a of her hands".
-    const out = panelPrompt(
-      panel({ description: "A close-up shot of her hands, steam rising." }),
-      ANIME, CHAR);
-    expect(out).toContain("A close-up shot of her hands, steam rising");
-  });
-
-  it("falls back to the terse fields when the brief was only the shot", () => {
-    const out = panelPrompt(panel({ description: "Wide shot." }), ANIME, CHAR);
-    expect(out).toContain("stands in the hallway");
-    expect(out).toContain("a narrow flat");
-  });
-
-  it("does not double the full stop the brief already ends with", () => {
-    // The parts are joined with ". " and a brief is whole sentences, so this
-    // used to read "dim light from a corner lamp.. plain ground behind ...".
-    const out = panelPrompt(
-      panel({ shot: "close-up",
-              description: "Her hands, lit by a corner lamp." }), ANIME, CHAR);
-    expect(out).not.toContain("..");
-    expect(out).toContain("lit by a corner lamp. plain ground");
-  });
-
-  it("does not run the next clause on from a part ending in a comma", () => {
-    const out = panelPrompt(
-      panel({ description: "A narrow hallway, faded linoleum," }), ANIME, CHAR);
-    expect(out).not.toContain("linoleum, the place itself");
-    expect(out).toContain("faded linoleum. the place itself");
-  });
-
-  it("lets the shot have the last word on how much place is in frame", () => {
-    // The enrichment stage lists the walls, the floor and the light whatever
-    // the shot is, so a close-up asked for plain ground and then listed the
-    // room anyway, a clause later in the same prompt. The brief cannot be
-    // rewritten from here, but the distance can be settled after it.
-    const out = panelPrompt(
-      panel({ shot: "close-up",
-              description: "Pale green walls, scuffed lino, a bare bulb." }),
-      ANIME, CHAR);
-    expect(out.indexOf("no scenery")).toBeGreaterThan(out.indexOf("bare bulb"));
-    // And the same order without a brief, so there is one rule, not two.
-    const terse = panelPrompt(panel({ shot: "medium" }), ANIME, CHAR);
-    expect(terse.indexOf("kept simple")).toBeGreaterThan(terse.indexOf("a narrow flat"));
-  });
-});
-
-describe("sheetPrompt", () => {
-  it("asks for a neutral reference, not a scene", () => {
-    const out = sheetPrompt(ANIME, CHAR);
-    expect(out).toContain("reference sheet");
-    expect(out).toContain("plain background");
-    expect(out).toContain(CHAR);
-  });
-
-  it("builds one sheet for the whole cast, and says how many there are", () => {
-    // Asked for a lineup of "each named character", the drawer put three
-    // figures on a sheet for a cast of two -- and that invented person is then
-    // the reference every panel of the board is drawn against. Stating the
-    // count is what fixes it.
-    const out = sheetPrompt(INK, "Mira: red scarf\nJon: blue coat");
-    expect(out).toContain("two people");
-    expect(out).toContain("Mira: red scarf");
-    expect(out).toContain("Jon: blue coat");
-    expect(out).toContain("distinct silhouettes");
-  });
-
-  it("does not ask for the names to be written on the sheet", () => {
-    // A diffusion model cannot letter. Asking for a "labelled" lineup printed
-    // "Referace Mekwarird" across the one image every frame is conditioned
-    // against. The names bind identity in the description, not in ink.
-    const out = sheetPrompt(INK, "Mira: red scarf\nJon: blue coat");
-    expect(out).not.toContain("labelled");
-    expect(out).not.toContain("named");
-  });
-
-  it("counts a larger cast correctly", () => {
-    const four = sheetPrompt(INK, "A: a\nB: b\nC: c\nD: d");
-    expect(four).toContain("four people");
-  });
 });
 
 describe("panelReferences", () => {
@@ -385,14 +60,6 @@ describe("panelReferences", () => {
   });
 });
 
-describe("placePrompt", () => {
-  it("asks for the room without anyone in it", () => {
-    const out = placePrompt(INK, "faded blue walls, worn pine boards");
-    expect(out).toContain("no people");
-    expect(out).toContain("worn pine boards");
-  });
-});
-
 describe("panelSeed", () => {
   it("gives each panel its own seed", () => {
     expect(panelSeed(0, 0)).not.toBe(panelSeed(1, 0));
@@ -428,11 +95,10 @@ describe("a board keeps the words it was drawn with", () => {
     // for something different in the other half under the next.
     const old = { ...lockStyle("anime"),
                   words: "flat cel-shaded anime illustration, clean linework, muted palette" };
-    const out = panelPrompt(panel(), old, CHAR);
+    const out = panelPrompt(panel(), old);
     expect(out.startsWith("flat cel-shaded anime illustration")).toBe(true);
     expect(out).not.toContain(STYLES[0].words);
-    expect(sheetPrompt(old, CHAR).startsWith("flat cel-shaded")).toBe(true);
-    expect(placePrompt(old, "a kitchen").startsWith("flat cel-shaded")).toBe(true);
+    expect(castSheetPrompt(old, "Mira", "", "").startsWith("flat cel-shaded")).toBe(true);
   });
 
   it("reports that a preset has moved, without changing what is drawn", () => {
@@ -455,8 +121,8 @@ describe("reviveLock", () => {
     // degrading to something drawable.
     const lock = reviveLock({ id: "anime", words: "old anime words" });
     expect(lock?.framing).toContain("cropped composition");
-    expect(() => panelPrompt(panel(), lock!, CHAR)).not.toThrow();
-    expect(panelPrompt(panel(), lock!, CHAR).startsWith("old anime words")).toBe(true);
+    expect(() => panelPrompt(panel(), lock!)).not.toThrow();
+    expect(panelPrompt(panel(), lock!).startsWith("old anime words")).toBe(true);
   });
 
   it("keeps an id this build no longer has, so the drift is still reportable", () => {
@@ -474,70 +140,6 @@ describe("reviveLock", () => {
   });
 });
 
-describe("how much place a panel asks for", () => {
-  // A comic page establishes a location once and then lives inside it. Every
-  // panel here used to ask for the walls, the floor, the furniture and the
-  // light, so a close-up of a face came back as a face in a furnished room --
-  // and the room was re-invented from prose each time, which is why it
-  // drifted. The shot decides how much of the place is in frame.
-  it("asks for the whole place only in a wide shot", () => {
-    const wide = panelPrompt(panel({ shot: "wide" }), ANIME, CHAR);
-    expect(wide).toContain("the place itself in frame");
-  });
-
-  it("keeps the background simple behind a medium shot", () => {
-    const mid = panelPrompt(panel({ shot: "medium" }), ANIME, CHAR);
-    expect(mid).toContain("only what stands directly behind the figure");
-    expect(mid).not.toContain("the place itself in frame");
-  });
-
-  it("asks for no scenery at all in a close-up", () => {
-    const close = panelPrompt(panel({ shot: "close-up" }), ANIME, CHAR);
-    expect(close).toContain("no scenery");
-    expect(close).not.toContain("the place itself in frame");
-  });
-
-  it("still leads with the style and the framing", () => {
-    for (const shot of ["wide", "medium", "close-up"] as const) {
-      const out = panelPrompt(panel({ shot }), ANIME, CHAR);
-      expect(out.startsWith(ANIME.words)).toBe(true);
-      expect(out).toContain("cropped composition");
-      expect(out).toContain(`${shot} shot`);
-    }
-  });
-
-  it("falls back to the medium treatment for an unknown shot", () => {
-    expect(shotBackground("establishing")).toBe(shotBackground("medium"));
-  });
-
-  it("does not hand a close-up the room reference", () => {
-    // A picture of the room is an instruction, and at this distance the room
-    // is not in frame: it pulls the shot wider to fit the furniture in, which
-    // is the opposite of what a close-up is for.
-    const close = panel({ shot: "close-up", character_in_frame: true });
-    expect(panelReferences(close, "sheet-id", "place-id")).toEqual(["sheet-id"]);
-  });
-
-  it("hands the room to the frames that are about the room", () => {
-    // Establishing frames: nobody in them, so the room is the subject and
-    // there is no face for it to be stamped onto.
-    for (const shot of ["wide", "medium"] as const) {
-      expect(panelReferences(panel({ shot, character_in_frame: false }),
-                             "sheet-id", "place-id"))
-        .toEqual(["place-id"]);
-      // The same shot with somebody in it gets her, and the room from words.
-      expect(panelReferences(panel({ shot, character_in_frame: true }),
-                             "sheet-id", "place-id"))
-        .toEqual(["sheet-id"]);
-    }
-  });
-
-  it("leaves a close-up she is not in with no reference at all", () => {
-    const close = panel({ shot: "close-up", character_in_frame: false });
-    expect(panelReferences(close, "sheet-id", "place-id")).toEqual([]);
-  });
-});
-
 describe("a look described in your own words", () => {
   it("is pinned exactly like a preset", () => {
     const lock = lockCustomStyle("  1950s newspaper strip, coarse halftone  ");
@@ -548,9 +150,8 @@ describe("a look described in your own words", () => {
 
   it("leads every prompt, the same way a preset does", () => {
     const lock = lockCustomStyle("soft pencil, no ink");
-    expect(panelPrompt(panel(), lock, CHAR).startsWith("soft pencil, no ink")).toBe(true);
-    expect(sheetPrompt(lock, CHAR).startsWith("soft pencil, no ink")).toBe(true);
-    expect(placePrompt(lock, "a kitchen").startsWith("soft pencil, no ink")).toBe(true);
+    expect(panelPrompt(panel(), lock).startsWith("soft pencil, no ink")).toBe(true);
+    expect(castSheetPrompt(lock, "Mira", "", "").startsWith("soft pencil, no ink")).toBe(true);
   });
 
   it("is never reported as having drifted", () => {
@@ -765,5 +366,90 @@ describe("director's camera in the prompt", () => {
     expect(shotClass({ shot: "INSERT", weight: 1 })).toBe("close-up");
     expect(shotClass({ shot: "MCU" })).toBe("medium");
     expect(shotClass({ shot: "wide" })).toBe("wide");
+  });
+});
+
+
+describe("the panel prompt is built from the brief", () => {
+  const mira = { character_id: "m", name: "Mira", visual: "short black hair", expression: "grief",
+                 body_language: "still", outfit: "a red wool coat" };
+  it("draws the brief, never the raw source sentence, when there is one", () => {
+    const out = panelPrompt(panel({ cast: [mira], moment: "My name is Mira Vale, though Jonas calls me Mi.",
+                                    description: "Mira stands by the bench, the key in her palm" }), INK);
+    expect(out).toContain("Mira stands by the bench, the key in her palm");
+    expect(out).not.toContain("My name is");
+  });
+
+  it("falls back to the moment only for a board saved before briefs", () => {
+    expect(panelPrompt(panel({ cast: [], moment: "The harbour under low cloud" }), INK))
+      .toContain("The harbour under low cloud");
+  });
+
+  it("leads with the style and the framing, and carries a note last", () => {
+    const out = panelPrompt(panel({ cast: [mira], description: "Mira waits" }), ANIME, "older, grey at the temples");
+    expect(out.startsWith(ANIME.words)).toBe(true);
+    expect(out).toContain("cropped composition");
+    expect(out.trim().endsWith("older, grey at the temples.")).toBe(true);
+  });
+
+  it("tells the drawing to follow the full-body reference, costume included", () => {
+    const out = panelPrompt(panel({ cast: [mira], description: "Mira waits" }), INK);
+    expect(out).toContain("outfit of their reference");
+    expect(out).toContain("wearing a red wool coat, as on their reference");
+    expect(out).not.toContain("identity only");
+  });
+
+  it("says a costume change in the panel itself", () => {
+    const out = panelPrompt(panel({ cast: [{ ...mira, appearance: "a soaked raincoat" }], description: "Mira waits" }), INK);
+    expect(out).toContain("now wearing a soaked raincoat instead of the outfit on their reference");
+  });
+
+  it("names a lineup of references as full figures, left to right", () => {
+    const jonas = { ...mira, character_id: "j", name: "Jonas", outfit: "" };
+    const out = panelPrompt(panel({ cast: [mira, jonas], description: "They argue" }), INK);
+    expect(out).toContain("The reference shows Mira, Jonas from left to right, full figures");
+  });
+
+  it("does not invite an offscreen speaker into the picture", () => {
+    expect(panelPrompt(panel({ cast: [], dialogue: [{ speaker: "The guard", text: "Last train!", offscreen: true }] }), INK))
+      .toContain("No people visible in frame");
+  });
+
+  it("keeps the setting behind a close-up instead of contradicting it", () => {
+    const close = panelPrompt(panel({ shot: "CU", cast: [mira], setting: "station waiting room",
+                                      location_state: "benches, a locked door" }), INK);
+    expect(close).toContain("Setting: station waiting room");
+    expect(close).toContain("soft, out-of-focus background");
+    expect(close).not.toContain("no scenery");
+    expect(close).not.toContain("Current location state");
+    expect(panelPrompt(panel({ shot: "WS", cast: [mira], location_state: "benches" }), INK))
+      .toContain("Current location state: benches");
+  });
+
+  it("asks for the whole place only in a wide shot", () => {
+    expect(shotBackground("wide")).toContain("the place itself in frame");
+    expect(shotBackground("MS")).toContain("the setting behind the figure");
+    expect(shotBackground("establishing")).toBe(shotBackground("medium"));
+  });
+});
+
+describe("the cast sheet", () => {
+  it("is one whole figure in the chapter's outfit", () => {
+    const out = castSheetPrompt(INK, "Mira", "short black hair, thin", "a red wool coat");
+    expect(out).toContain("full body, head to toe");
+    expect(out).toContain("Mira: short black hair, thin");
+    expect(out).toContain("Wearing a red wool coat");
+    expect(out).not.toContain("No full-body outfit");
+    expect(out).toContain("no lettering");
+  });
+
+  it("still dresses someone the story never dresses", () => {
+    expect(castSheetPrompt(INK, "Jonas", "", "")).toContain("one plain everyday outfit");
+  });
+
+  it("is seeded by who it is, and moves on when drawn again", () => {
+    expect(castSeed("mira")).toBe(castSeed("mira"));
+    expect(castSeed("mira")).not.toBe(castSeed("jonas"));
+    expect(castSeed("mira", 1)).not.toBe(castSeed("mira"));
   });
 });

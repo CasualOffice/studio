@@ -1,4 +1,5 @@
-import type { Panel, VaultItem } from "./types";
+import type { Actor, Panel, VaultItem } from "./types";
+import { sizeClass } from "./layout";
 
 /**
  * How a picture board turns panels into prompts.
@@ -194,14 +195,6 @@ export function styleHasMoved(lock: StyleLock): boolean {
 }
 
 /**
- * The prompt for one panel.
- *
- * Order is style, then what is in frame, then what it is doing, then where.
- * The character's description is included only when they are actually in the
- * panel: a close-up of a running tap, handed the protagonist's description,
- * draws her running instead of the tap.
- */
-/**
  * How much of the place belongs in a panel, by shot.
  *
  * A comic page does not draw the room again in every frame, and this one was.
@@ -226,8 +219,10 @@ export function styleHasMoved(lock: StyleLock): boolean {
  */
 const SHOT_BACKGROUND: Record<string, string> = {
   wide: "the place itself in frame, full depth",
-  medium: "only what stands directly behind the figure, kept simple",
-  "close-up": "plain ground behind the subject, no scenery",
+  medium: "the setting behind the figure, kept simple",
+  // Not "plain ground, no scenery": the same prompt names the setting, and a
+  // close-up told both drew one or the other at random.
+  "close-up": "the setting only as a soft, out-of-focus background",
 };
 
 /** How a shot is said to an image model: distance, then what it holds. */
@@ -255,10 +250,7 @@ const ANGLE_WORDS: Record<string, string> = {
 /** The three layout classes the page compositor knows, from any shot. A
  *  large panel takes a whole tier, as an establishing shot or a Peak should. */
 export function shotClass(panel: Pick<Panel, "shot" | "weight">): "wide" | "medium" | "close-up" {
-  if ((panel.weight ?? 2) >= 3) return "wide";
-  if (["EWS", "WS", "wide"].includes(panel.shot)) return "wide";
-  if (["CU", "ECU", "INSERT", "close-up"].includes(panel.shot)) return "close-up";
-  return "medium";
+  return sizeClass(panel);
 }
 
 /** The camera, said first: how far, from where, composed how. */
@@ -285,140 +277,48 @@ export function shotBackground(shot: string): string {
 }
 
 /**
- * Whether the cast description already binds this subject.
- *
- * The cast reaches this file in the shape the board builds it in: people
- * separated by "; ", and a name separated from their description by ": ", as in
- * "Mira: young woman, short dark hair; Jonas: tall, grey overcoat". So the names
- * are what stands before the first colon of each person. A cast of one that was
- * typed rather than read out of the story has no colon at all, and then the
- * whole line is the name -- which only matters if the subject is that same
- * whole line, and in that case saying it twice is just as wrong.
+ * One person as the drawer needs them: name, look, and what they wear when
+ * it is not what their cast sheet shows.
  */
-function castBinds(character: string, subject: string): boolean {
-  const wanted = subject.toLowerCase().replace(/[.,;:]+$/, "").trim();
-  if (!wanted) return false;
-  return character.split(";").some((person) => {
-    const name = person.split(":")[0].toLowerCase().replace(/[.,;:]+$/, "").trim();
-    return name !== "" && name === wanted;
-  });
+function actorWords(actor: Actor): string {
+  const changed = (actor.appearance ?? "").trim()
+    && (actor.appearance ?? "").trim() !== (actor.outfit ?? "").trim();
+  return [actor.name, actor.visual,
+    changed ? `now wearing ${actor.appearance} instead of the outfit on their reference`
+      : actor.outfit && `wearing ${actor.outfit}, as on their reference`,
+    actor.expression && `expression: ${actor.expression}`,
+    actor.body_language && `body language: ${actor.body_language}`].filter(Boolean).join(", ");
 }
 
 /**
- * The shot, stated once, by the panel.
+ * The prompt for one panel.
  *
- * The enrichment stage writes the shot back into the brief it returns: a real
- * run came back with "Mira stands in the narrow kitchen, wide shot. Pale green
- * walls, ..." for a panel whose prompt had already said "wide shot" two clauses
- * earlier. Said twice it is merely noise, but the enricher and the writer do not
- * always agree, and then one prompt asked for two distances at once. The panel
- * owns the shot -- it is what the shot background and the references are chosen
- * from -- so the echo comes back out of the brief.
+ * The camera leads -- a model weighs what it reads first, and the shot was a
+ * lone "medium shot" lost in the middle, which is why panels came out alike.
+ * The brief comes next: who, doing what, where, how they look, written by the
+ * director from the analysis. The source sentence is used only for a panel
+ * with no brief (a board saved before briefs), because a sentence like "My
+ * name is Mira Vale" is not something a drawer can draw.
  *
- * Only the two shapes the echo actually takes are removed: a clause tacked onto
- * the end of a sentence, and a sentence of its own opening the brief. A shot
- * named in the middle of a sentence ("a close-up shot of her hands") is left
- * alone, because cutting it out there would take the grammar with it and leave
- * "a of her hands".
+ * The references are full-body cast sheets in the chapter's outfit, so the
+ * drawing is told to match them -- face and costume -- rather than to borrow
+ * identity only, as it was when a sheet was a face study.
  */
-function stripShotEcho(described: string): string {
-  return described
-    .replace(/,\s*(?:wide|medium|full|close[\s-]?up)\s+shots?(?=\s*[.;]|$)/gi, "")
-    .replace(/(^|[.;]\s*)(?:wide|medium|full|close[\s-]?up)\s+shots?\s*[.;]\s*/gi, "$1")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-}
-
-export function panelPrompt(
-  panel: Panel, style: StyleLock, character: string, note?: string
-): string {
-  if (panel.cast !== undefined) {
-    const actors = panel.cast.map((actor) => [actor.name, actor.visual,
-      actor.appearance && `Current appearance (replaces earlier clothing and condition): ${actor.appearance}`,
-      actor.expression && `expression: ${actor.expression}`,
-      actor.body_language && `body language: ${actor.body_language}`].filter(Boolean).join(", "));
-    const reference = panel.cast.length > 1
-      ? `Character reference figures from left to right: ${panel.cast.map((a) => a.name).join(", ")}` : "";
-    // The camera leads: a model weighs what it reads first, and the shot was
-    // a lone "medium shot" lost in the middle, which is why panels came out
-    // alike. The instant comes next -- the director's visual note if it has
-    // one, otherwise the sentence this panel shows -- then who, then where.
-    const instant = panel.moment || panel.action;
-    return [style.words, style.framing, ...cameraWords(panel), panel.description, instant,
-      panel.subject && panel.subject !== panel.focus && `Subject: ${panel.subject}`, reference,
-      "Character references establish identity only; follow the current outfit, pose and scene instead of copying reference clothing or background",
-      panel.cast.length ? `Only visible people: ${panel.cast.map((a) => a.name).join(", ")}` : "No people visible in frame",
-      ...actors, panel.setting && `Setting: ${panel.setting}`,
-      panel.location_state && `Current location state: ${panel.location_state}`,
-      panel.mood && `The feeling of the moment: ${panel.mood}`,
-      shotBackground(panel.shot), note]
-      .filter(Boolean).map((part) => String(part).trim().replace(/[.,;:]+$/, "")).join(". ") + ".";
-  }
-  const cast = character.trim();
-  const subject = panel.subject.trim();
-  // The subject used to be joined onto the cast description with ", ", which
-  // welded the name onto the clothing: a panel of Mira read "... oversized grey
-  // wool coat, dark green scarf, Mira", and the drawer took the name for one
-  // more garment. A person the description already names is named once. A thing
-  // -- "a kitchen tap" -- still has to be said, and gets a clause of its own
-  // rather than the next slot in the wardrobe.
-  const who: string[] = [];
-  if (panel.character_in_frame && cast) who.push(cast);
-  if (subject && !(panel.character_in_frame && castBinds(cast, subject))) {
-    who.push(subject);
-  }
-  // A worked-up scene already carries the setting, the surface and the light,
-  // so it replaces the terse fields rather than being appended to them --
-  // otherwise the panel is described twice, once thinly and once properly,
-  // and the model has to reconcile them.
-  const described = stripShotEcho((panel.description ?? "").trim());
-  const body = described
-    ? [...who, described]
-    : [...who, panel.action, panel.setting];
-  // How much of the place is in frame is settled after the scene, not before
-  // it. The enrichment stage lists the walls, the floor and the light in every
-  // brief whatever the shot is, so a close-up used to say "plain ground behind
-  // the subject, no scenery" and then list the room anyway, in the same prompt,
-  // a clause later. The brief cannot be edited from here -- it is prose the
-  // model wrote -- but the shot can have the last word on the distance, which
-  // is the same reason a note goes after everything it corrects.
-  //
-  // A note goes last of all. This is the repair for a wrong frame: a sentence
-  // in English about that one panel, rather than rolling the dice on a new seed
-  // and hoping. It is kept with the panel, so a later redraw is still the panel
-  // you asked for.
-  return [style.words, style.framing, `${panel.shot} shot`,
-          ...body, shotBackground(panel.shot), (note ?? "").trim()]
-    // Trailing punctuation is dropped because the parts are joined with ". ".
-    // A brief is whole sentences and ends in a full stop, so the join produced
-    // "dim light from a corner lamp.. plain ground behind the subject" -- and a
-    // part ending in a comma ran the next clause on as if it belonged to it.
-    .map((b) => b.trim().replace(/[.,;:]+$/, "").trim())
-    .filter(Boolean)
-    .join(". ") + ".";
-}
-
-/** The prompt for the character sheet every panel is drawn against. */
-export function sheetPrompt(style: StyleLock, character: string): string {
-  const cast = character.split("\n").map((line) => line.trim()).filter(Boolean);
-  if (cast.length > 1) {
-    // The count, stated. Asked for a lineup of "each named character" the
-    // drawer put three figures on a sheet for a cast of two, and that extra
-    // person is then the reference every panel of the board is conditioned
-    // against. Saying how many there are is the one instruction that fixes it.
-    //
-    // And no longer "named": the word invited a caption under each figure, and
-    // a diffusion model cannot letter. A real run came back with "Referace
-    // Mekwarird" and "L0naONomirs" printed on the sheet -- noise baked into the
-    // one image every frame is drawn from. The names stay in the description,
-    // where they bind identity; nothing asks for them to be written down.
-    const count = ["one", "two", "three", "four"][cast.length - 1] ?? `${cast.length}`;
-    return `${style.words}. Character reference sheet of ${count} people, `
-      + `standing apart in a row, full body, neutral poses, plain background, `
-      + `distinct silhouettes and clothing. ${cast.join("; ")}.`;
-  }
-  return `${style.words}. Character reference sheet, full body, neutral `
-       + `pose, plain background. ${character.trim()}.`;
+export function panelPrompt(panel: Panel, style: StyleLock, note?: string): string {
+  const cast = panel.cast ?? [];
+  const reference = cast.length > 1
+    ? `The reference shows ${cast.map((a) => a.name).join(", ")} from left to right, full figures`
+    : "";
+  const brief = (panel.description ?? "").trim() || panel.moment || panel.action;
+  return [style.words, style.framing, ...cameraWords(panel), brief,
+    panel.subject && panel.subject !== panel.focus && !cast.length && `Subject: ${panel.subject}`, reference,
+    cast.length && "Each person keeps the face, hair, build and outfit of their reference, in this scene's pose",
+    cast.length ? `Only visible people: ${cast.map((a) => a.name).join(", ")}` : "No people visible in frame",
+    ...cast.map(actorWords), panel.setting && `Setting: ${panel.setting}`,
+    panel.location_state && shotClass(panel) !== "close-up" && `Current location state: ${panel.location_state}`,
+    panel.mood && `The feeling of the moment: ${panel.mood}`,
+    shotBackground(panel.shot), note]
+    .filter(Boolean).map((part) => String(part).trim().replace(/[.,;:]+$/, "")).filter(Boolean).join(". ") + ".";
 }
 
 /**
@@ -441,12 +341,8 @@ const PLACE_NOISE = new Set([
  * Which place a panel is in, by identity rather than by scene number.
  *
  * Mirrors the engine's `_place_key`, and prefers the key the engine already
- * stamped on the panel. Rooms were keyed on the scene number the writer
- * assigned, which fails in both directions: a story the writer puts entirely
- * in scene 1 got one room however far it travelled, and the same kitchen in
- * scenes 1 and 5 got two separately invented kitchens. Articles and
- * possessives are dropped, so "the kitchen", "kitchen" and "her kitchen" are
- * one place.
+ * stamped on the panel. Articles and possessives are dropped, so "the
+ * kitchen", "kitchen" and "her kitchen" are one place.
  */
 export function placeKey(panel: Panel): string {
   const stamped = (panel.place_key ?? "").trim();
@@ -459,12 +355,9 @@ export function placeKey(panel: Panel): string {
 }
 
 /**
- * A seed for a place, derived from the place itself.
- *
- * It was `21 + scene`, so renumbering the scenes redrew every room, and two
- * scenes in one place drew it twice from different seeds. Derived from the key
- * instead, the same room is the same picture whenever the story comes back
- * to it.
+ * A seed derived from a key -- a place, or a character's id -- so the same
+ * thing is drawn from the same seed wherever it comes back, and two things
+ * never share one by standing in the same position.
  */
 export function placeSeed(key: string): number {
   let hash = 0;
@@ -474,24 +367,9 @@ export function placeSeed(key: string): number {
   return Math.abs(hash) % 100000;
 }
 
-/**
- * The prompt for a place reference: the location, with nobody in it.
- *
- * It used to open "Empty interior", which decided the answer before the place
- * was named. A story that goes to a railway platform got a sealed shed with no
- * platform and no rails -- the iron roof it asked for, inside four walls it
- * never mentioned -- and a street or a field would have come back as a room
- * just as surely. Drawn from a real run: the story says "at the station the
- * roof was iron and very high", and the reference came back as a warehouse.
- *
- * Nothing here says indoors or out. The place says which it is, and the only
- * thing asserted is what a reference sheet is for: the location itself, with
- * nobody standing in it, so every panel of the scene can be drawn against the
- * same one.
- */
-export function placePrompt(style: StyleLock, place: string): string {
-  return `${style.words}. Establishing view of the location itself, `
-    + `unoccupied, no people present. ${place.trim()}.`;
+/** A cast sheet's seed: the character's own, moved on by each regeneration. */
+export function castSeed(characterId: string, regenerations = 0): number {
+  return placeSeed(characterId) + regenerations * 1000;
 }
 
 /**
@@ -545,12 +423,26 @@ export function panelReferences(
   return refs.slice(0, Math.max(1, budget));
 }
 
-/** A face reference avoids making one outfit the permanent character design. */
-export function identityPrompt(style: StyleLock, character: string): string {
-  return `${style.words}. Single character identity study: front and three-quarter face views,
-consistent facial proportions, hair, skin and distinguishing features. Neutral expression,
-plain background, simple neutral neckline. No full-body outfit, props, scenery or lettering.
-${character.trim()}.`;
+/** The shape a cast sheet is drawn at: a standing figure, head to toe. */
+export const SHEET_ASPECT = 2 / 3;
+
+/**
+ * The prompt for one character's cast sheet: the whole figure, in the outfit
+ * they wear in this chapter.
+ *
+ * It used to be a face study with "no full-body outfit", so nothing held the
+ * costume and every panel dressed the person afresh. The sheet now carries
+ * the clothes too, and panels are told to follow it; a costume change within
+ * the chapter is said in the panel itself.
+ */
+export function castSheetPrompt(style: StyleLock, name: string, look: string, outfit: string): string {
+  return [style.words,
+    "Character reference sheet of one person: full body, head to toe, standing, front view, "
+      + "neutral pose and expression, arms relaxed, plain light background",
+    `${name}${look.trim() ? `: ${look.trim()}` : ""}`,
+    outfit.trim() ? `Wearing ${outfit.trim()}` : "Wearing one plain everyday outfit that suits them",
+    "No other people, no scenery, no props, no lettering"]
+    .map((part) => part.trim().replace(/[.,;:]+$/, "")).filter(Boolean).join(". ") + ".";
 }
 
 /**

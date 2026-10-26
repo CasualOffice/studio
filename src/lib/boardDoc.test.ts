@@ -148,14 +148,14 @@ describe("what an edit makes stale", () => {
     expect(artOf(after, id).variants).toContain("art-1");
   });
 
-  it("clears a worked-up scene written from fields that have changed", () => {
-    // The prompt prefers `description` to the terse fields, so a stale one
-    // silently overrides the edit that was just made.
-    const doc = fromArrays([panel({ description: "A green kitchen at dawn." })]);
+  it("keeps the brief when another field changes", () => {
+    // The brief is edited directly. Clearing it on any other edit fell back
+    // to drawing the raw source sentence.
+    const doc = fromArrays([panel({ description: "Mira at the green kitchen door, dawn." })]);
     const id = doc.panels[0].id;
     const { doc: after, stale } = edit(doc, id, { action: "slams the door" });
-    expect(stale.description).toBe(true);
-    expect(after.panels[0].description).toBe("");
+    expect(stale.description).toBe(false);
+    expect(after.panels[0].description).toBe("Mira at the green kitchen door, dawn.");
   });
 
   it("does not clear a description the user typed themselves", () => {
@@ -301,5 +301,15 @@ describe("replan", () => {
     expect(arrays.notes[1]).toBe("keep");
     expect(doc.panels[0].caption).toBe("new caption");
     expect(new Set(doc.panels.map((x) => x.id)).size).toBe(4);
+  });
+
+  it("keeps a written brief for a panel that still shows the same moment", () => {
+    // Changing the format or the page count re-plans the chapter; a brief a
+    // writer or the user wrote must not be replaced by the rules' one.
+    const old = { ...p("b1"), moment: "Mira opens the door.", description: "written by hand" };
+    let doc = fromArrays([old, { ...p("b2"), moment: "Rain.", description: "also mine" }]);
+    doc = replan(doc, [{ ...p("b1"), moment: "Mira opens the door.", description: "rules" },
+                       { ...p("b2"), moment: "Something else.", description: "rules" }]);
+    expect(doc.panels.map((x) => x.description)).toEqual(["written by hand", "rules"]);
   });
 });

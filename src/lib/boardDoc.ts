@@ -109,6 +109,10 @@ export function fromArrays(
  * panel when it is the same frame of the same beat; it keeps its identity and
  * so its picture, notes and variants. Panels of newly analysed passages start
  * empty, as they must -- their briefs did not exist before.
+ *
+ * A panel that still shows the same moment keeps its brief: one a writer or
+ * the user wrote would otherwise be replaced by the rules' plainer one every
+ * time the format or the page count changed.
  */
 export function replan(doc: BoardDoc, panels: Panel[]): BoardDoc {
   const key = (list: Panel[]) => {
@@ -123,7 +127,9 @@ export function replan(doc: BoardDoc, panels: Panel[]): BoardDoc {
   key(doc.panels).forEach((k, i) => { if (k) before.set(k, doc.panels[i]); });
   const next = identify(key(panels).map((k, i) => {
     const old = k ? before.get(k) : undefined;
-    return old ? { ...panels[i], id: old.id } : panels[i];
+    if (!old) return panels[i];
+    const same = (old.moment ?? "") === (panels[i].moment ?? "") && (old.description ?? "").trim();
+    return { ...panels[i], id: old.id, ...(same ? { description: old.description } : {}) };
   }));
   const art: Record<string, PanelArt> = {};
   for (const p of next) if (doc.art[p.id]) art[p.id] = doc.art[p.id];
@@ -172,18 +178,12 @@ export function setArt(
  * picture is still correct -- it is the lettering that has to be set again,
  * and re-rendering a panel to fix a comma costs minutes and a new face.
  *
- * `description` is the worked-up scene, which the prompt prefers over the
- * terse fields. It is derived from them, so it is listed here as a field that
- * invalidates art and separately as one that is itself invalidated below.
+ * `description` is the visual brief the prompt is built from, so changing it
+ * is changing the picture.
  */
 const ART_FIELDS = [
   "shot", "subject", "action", "setting", "character_in_frame",
   "characters", "place", "place_key", "description", "cast", "mood", "tension", "location_state",
-] as const;
-
-/** Fields that make the worked-up description stale, because it came from them. */
-const ENRICHMENT_SOURCES = [
-  "subject", "action", "setting", "character_in_frame", "characters",
 ] as const;
 
 /** What a change to one panel makes out of date. */
@@ -208,10 +208,10 @@ export function staleness(patch: Partial<Panel>): Staleness {
   const art = touched.some((k) => (ART_FIELDS as readonly string[]).includes(k));
   return {
     art,
-    // Editing the description itself is the user replacing it deliberately;
-    // that does not make it stale, it makes it theirs.
-    description: touched.some(
-      (k) => (ENRICHMENT_SOURCES as readonly string[]).includes(k)),
+    // The brief is the director's, written once from the analysis, and then
+    // the user's to edit; it is shown and edited directly, so no other edit
+    // throws it away. Clearing it fell back to the raw source sentence.
+    description: false,
     pages: touched.length > 0,
   };
 }

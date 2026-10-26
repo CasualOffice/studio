@@ -340,13 +340,27 @@ export type BookFormat = "manga" | "webtoon" | "comic" | "picture";
  *  remain valid for boards made before the director. */
 export type Shot = "EWS" | "WS" | "MS" | "MCU" | "CU" | "ECU" | "INSERT" | "wide" | "medium" | "close-up";
 
+/** One person in a panel, as the director placed them. */
+export interface Actor {
+  character_id: string;
+  name: string;
+  visual: string;
+  expression: string;
+  body_language: string;
+  /** Their outfit and condition at this moment, when the story says. */
+  appearance?: string;
+  /** The outfit on their cast sheet, which the drawing follows unless
+   *  `appearance` says otherwise. Filled in when the panel is drawn. */
+  outfit?: string;
+}
+
 export interface Panel {
   beat_id?: string;
   chapter_id?: string;
   importance?: number;
   tension?: number;
   mood?: string;
-  cast?: { character_id: string; name: string; visual: string; expression: string; body_language: string; appearance?: string }[];
+  cast?: Actor[];
   shot: Shot;
   /** Where the camera looks from: eye, high, low, bird, worm, dutch. */
   angle?: string;
@@ -395,10 +409,15 @@ export interface Panel {
    *  story the writer left in one scene still changes rooms when it moves. */
   place_key?: string;
   location_state?: string;
-  /** The worked-up description: surface, background, light. Empty until the
-   *  panel has been through the enrich stage, and the prompt falls back to
-   *  the terse fields when it is. Distinct from `scene`, which is a number. */
+  /** The visual brief: who, doing what, where, how they look. Written by
+   *  the director from the analysis, never the raw sentence; editable. */
   description?: string;
+  /** The source sentences this panel draws or letters, for coverage. */
+  covers?: string[];
+  /** Sentences merged into this panel to fit the pages but not shown. */
+  folded?: string[];
+  /** The rules could not make the brief drawable; a writer may rewrite it. */
+  brief_weak?: boolean;
 }
 
 /** Cached weight files nothing points at, left by interrupted downloads. */
@@ -414,7 +433,13 @@ export interface CastMember {
   id?: string;
   aliases?: string[];
   name: string;
+  /** What they look like: face, hair, build, age. */
   description: string;
+  /** What they wear in this chapter -- stated by the story or chosen -- and
+   *  so what their cast sheet shows and every panel follows. */
+  outfit?: string;
+  /** In more than one panel, or the lead: gets a cast sheet. */
+  recurring?: boolean;
   /** How often the story refers to them. Drives the tier. */
   mentions: number;
   /** 1 gets a full character sheet, 2 a lighter reference, 3 a name only. */

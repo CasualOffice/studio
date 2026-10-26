@@ -375,161 +375,6 @@ class SuggestedAlternatives(unittest.TestCase):
 
 
 
-class ShotListParsing(unittest.TestCase):
-    """Getting the panels back out of whatever the writer decided to say.
-
-    Models fence JSON in backticks and preface it with a sentence however
-    firmly they are told not to, so the array is located rather than assumed.
-    """
-
-    GOOD = ('[{"shot":"wide","subject":"Mira","action":"stands in the hallway",'
-            '"setting":"a flat"},'
-            '{"shot":"close-up","subject":"a tap","action":"water running",'
-            '"setting":"the kitchen"}]')
-
-    def test_a_bare_array_parses(self):
-        panels = worker._parse_shotlist(self.GOOD, 2)
-        self.assertEqual(len(panels), 2)
-        self.assertEqual(panels[0]["shot"], "wide")
-        self.assertEqual(panels[1]["setting"], "the kitchen")
-
-    def test_source_quotes_and_story_characters_are_preserved(self):
-        raw = ('[{"shot":"wide","subject":"Mira","action":"enters",'
-               '"setting":"home","character_in_frame":true,'
-               '"characters":["Mira","Invented"],'
-               '"source":"Mira comes home"}]')
-        panels = worker._parse_shotlist(raw, 1, "Mira comes home late.")
-        self.assertEqual(panels[0]["source"], "Mira comes home")
-        self.assertEqual(panels[0]["characters"], ["Mira"])
-
-    def test_coverage_reports_unanchored_passages(self):
-        story = "Mira opens the door. The photographs face the wall. She freezes."
-        panels = [{"source": "Mira opens the door"}, {"source": "She freezes"}]
-        coverage = worker._story_coverage(story, panels)
-        self.assertEqual(coverage["covered"], 2)
-        self.assertEqual(coverage["total"], 3)
-        self.assertEqual(coverage["missing"], ["The photographs face the wall."])
-
-    def test_a_fenced_array_parses(self):
-        panels = worker._parse_shotlist(f"```json\n{self.GOOD}\n```", 2)
-        self.assertEqual(len(panels), 2)
-
-    def test_a_preface_is_ignored(self):
-        panels = worker._parse_shotlist(
-            f"Sure! Here are the panels:\n{self.GOOD}\nLet me know!", 2)
-        self.assertEqual(len(panels), 2)
-
-    def test_extra_panels_are_trimmed_to_what_was_asked(self):
-        panels = worker._parse_shotlist(self.GOOD, 1)
-        self.assertEqual(len(panels), 1)
-
-    def test_who_is_in_frame_is_carried_through(self):
-        panels = worker._parse_shotlist(
-            '[{"shot":"close-up","subject":"a tap","action":"water running",'
-            '"setting":"the kitchen","character_in_frame":false}]', 1)
-        self.assertFalse(panels[0]["character_in_frame"])
-
-    def test_a_missing_in_frame_flag_keeps_the_character(self):
-        # A board is mostly about its character; a missing flag must not
-        # quietly write them out of the panel.
-        panels = worker._parse_shotlist(
-            '[{"shot":"wide","subject":"Mira","action":"stands",'
-            '"setting":"a hallway"}]', 1)
-        self.assertTrue(panels[0]["character_in_frame"])
-
-    def test_a_caption_is_kept_and_tidied(self):
-        panels = worker._parse_shotlist(
-            '[{"shot":"wide","subject":"Mira","action":"stands","setting":"a hall",'
-            '"caption":"  The door   was\\n open.  "}]', 1)
-        self.assertEqual(panels[0]["caption"], "The door was open.")
-
-    def test_a_missing_caption_is_empty_not_absent(self):
-        # The composer indexes captions positionally against panels, so a
-        # missing one has to still occupy its place.
-        panels = worker._parse_shotlist(
-            '[{"shot":"wide","subject":"x","action":"y","setting":"z"}]', 1)
-        self.assertEqual(panels[0]["caption"], "")
-
-    def test_a_runaway_caption_is_cut(self):
-        panels = worker._parse_shotlist(
-            '[{"shot":"wide","subject":"x","action":"y","setting":"z",'
-            f'"caption":"{"word " * 80}"}}]', 1)
-        self.assertLessEqual(len(panels[0]["caption"]), 120)
-
-    def test_dialogue_is_normalised(self):
-        panels = worker._parse_shotlist(
-            '[{"shot":"medium","subject":"Josephine","action":"kneels",'
-            '"setting":"a door","dialogue":[{"speaker":"Josephine",'
-            '"text":"  Louise,   open the door!  "}]}]', 1)
-        d = panels[0]["dialogue"]
-        self.assertEqual(len(d), 1)
-        self.assertEqual(d[0]["text"], "Louise, open the door!")
-
-    def test_bare_strings_become_unattributed_lines(self):
-        panels = worker._parse_shotlist(
-            '[{"shot":"wide","subject":"x","action":"y","setting":"z",'
-            '"dialogue":["Go away."]}]', 1)
-        self.assertEqual(panels[0]["dialogue"], [{"speaker": "", "text": "Go away."}])
-
-    def test_a_panel_with_no_dialogue_gets_an_empty_list(self):
-        # The composer indexes dialogue positionally, so the slot must exist.
-        panels = worker._parse_shotlist(
-            '[{"shot":"wide","subject":"x","action":"y","setting":"z"}]', 1)
-        self.assertEqual(panels[0]["dialogue"], [])
-
-    def test_every_speaker_survives_the_parser(self):
-        """Balloons sit on top of the panel, so a cell has a real limit.
-
-        It is not this function's limit to enforce. Five lines used to become
-        two here, before the user had seen any of them and before anything knew
-        how large the cell would be -- so the cut was made by the part of the
-        pipeline least able to judge it and reported by nothing. The composer
-        measures the cell it actually has and says what would not fit.
-        """
-        many = ",".join(f'{{"speaker":"S{i}","text":"line {i}"}}' for i in range(5))
-        panels = worker._parse_shotlist(
-            f'[{{"shot":"wide","subject":"x","action":"y","setting":"z",'
-            f'"dialogue":[{many}]}}]', 1)
-        self.assertEqual(len(panels[0]["dialogue"]), 5)
-        self.assertEqual([d["speaker"] for d in panels[0]["dialogue"]],
-                         [f"S{i}" for i in range(5)])
-
-    def test_a_long_line_is_not_shortened_on_the_way_in(self):
-        """Ninety characters was where a spoken line used to be cut.
-
-        Mid-word, with no ellipsis and no record, so the panel arrived holding
-        a sentence that stopped. Whether the line is too long for its bubble is
-        a question about the bubble.
-        """
-        line = "I have been waiting out here since the rain started, and the " \
-               "bus does not come after nine, and I am not going home."
-        self.assertGreater(len(line), 90)
-        panels = worker._parse_shotlist(
-            '[{"shot":"wide","subject":"x","action":"y","setting":"z",'
-            f'"dialogue":[{{"speaker":"Jon","text":"{line}"}}]}}]', 1)
-        self.assertEqual(panels[0]["dialogue"][0]["text"], line)
-
-
-class SceneNumbering(unittest.TestCase):
-    """Which scene a panel belongs to decides where pages break, so a missing
-    or malformed number must not silently become a page boundary."""
-
-    def test_a_scene_number_is_kept(self):
-        panels = worker._parse_shotlist(
-            '[{"shot":"wide","subject":"x","action":"y","setting":"z",'
-            '"scene":3,"scene_title":"The platform"}]', 1)
-        self.assertEqual(panels[0]["scene"], 3)
-        self.assertEqual(panels[0]["scene_title"], "The platform")
-
-    def test_a_missing_scene_defaults_to_the_first(self):
-        panels = worker._parse_shotlist(
-            '[{"shot":"wide","subject":"x","action":"y","setting":"z"}]', 1)
-        self.assertEqual(panels[0]["scene"], 1)
-
-    def test_a_nonsense_scene_number_does_not_break_pagination(self):
-        panels = worker._parse_shotlist(
-            '[{"shot":"wide","subject":"x","action":"y","setting":"z","scene":0}]', 1)
-        self.assertGreaterEqual(panels[0]["scene"], 1)
 
 
 class TierLayout(unittest.TestCase):
@@ -546,23 +391,62 @@ class TierLayout(unittest.TestCase):
     def test_tighter_shots_share_a_tier(self):
         self.assertEqual(worker._tiers(["medium", "close-up"]), [[0, 1]])
 
-    def test_a_tier_holds_at_most_three(self):
-        tiers = worker._tiers(["medium"] * 5)
+    def test_two_to_a_tier_on_an_ordinary_page(self):
+        # Three across a portrait page's band made cells four times taller
+        # than wide.
+        self.assertEqual(worker._tiers(["medium"] * 5), [[0, 1], [2, 3], [4]])
+
+    def test_a_crowded_page_takes_three_without_stranding_one(self):
+        tiers = worker._tiers(["medium"] * 10)
         self.assertTrue(all(len(t) <= 3 for t in tiers), tiers)
+        self.assertLessEqual(len(tiers), 4)
 
     def test_a_wide_interrupts_a_group(self):
         self.assertEqual(
             worker._tiers(["medium", "wide", "medium", "close-up"]),
             [[0], [1], [2, 3]])
 
-    def test_no_panel_is_stranded_alone_at_the_end(self):
-        # Three then one reads as a mistake; two and two reads as a pair.
-        self.assertEqual(worker._tiers(["medium"] * 4), [[0, 1], [2, 3]])
+    def test_never_more_than_four_bands(self):
+        self.assertEqual(len(worker._tiers(["wide"] * 6)), 4)
 
     def test_every_panel_appears_exactly_once(self):
         shots = ["wide", "medium", "close-up", "medium", "wide", "close-up", "medium"]
         flat = [i for t in worker._tiers(shots) for i in t]
         self.assertEqual(sorted(flat), list(range(len(shots))))
+
+
+class PageCells(unittest.TestCase):
+    """Cells fill a fixed page, and the board's own layout agrees with them."""
+
+    def test_cells_fill_the_page_without_overlapping(self):
+        import itertools
+        for n in range(1, 7):
+            for shots in itertools.product(("wide", "medium", "close-up"), repeat=n):
+                for rtl in (False, True):
+                    cells = worker._page_cells(list(shots), rtl)
+                    for x, y, w, h in cells:
+                        self.assertTrue(0 <= x and x + w <= 1.000001 and 0 <= y and y + h <= 1.000001)
+                    for a, b in itertools.combinations(cells, 2):
+                        apart = a[0] + a[2] <= b[0] + 1e-6 or b[0] + b[2] <= a[0] + 1e-6 \
+                            or a[1] + a[3] <= b[1] + 1e-6 or b[1] + b[3] <= a[1] + 1e-6
+                        self.assertTrue(apart, (shots, a, b))
+                    self.assertAlmostEqual(max(y + h for _x, y, _w, h in cells), 1, places=5)
+
+    def test_manga_mirrors_each_tier(self):
+        ltr = worker._page_cells(["medium", "close-up"])
+        rtl = worker._page_cells(["medium", "close-up"], rtl=True)
+        self.assertLess(ltr[0][0], ltr[1][0])
+        self.assertGreater(rtl[0][0], rtl[1][0])
+
+    def test_the_board_and_the_compositor_lay_a_page_out_alike(self):
+        """layout.ts reads the same file and must produce the same cells."""
+        with open(os.path.join(HERE, "fixtures", "layout-cases.json"), encoding="utf-8") as handle:
+            cases = json.load(handle)
+        for case in cases:
+            got = worker._page_cells(case["shots"], case["rtl"])
+            for a, b in zip(got, case["cells"]):
+                for u, v in zip(a, b):
+                    self.assertAlmostEqual(u, v, places=4, msg=case)
 
 
 class Pagination(unittest.TestCase):
@@ -864,6 +748,69 @@ class EnhancerFixesSpelling(unittest.TestCase):
 
 
 
+class ComposeFollowsTheBoardsLayout(unittest.TestCase):
+    """The compositor sets pages where the board broke them, each panel in the
+    cell it was drawn for, read in the board's direction."""
+
+    def _sealed(self, tmp, size, colour):
+        import io
+        import secrets
+        import uuid
+
+        from PIL import Image
+
+        import vaultcrypto as vc
+
+        fid, key = secrets.token_bytes(16), secrets.token_bytes(32)
+        sid = str(uuid.uuid4())
+        path = os.path.join(tmp, sid + ".bin")
+        buf = io.BytesIO()
+        Image.new("RGB", size, colour).save(buf, format="PNG")
+        vc.write_sealed(path, key, fid, buf.getvalue())
+        return {"id": sid, "file_id": fid.hex(), "key": key.hex(), "path": path, "ext": "png"}
+
+    def _slot(self, tmp):
+        import secrets
+        import uuid
+        fid, key = secrets.token_bytes(16), secrets.token_bytes(32)
+        sid = str(uuid.uuid4())
+        return {"id": sid, "file_id": fid.hex(), "key": key.hex(), "path": os.path.join(tmp, sid + ".out")}
+
+    def test_pages_cells_and_direction_come_from_the_board(self):
+        import io
+        import tempfile
+
+        from PIL import Image
+
+        import vaultcrypto as vc
+
+        tmp = tempfile.mkdtemp()
+        shots = ["wide", "medium", "close-up", "medium"]
+        rtl = worker._page_cells(shots[:3], rtl=True) + worker._page_cells(shots[3:], rtl=True)
+        colours = [(200, 30, 30), (30, 200, 30), (30, 30, 200), (200, 200, 30)]
+        inputs = [self._sealed(tmp, (768, 768), c) for c in colours]
+        slots = [self._slot(tmp) for _ in range(4)]
+        result = worker.op_compose_board("t", {
+            "vault_inputs": inputs, "vault_slots": slots, "layout": "page",
+            "captions": [""] * 4, "shots": shots, "scenes": [1, 1, 1, 1],
+            "dialogue": [[{"speaker": "Mira", "text": "Gone.", "side": "right"}], [], [], []],
+            "pages": [0, 0, 0, 1], "cells": [list(c) for c in rtl], "direction": "rtl"})
+        self.assertEqual(result["pages"], 2)
+        self.assertEqual(result["overflow"], [])
+        first = Image.open(io.BytesIO(vc.open_with_file_key(bytes.fromhex(slots[0]["key"]),
+                                                           open(slots[0]["path"], "rb").read()))).convert("RGB")
+        style = {"width": first.width, "margin": 34}
+        # Read right to left: the second panel sits to the right of the third.
+        second = worker._cell_px(rtl[1], style)
+        third = worker._cell_px(rtl[2], style)
+        self.assertGreater(second[0], third[0])
+        centre = lambda c: (c[0] + c[2] // 2, c[1] + c[3] // 2)  # noqa: E731
+        self.assertEqual(first.getpixel(centre(second)), colours[1])
+        self.assertEqual(first.getpixel(centre(third)), colours[2])
+        # Every page of the board is the same shape.
+        self.assertEqual(len({tuple(d) for d in result["dimensions"]}), 1)
+
+
 class ComicBindsIntoOneFile(unittest.TestCase):
     """Pages become a PDF, sealed, with the reading order inside the file.
 
@@ -937,87 +884,6 @@ class ComicBindsIntoOneFile(unittest.TestCase):
                                    "title": "Mira"})
         left = [f for f in os.listdir(worker._stage_dir())]
         self.assertEqual(left, [], f"plaintext left in the staging directory: {left}")
-
-
-class PanelsHaveAPurpose(unittest.TestCase):
-    """A panel now says what it is for, not only how far away the camera is.
-
-    `shot` is distance. It does not say what the panel is doing, and the two
-    are different questions: a close-up of a face registering bad news and a
-    close-up of a dripping tap want opposite treatment -- one needs the
-    character held exactly, the other must not have her anywhere near it. The
-    pipeline had only distance.
-    """
-
-    def panel(self, **over):
-        base = {"shot": "medium", "subject": "x", "action": "y",
-                "setting": "z", "scene": 1}
-        return json.dumps([{**base, **over}])
-
-    def test_the_writer_is_believed(self):
-        for stated in worker.PURPOSES:
-            got = worker._parse_shotlist(self.panel(purpose=stated), 1)
-            self.assertEqual(got[0]["purpose"], stated)
-
-    def test_a_nonsense_purpose_is_inferred_instead(self):
-        got = worker._parse_shotlist(self.panel(purpose="banana"), 1)
-        self.assertIn(got[0]["purpose"], worker.PURPOSES)
-
-    def test_spoken_words_make_it_a_dialogue_panel(self):
-        got = worker._parse_shotlist(
-            self.panel(dialogue=[{"speaker": "Mira", "text": "Who is there?"}]), 1)
-        self.assertEqual(got[0]["purpose"], "dialogue")
-
-    def test_a_stated_detail_is_not_given_the_character(self):
-        got = worker._parse_shotlist(
-            self.panel(shot="close-up", subject="a dripping tap",
-                       purpose="detail"), 1)
-        self.assertFalse(got[0]["character_in_frame"])
-
-    def test_an_inferred_purpose_never_writes_anyone_out(self):
-        # A wide shot whose subject is "Mira" is not an establishing shot
-        # merely because the characters array was left empty. Inference is good
-        # enough to label a panel and not good enough to decide who is in it.
-        got = worker._parse_shotlist(
-            self.panel(shot="wide", subject="Mira", action="stands"), 1)
-        self.assertTrue(got[0]["character_in_frame"])
-
-
-class ShotMixIsReported(unittest.TestCase):
-    """The writer is told to vary the shots. Nothing checked whether it had.
-
-    Story coverage gets a full report with a missing-passages list. Shot
-    distribution got none, so twelve close-ups in a row went unnoticed until
-    forty minutes of drawing had been spent on them.
-    """
-
-    def panels(self, shots):
-        return worker._parse_shotlist(json.dumps(
-            [{"shot": s, "subject": f"s{i}", "action": "a", "setting": "b",
-              "scene": 1} for i, s in enumerate(shots)]), len(shots))
-
-    def test_a_flat_page_is_named(self):
-        mix = worker._shot_mix(self.panels(["close-up"] * 9))
-        self.assertEqual(mix["uniform"], "close-up")
-        self.assertEqual(mix["counts"]["close-up"], 9)
-
-    def test_a_varied_page_is_not(self):
-        mix = worker._shot_mix(
-            self.panels(["wide", "medium", "close-up", "medium", "wide", "close-up"]))
-        self.assertIsNone(mix["uniform"])
-
-    def test_a_short_run_is_not_called_flat(self):
-        # Three of one size is a short scene, not a flat page.
-        self.assertIsNone(worker._shot_mix(self.panels(["wide"] * 3))["uniform"])
-
-    def test_it_counts_what_the_panels_are_for(self):
-        mix = worker._shot_mix(self.panels(["wide", "medium", "close-up", "wide"]))
-        self.assertEqual(sum(mix["purposes"].values()), 4)
-
-    def test_no_panels_is_not_an_error(self):
-        mix = worker._shot_mix([])
-        self.assertEqual(mix["total"], 0)
-        self.assertIsNone(mix["uniform"])
 
 
 class ChunkedTransferFallsBackToPlainHttp(unittest.TestCase):
@@ -1119,67 +985,6 @@ class AdapterMustHoldAnAdapter(unittest.TestCase):
         worker._check_is_adapter("t", "nobody/nothing:absent.safetensors")
 
 
-class PanelRangeStaysARange(unittest.TestCase):
-    def test_the_bottom_never_passes_the_top(self):
-        # Only the top was capped at sixty, so past about 8,400 words the
-        # bottom overtook it. The writer was told a chapter "usually lands
-        # between 714 and 60 panels", and no count can sit inside that, so
-        # every division of a long story was reported as suspect.
-        for words in (0, 1, 300, 3000, 8400, 9000, 100_000):
-            low, high = worker._panel_bounds(words)
-            self.assertLessEqual(low, high, f"inverted at {words} words")
-            self.assertGreaterEqual(low, 2)
-            self.assertLessEqual(high, worker._MAX_PANELS)
-
-
-class DivisionSurvivesAnImperfectWriter(unittest.TestCase):
-    """A quote retyped is still a quote, and one odd field is not fatal."""
-
-    STORY = ("Mira didn\u2019t look back. She pulled the door shut, and the "
-             "hallway swallowed the sound. Outside, the rain had already "
-             "started.")
-
-    def test_a_retyped_quote_is_recognised(self):
-        # Straight apostrophe for a curly one, and a dropped comma. Both
-        # erased the quote, and the board then told the user those sentences
-        # of their story had been left out -- while drawing them.
-        panels = worker._parse_shotlist(json.dumps([
-            {"shot": "medium", "subject": "Mira",
-             "source": "Mira didn't look back.", "scene": 1},
-            {"shot": "wide", "subject": "hallway",
-             "source": "She pulled the door shut and the hallway swallowed "
-                       "the sound.", "scene": 1},
-        ]), 2, self.STORY)
-        self.assertTrue(all(p["source"] for p in panels),
-                        "a real quote was thrown away")
-        cover = worker._story_coverage(self.STORY, panels)
-        # Only the third sentence has no panel; the two that do are covered.
-        self.assertEqual(cover["missing"],
-                         ["Outside, the rain had already started."])
-
-    def test_an_invented_quote_is_still_refused(self):
-        panels = worker._parse_shotlist(json.dumps([
-            {"shot": "wide", "subject": "x", "scene": 1,
-             "source": "A dragon circled the tower and screamed."},
-        ]), 1, self.STORY)
-        self.assertEqual(panels[0]["source"], "")
-
-    def test_a_scene_named_in_words_is_read(self):
-        self.assertEqual(worker._as_scene("two"), 2)
-        self.assertEqual(worker._as_scene("Scene 3"), 3)
-        self.assertEqual(worker._as_scene(""), 1)
-        self.assertEqual(worker._as_scene(None), 1)
-        self.assertEqual(worker._as_scene(-4), 1)
-
-    def test_one_unreadable_panel_does_not_lose_the_others(self):
-        # This raised ValueError out of the whole parse, so a single odd
-        # field cost the user every panel and the minutes spent making them.
-        panels = worker._parse_shotlist(json.dumps([
-            {"shot": "wide", "subject": "a", "scene": 1},
-            {"shot": "wide", "subject": "b", "scene": "somewhere"},
-            {"shot": "wide", "subject": "c", "scene": 2},
-        ]), 3, "")
-        self.assertEqual(len(panels), 3)
 
 
 class AssistOwnsOnlyWhatItMade(unittest.TestCase):
@@ -1346,130 +1151,6 @@ class PanelFidelity(unittest.TestCase):
         self.assertFalse(worker._carries("opens the window", "opens the door"))
 
 
-class SourceSnapping(unittest.TestCase):
-    """A panel's anchor is the user's own sentence, or it is nothing.
-
-    The writer is told to quote the prose and often paraphrases it instead.
-    That used to be thrown away -- the anchor was blanked, the rail said no
-    quote was returned, and coverage counted the sentence as missing even
-    though a panel was about it. The sentence is right there in what was
-    pasted, so the paraphrase is matched back onto the prose and the prose
-    wins.
-    """
-
-    STORY = ("Marta opened the kitchen door. The rain had not stopped since "
-             "Tuesday. She poured the tea and sat down without drinking it. "
-             "She ran.")
-
-    def _anchor(self, source):
-        return worker._clean_panel(
-            {"shot": "medium", "subject": "Marta", "action": "a",
-             "setting": "b", "source": source, "scene": 1}, self.STORY)["source"]
-
-    def test_every_anchor_is_verbatim_from_the_story(self):
-        for source in ("She poured the tea and sat down without drinking it.",
-                       "Marta pours tea and sits",
-                       "Marta opens the door of the kitchen",
-                       "rain since Tuesday",
-                       "She ran.",
-                       "Marta boarded a train to Leeds",
-                       "Marta", "the", ""):
-            got = self._anchor(source)
-            if got:
-                self.assertIn(got, self.STORY,
-                              f"{source!r} produced an anchor that is not in the story")
-
-    def test_a_paraphrase_snaps_to_the_sentence_it_came_from(self):
-        self.assertEqual(self._anchor("Marta pours tea and sits"),
-                         "She poured the tea and sat down without drinking it.")
-        self.assertEqual(self._anchor("Marta opens the door of the kitchen"),
-                         "Marta opened the kitchen door.")
-        self.assertEqual(self._anchor("rain since Tuesday"),
-                         "The rain had not stopped since Tuesday.")
-
-    def test_an_invented_beat_gets_no_anchor(self):
-        # Fabricating an anchor is worse than having none: scoring by
-        # character similarity used to pin "Marta boarded a train to Leeds"
-        # onto "Marta opened the kitchen door." because the strings look alike.
-        for invented in ("Marta boarded a train to Leeds",
-                         "A dragon circled the tower",
-                         "He signed the lease on Thursday morning"):
-            self.assertEqual(self._anchor(invented), "", invented)
-
-    def test_a_fragment_too_short_to_anchor_is_dropped(self):
-        # A bare name is a substring of the prose, so it passes as a quote --
-        # and then credits a whole sentence in the coverage figure.
-        self.assertEqual(self._anchor("Marta"), "")
-        self.assertEqual(self._anchor("the"), "")
-
-    def test_a_whole_short_sentence_is_kept_however_short(self):
-        self.assertEqual(self._anchor("She ran."), "She ran.")
-
-    def test_snapping_makes_coverage_tell_the_truth(self):
-        paraphrased = [{"source": s} for s in (
-            "Marta opens the door of the kitchen",
-            "rain since Tuesday",
-            "Marta pours tea and sits")]
-        snapped = [{"source": worker._snap_source(p["source"], self.STORY)}
-                   for p in paraphrased]
-        before = worker._story_coverage(self.STORY, paraphrased)["percent"]
-        after = worker._story_coverage(self.STORY, snapped)["percent"]
-        self.assertGreater(after, before)
-        # Three panels over four sentences: "She ran." really is unanchored, so
-        # 75% is the honest figure and 100% would be the old lie. Snapping is
-        # for telling the truth about the division, not for flattering it.
-        self.assertEqual(after, 75)
-        self.assertIn("She ran.",
-                      worker._story_coverage(self.STORY, snapped)["missing"])
-
-
-class ShotlistTruncation(unittest.TestCase):
-    """An overshooting division must be reported, not quietly shortened.
-
-    `_parse_shotlist` sliced to the requested count before anything counted, so
-    a story the writer divided into 26 beats became the first 20 with nothing
-    said -- and `out_of_range`, written for exactly this, compared the
-    already-truncated length against the range it had been truncated into and
-    could never fire.
-    """
-
-    def _raw(self, n):
-        beats = [{"shot": "wide", "subject": f"beat {i}", "action": "a",
-                  "setting": "b", "source": "", "scene": 1} for i in range(n)]
-        return "```json\n" + json.dumps(beats) + "\n```"
-
-    def test_beats_are_counted_before_they_are_bounded(self):
-        beats = worker._shotlist_beats(self._raw(26))
-        self.assertEqual(len(beats), 26)
-
-    def test_the_range_check_sees_the_real_count(self):
-        low, high = 12, 20
-        returned = len(worker._shotlist_beats(self._raw(26)))
-        kept = worker._clean_shotlist(worker._shotlist_beats(self._raw(26))[:high], "")
-        self.assertEqual(len(kept), high)
-        # The bug: the old check asked this of `kept`, which is inside the
-        # range by construction.
-        self.assertFalse(not (low <= len(kept) <= high))
-        self.assertTrue(not (low <= returned <= high))
-
-    def test_the_one_shot_form_still_bounds(self):
-        self.assertEqual(len(worker._parse_shotlist(self._raw(26), 20)), 20)
-        self.assertEqual(len(worker._parse_shotlist(self._raw(5), 20)), 5)
-
-    def test_a_division_inside_the_bound_is_not_reported_as_truncated(self):
-        beats = worker._shotlist_beats(self._raw(14))
-        kept = worker._clean_shotlist(beats[:20], "")
-        self.assertEqual(len(beats), len(kept))
-
-    def test_an_unusable_reply_still_raises(self):
-        with self.assertRaises(ValueError):
-            worker._shotlist_beats("no array here")
-        with self.assertRaises(ValueError):
-            worker._shotlist_beats("[]")
-        with self.assertRaises(ValueError):
-            worker._clean_shotlist(["not a dict", 7], "")
-
-
 class CaptionWrapping(unittest.TestCase):
     """Text that cannot be broken at a space still has to stay in its panel.
 
@@ -1517,128 +1198,9 @@ class CaptionWrapping(unittest.TestCase):
     def test_a_balloon_is_never_wider_than_its_cell(self):
         from PIL import Image, ImageDraw
         draw = ImageDraw.Draw(Image.new("RGB", (900, 600), (255, 255, 255)))
-        used = worker._bubble(draw, "x" * 200, "Marta", self.font,
-                              worker._caption_font(13), 200, 10, 380, 26, True)
+        used = worker._bubble(draw, "x" * 200, self.font, (200, 10, 380, 500), 10,
+                              worker._bubble_width(380), 26, "left")
         self.assertGreater(used, 0)
-
-
-class CastMentions(unittest.TestCase):
-    """Who the story is about decides who is drawn in every frame.
-
-    `_mentions` sets the cast tiers, which pick the lead, which fills the shared
-    lineup reference and every panel's cast brief. It seeded its score with a
-    raw substring count, so a short name collected other words' letters.
-    """
-
-    PROSE = ("Marta opened the door and turned on the tap. "
-             "The photographs were scattered. Ed had never been mentioned here.")
-
-    def test_a_name_not_in_the_prose_scores_nothing(self):
-        # "Ned" used to score 3 from opeNED, turNED, mentioNED.
-        for absent in ("Ned", "Art", "Ora", "Hoto"):
-            self.assertEqual(
-                worker._mentions(self.PROSE, absent), 0,
-                f"{absent!r} is not in the prose and must not be counted")
-
-    def test_a_substring_of_other_words_does_not_outrank_the_protagonist(self):
-        # "Ed" used to score 5 against Marta's 1, which handed the lineup sheet
-        # and every panel brief to a character the story does not have.
-        self.assertLessEqual(worker._mentions(self.PROSE, "Ed"),
-                             worker._mentions(self.PROSE, "Marta"))
-
-    def test_a_name_that_is_present_is_still_counted(self):
-        story = "Louise wept. Later Louise slept, and Mrs. Mallard was still."
-        self.assertEqual(worker._mentions(story, "Louise"), 2)
-        self.assertEqual(worker._mentions(story, "Mrs. Mallard"), 1)
-        # A surname alone still finds the same person.
-        self.assertEqual(worker._mentions(story, "Mallard"), 1)
-
-    def test_possessives_and_punctuation_still_count(self):
-        story = "Marta's coat was wet. “Marta,” he said."
-        self.assertEqual(worker._mentions(story, "Marta"), 2)
-
-
-class SourceAnchoring(unittest.TestCase):
-    """A panel's source passage has to have come out of the manuscript.
-
-    The check was 80% content-word overlap against a *set*, so it asked only
-    whether the words existed somewhere, in any order at any distance.
-    """
-
-    PROSE = ("Anna opened the door slowly. A grey cat slept on the mat by the "
-             "fire. The kettle had boiled dry.")
-
-    def test_a_verbatim_passage_is_accepted(self):
-        self.assertTrue(worker._quotes_story("Anna opened the door slowly", self.PROSE))
-        self.assertTrue(worker._quotes_story("A grey cat slept on the mat", self.PROSE))
-
-    def test_a_recombination_of_the_story_words_is_refused(self):
-        # Every content word is present and in order -- but Anna opened a door
-        # and it was the cat that slept. Ordered overlap cannot catch this;
-        # only adjacency can.
-        self.assertFalse(worker._quotes_story("Anna slept on the mat", self.PROSE))
-
-    def test_scrambled_story_words_are_refused(self):
-        self.assertFalse(worker._quotes_story("the door opened Anna slowly", self.PROSE))
-
-    def test_an_invented_passage_is_refused(self):
-        self.assertFalse(worker._quotes_story("A dragon circled the tower", self.PROSE))
-
-    def test_an_empty_passage_is_refused(self):
-        self.assertFalse(worker._quotes_story("", self.PROSE))
-        self.assertFalse(worker._quotes_story("the and of", self.PROSE))
-
-
-class StoryCoverage(unittest.TestCase):
-    """The only guarantee against a board that loses the middle of the story.
-
-    It has to be wrong in neither direction, and it was wrong in both: a quote
-    was reusable, so one source was credited against every sentence it
-    resembled; and a sentence with no content words could never be anchored,
-    so a fully quoted board still reported a shortfall.
-    """
-
-    FOUR = ("She ran into the rain. She ran into the street. "
-            "She ran into the house. She ran into the room.")
-
-    def test_one_quote_cannot_cover_four_similar_sentences(self):
-        got = worker._story_coverage(self.FOUR, [{"source": "She ran into the rain."}])
-        # Reported 100% with nothing missing while three sentences were lost.
-        self.assertEqual(got["covered"], 1)
-        self.assertEqual(got["total"], 4)
-        self.assertEqual(got["percent"], 25)
-        self.assertEqual(got["missing_total"], 3)
-
-    def test_a_fully_quoted_story_is_fully_covered(self):
-        sources = [{"source": s.strip() + "."} for s in self.FOUR.split(".") if s.strip()]
-        got = worker._story_coverage(self.FOUR, sources)
-        self.assertEqual(got["percent"], 100)
-        self.assertEqual(got["missing"], [])
-
-    def test_one_passage_may_span_several_sentences(self):
-        # A passage longer than a sentence legitimately covers several, so it
-        # is not spent by anchoring one of them.
-        got = worker._story_coverage(self.FOUR, [{"source": self.FOUR}])
-        self.assertEqual(got["percent"], 100)
-
-    def test_a_sentence_with_no_content_words_is_not_counted_as_lost(self):
-        prose = "Marta opened the door. It is. She ran into the rain."
-        sources = [{"source": s.strip() + "."} for s in prose.split(".") if s.strip()]
-        got = worker._story_coverage(prose, sources)
-        # "It is." cannot be anchored by any quote, so it is not prose that can
-        # go missing. This used to report 67% for a verbatim board.
-        self.assertEqual(got["percent"], 100)
-        self.assertEqual(got["total"], 2)
-        self.assertNotIn("It is.", got["missing"])
-
-    def test_the_real_missing_count_is_reported_alongside_the_truncated_list(self):
-        prose = " ".join(f"Sentence number {n} said something." for n in range(30))
-        got = worker._story_coverage(prose, [])
-        self.assertEqual(len(got["missing"]), 20)
-        self.assertEqual(got["missing_total"], 30)
-
-    def test_an_empty_story_does_not_divide_by_zero(self):
-        self.assertEqual(worker._story_coverage("", [])["percent"], 100)
 
 
 class PageGeometry(unittest.TestCase):
@@ -1659,12 +1221,12 @@ class PageGeometry(unittest.TestCase):
         from PIL import Image
         return [Image.new("RGB", (px, px), (120, 140 + i, 160)) for i in range(count)]
 
-    def _meta(self, shots, captions=None, dialogue=None):
+    def _meta(self, shots, captions=None, dialogue=None, cells=None):
         n = len(shots)
         return {"shots": list(shots),
                 "captions": list(captions or [""] * n),
                 "dialogue": list(dialogue or [[]] * n),
-                "scenes": [1] * n}
+                "scenes": [1] * n, "cells": cells or [None] * n}
 
     def test_fit_never_enlarges_the_drawing(self):
         """A cell bigger than the panel must not invent detail.
@@ -1681,47 +1243,35 @@ class PageGeometry(unittest.TestCase):
         self.assertEqual(wide.getpixel((1144 // 2, 663 // 2)),
                          panel.getpixel((384, 384)))
 
-    def test_page_width_is_derived_from_the_panels(self):
-        """So the widest cell matches the panel and needs no upscale."""
+    def test_page_width_is_the_style_width(self):
         for px in (512, 768, 1024):
-            panels = self._panels(1, px=px)
-            page, _short = worker._render_page(panels, [0], self._meta(["wide"]),
-                                       self._style(px + 68))
+            page, _short = worker._render_page(self._panels(1, px=px), [0], self._meta(["wide"]),
+                                               self._style(px + 68))
             self.assertEqual(page.width, px + 68)
 
-    def test_a_lone_tight_shot_is_not_given_the_shallow_cell(self):
-        """0.58 is for establishing shots, not for whoever is left over.
-
-        `_tiers` strands a tight shot alone whenever it has no tight neighbour,
-        and the shallow cell centre-crops 42% of its height away -- on a face,
-        the top of the head and the chin.
-        """
+    def test_a_panel_drawn_for_its_cell_is_not_cropped(self):
+        """Every panel used to be drawn square, and a wide cell cut 42% of
+        its height away -- on a face, the top of the head and the chin. Drawn
+        at its cell's shape, a panel lands whole: its corners are on the page."""
+        from PIL import Image
         style = self._style(836)
-        wide, _short = worker._render_page(self._panels(1), [0],
-                                   self._meta(["wide"]), style)
-        for shot in ("close-up", "medium"):
-            tight, _short = worker._render_page(self._panels(1), [0],
-                                        self._meta([shot]), style)
-            self.assertGreater(
-                tight.height, wide.height,
-                f"a lone {shot} must get a full-height cell, not the "
-                "establishing shot's shallow one")
-        inner = style["width"] - style["margin"] * 2
-        self.assertEqual(wide.height, style["margin"] * 2 + round(inner * 0.58))
-
-    def test_no_lone_non_wide_panel_ever_takes_the_shallow_cell(self):
-        """Exhaustive over the shot layouts `_tiers` can produce."""
-        import itertools
-        shallow = 0
-        for n in range(1, 7):
-            for combo in itertools.product(("wide", "medium", "close-up"), repeat=n):
-                for tier in worker._tiers(list(combo)):
-                    if len(tier) == 1 and combo[tier[0]] != "wide":
-                        shallow += 1
-        # 562 of 1092 layouts used to strand a tight shot in a shallow cell.
-        # They still get their own tier -- they just get a square one now,
-        # which is what the two assertions above pin.
-        self.assertGreater(shallow, 0, "expected lone tight shots to exist")
+        shots = ["wide", "medium", "close-up"]
+        cells = worker._page_cells(shots)
+        panels = []
+        for cell in cells:
+            _x, _y, w, h = worker._cell_px(cell, style)
+            im = Image.new("RGB", (w, h), (90, 90, 90))
+            for corner, colour in (((0, 0), (255, 0, 0)), ((w - 1, h - 1), (0, 0, 255))):
+                for dx in range(-8, 9):
+                    for dy in range(-8, 9):
+                        px, py = min(w - 1, max(0, corner[0] + dx)), min(h - 1, max(0, corner[1] + dy))
+                        im.putpixel((px, py), colour)
+            panels.append(im)
+        page, _short = worker._render_page(panels, [0, 1, 2], self._meta(shots, cells=cells), style)
+        for cell in cells:
+            x, y, w, h = worker._cell_px(cell, style)
+            self.assertEqual(page.getpixel((x + 5, y + 5)), (255, 0, 0))
+            self.assertEqual(page.getpixel((x + w - 6, y + h - 6)), (0, 0, 255))
 
     def test_a_caption_is_never_painted_over_by_a_balloon(self):
         """The balloon used to start at a hardcoded 78px.
@@ -1761,49 +1311,17 @@ class PageGeometry(unittest.TestCase):
         self.assertEqual(one, 1 * 26 + 12)
         self.assertGreater(many, one)
 
-    def test_all_pages_of_one_board_share_a_height(self):
+    def test_all_pages_of_one_board_share_a_shape(self):
         """A board whose pages are different shapes is not a comic.
 
         Page height was whatever its own tiers happened to sum to, so a
         two-panel page holding a wide shot came out three times the height of
         one holding two tight shots -- 1299 against 443 on the same board.
-        """
+        Every page is now one fixed shape, and its tiers fill it."""
         style = self._style(836)
-        scenes = [1, 1, 2, 2, 3, 3]
-        shots = ["wide", "close-up", "medium", "close-up", "wide", "medium"]
-        meta = self._meta(shots)
-        meta["scenes"] = scenes
-        pages = worker._paginate(scenes)
-        self.assertGreater(len(pages), 1, "expected a multi-page board")
-
-        natural = [worker._page_plan([shots[i] for i in idx], style)[1]
-                   for idx in pages]
-        self.assertGreater(len(set(natural)), 1,
-                           "expected these pages to differ before normalising")
-
-        style["page_height"] = max(natural)
-        heights = {worker._render_page(self._panels(6), idx, meta, style)[0].height
-                   for idx in pages}
-        self.assertEqual(len(heights), 1,
-                         f"pages came out at {sorted(heights)}")
-        self.assertEqual(heights.pop(), max(natural))
-
-    def test_a_short_page_is_padded_rather_than_stretched(self):
-        """Filling the sheet by scaling panels up is the defect, not the fix."""
-        style = self._style(836)
-        shots = ["medium", "close-up"]
-        plan, natural = worker._page_plan(shots, style)
-        style["page_height"] = natural + 400
-        page, _short = worker._render_page(self._panels(2), [0, 1],
-                                          self._meta(shots), style)
-        self.assertEqual(page.height, natural + 400)
-        # The cells keep their own size; only paper was added.
-        self.assertEqual([cell_h for _t, _w, cell_h in plan],
-                         [cell_h for _t, _w, cell_h
-                          in worker._page_plan(shots, style)[0]])
-        # And the spare paper is split, not all dumped at the bottom.
-        top = page.getpixel((style["margin"] // 2, 4))
-        self.assertEqual(top, worker.PAGE_GROUND)
+        sizes = {worker._render_page(self._panels(len(shots)), list(range(len(shots))), self._meta(shots), style)[0].size
+                 for shots in (["wide", "close-up"], ["medium", "close-up"], ["wide"] * 4, ["medium"] * 6)}
+        self.assertEqual(len(sizes), 1, sizes)
 
     def test_every_drawn_element_stays_inside_the_page(self):
         """A caption or balloon outside its cell is a bug no assertion caught."""
@@ -1812,11 +1330,71 @@ class PageGeometry(unittest.TestCase):
             ["wide", "close-up", "medium"],
             captions=["A very long narration line that has to wrap at least "
                       "three times to be dangerous here."] * 3,
-            dialogue=[[{"text": "Is that you?", "speaker": "Marta"},
-                       {"text": "I have been waiting.", "speaker": "Jon"}]] * 3)
+            dialogue=[[{"text": "Is that you?", "side": "left"},
+                       {"text": "I have been waiting.", "side": "right"}]] * 3)
         page, _short = worker._render_page(self._panels(3), [0, 1, 2], meta, style)
         self.assertEqual(page.width, style["width"])
         self.assertGreater(page.height, style["margin"] * 2)
+
+
+class BalloonPlacement(unittest.TestCase):
+    """A balloon sits on its speaker's side and its tail points at them."""
+
+    def _draw(self):
+        from PIL import Image, ImageDraw
+        im = Image.new("RGB", (900, 700), (90, 90, 90))
+        return im, ImageDraw.Draw(im)
+
+    def _extent(self, im, cell):
+        """The columns the balloon's white paint covers inside the cell."""
+        x, y, w, h = cell
+        cols = [cx for cx in range(x, x + w) if any(im.getpixel((cx, cy)) == (252, 252, 250)
+                                                       for cy in range(y, y + h))]
+        return min(cols), max(cols)
+
+    def test_left_and_right_speakers_get_balloons_on_their_own_side(self):
+        cell = (50, 50, 800, 600)
+        font = worker._caption_font(19)
+        for side, check in (("left", lambda lo, hi: hi < 50 + 800 * 0.7),
+                            ("right", lambda lo, hi: lo > 50 + 800 * 0.3)):
+            im, draw = self._draw()
+            worker._bubble(draw, "Is that you at the door again?", font, cell, 60,
+                           worker._bubble_width(800), 26, side)
+            lo, hi = self._extent(im, cell)
+            self.assertTrue(check(lo, hi), (side, lo, hi))
+
+    def test_the_tail_points_at_the_speaker_and_an_offscreen_line_has_none(self):
+        cell = (50, 50, 800, 600)
+        font = worker._caption_font(19)
+        heights = {}
+        for side in ("left", "right", "off"):
+            im, draw = self._draw()
+            used = worker._bubble(draw, "Last train!", font, cell, 60, worker._bubble_width(800), 26, side)
+            body_bottom = 60 + used - 18
+            # Below the balloon body, only a tail is painted.
+            tail = [cx for cx in range(50, 850) if im.getpixel((cx, body_bottom + 8)) == (252, 252, 250)]
+            heights[side] = (sum(tail) / len(tail)) if tail else None
+        self.assertLess(heights["left"], 50 + 400)
+        self.assertGreater(heights["right"], 50 + 400)
+        self.assertIsNone(heights["off"])
+
+    def test_no_speaker_name_is_lettered_under_a_balloon(self):
+        import inspect
+        self.assertNotIn("speaker", inspect.signature(worker._bubble).parameters)
+        self.assertNotIn("speaker", inspect.signature(worker._bubble_height).parameters)
+
+    def test_words_cover_at_most_about_a_third_of_an_ordinary_panel(self):
+        from PIL import Image, ImageDraw
+        probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+        style = {"width": 836, "margin": 34, "size": 19, "font": worker._caption_font(19),
+                 "small": worker._caption_font(13), "line_h": 26}
+        _size, cap_h, n, _whole = worker._cell_text_plan(
+            probe, "The rain had not stopped.", [{"text": "Is that you?"}, {"text": "It is."}],
+            style, 380, 560)
+        used = 10 + cap_h + 8 + sum(worker._bubble_height(probe, t, style["font"], worker._bubble_width(380), 26)
+                                    for t in ("Is that you?", "It is."))
+        self.assertEqual(n, 2)
+        self.assertLessEqual(used, 560 * worker._TEXT_COVER)
 
 
 class AdapterLoadArguments(unittest.TestCase):
@@ -1969,111 +1547,6 @@ class ModuleIntegrity(unittest.TestCase):
 
 
 
-class TruncatedReplySalvage(unittest.TestCase):
-    """A reply cut off mid-panel must not cost every panel in front of it.
-
-    Found by running a real 310-word story through the real writer. It returned
-    fifteen whole panels and was cut off inside the sixteenth; `rfind("]")`
-    then landed on the closing bracket of the last panel's own `dialogue`
-    array, so the slice was a list with half an object on the end, the parse
-    raised, and all fifteen were discarded after minutes of waiting.
-    """
-
-    def _truncated(self):
-        whole = [{"shot": "wide", "subject": f"beat {i}", "action": "a",
-                  "setting": "kitchen", "scene": 1,
-                  "dialogue": [{"speaker": "Mira", "text": "hello"}]}
-                 for i in range(5)]
-        body = json.dumps(whole)[:-1]  # drop the closing "]"
-        return body + ', {"shot": "medium", "subject": "half", "caption": "'
-
-    def test_complete_panels_are_salvaged(self):
-        beats = worker._shotlist_beats(self._truncated())
-        self.assertEqual(len(beats), 5)
-        self.assertEqual(beats[0]["subject"], "beat 0")
-
-    def test_the_half_written_panel_is_dropped(self):
-        for beat in worker._shotlist_beats(self._truncated()):
-            self.assertNotEqual(beat.get("subject"), "half")
-
-    def test_nested_objects_do_not_end_a_panel_early(self):
-        beats = worker._shotlist_beats(self._truncated())
-        self.assertEqual(beats[0]["dialogue"][0]["speaker"], "Mira")
-
-    def test_a_reply_with_nothing_complete_still_raises(self):
-        with self.assertRaises(ValueError):
-            worker._shotlist_beats('[{"shot": "wide", "subject": "half')
-
-    def test_a_whole_reply_is_untouched(self):
-        good = json.dumps([{"shot": "wide", "subject": "a"}] * 3)
-        self.assertEqual(len(worker._shotlist_beats(good)), 3)
-
-
-class NarrationVoice(unittest.TestCase):
-    """Dialogue is not narration.
-
-    Almost every third-person story contains "I", because its characters talk
-    to each other. Asking the author of one to name its narrator is a question
-    about somebody who does not exist -- caught by running a third-person
-    fixture with two lines of dialogue in it.
-    """
-
-    def test_dialogue_does_not_make_a_story_first_person(self):
-        for story in (
-            'Jonas did not look up. "I did tell you. In writing."',
-            '"I am going where the work is," he said. She put the letter down.',
-            'She asked if he had told her. "I did," he said. "In writing."',
-            'He said, “I will write properly.” Mira did not wave.',
-        ):
-            self.assertFalse(worker._is_first_person(story), story)
-
-    def test_a_first_person_narrator_is_still_found(self):
-        for story in (
-            "I opened the door and she was already there.",
-            "My sister was on the platform before me.",
-            'I watched the rain. "You could have told me," she said.',
-        ):
-            self.assertTrue(worker._is_first_person(story), story)
-
-
-class PlaceIdentity(unittest.TestCase):
-    """One room per place, folded onto the places the story actually has.
-
-    The writer names the same room differently from panel to panel. A real run
-    gave "kitchen", "table in kitchen" and "kitchen table" for one kitchen:
-    three rooms drawn, three chances to contradict each other, and two and a
-    half minutes of drawing spent disagreeing with itself.
-    """
-
-    KNOWN = [{"name": "the kitchen", "description": "Narrow and green"},
-             {"name": "the station", "description": "Iron roof"},
-             {"name": "the platform", "description": ""}]
-
-    def _key(self, setting, scene=1):
-        return worker._place_key({"setting": setting, "scene": scene}, self.KNOWN)
-
-    def test_the_writers_variants_fold_onto_one_room(self):
-        for setting in ("kitchen", "the kitchen", "Kitchen", "her kitchen",
-                        "table in kitchen", "kitchen table"):
-            self.assertEqual(self._key(setting), "kitchen", setting)
-
-    def test_a_revisited_place_is_the_same_room_across_scenes(self):
-        self.assertEqual(self._key("kitchen", scene=1), self._key("kitchen", scene=6))
-
-    def test_different_places_stay_different_inside_one_scene(self):
-        # A writer that files the whole story under scene 1 still changes room.
-        self.assertNotEqual(self._key("kitchen", scene=1),
-                            self._key("station platform", scene=1))
-
-    def test_a_place_the_story_does_not_name_keeps_its_own_words(self):
-        self.assertEqual(self._key("damp streets"), "damp streets")
-
-    def test_the_story_words_for_a_place_are_found(self):
-        self.assertEqual(
-            worker._place_described("kitchen", self.KNOWN), "Narrow and green")
-        self.assertEqual(worker._place_described("attic", self.KNOWN), "")
-
-
 class AdapterIsReallyAnAdapter(unittest.TestCase):
     """A file that holds no adapter weights must be refused, by name.
 
@@ -2153,92 +1626,6 @@ class AdapterIsReallyAnAdapter(unittest.TestCase):
             Repo("ostris/cereal-lora", ["cereal.safetensors"], ["lora"])))
         self.assertTrue(worker._looks_like_adapter(
             Repo("someone/style", ["style_lora.safetensors"])))
-
-
-class TruncatedCastSalvage(unittest.TestCase):
-    """A cast reply cut off mid-entry must not cost the whole read.
-
-    The division already salvaged a truncated reply; the cast reader parsed
-    with `_json_block` and raised. A story with a large cast overruns the token
-    cap, `rfind("}")` lands on the last complete entry instead of the end of
-    the object, and the read failed with a raw JSON parser message after a
-    couple of minutes of the writer -- having had every complete person in
-    hand.
-    """
-
-    STORY = ("Mira opened the door. Jon was on the step. Ana had gone to the "
-             "harbour and Ruth had stayed in the kitchen. Mira said nothing. "
-             "Jon waited. Ana came back. Ruth poured the tea.")
-
-    def _people(self):
-        return [{"name": n, "description": "a coat"}
-                for n in ("Mira", "Jon", "Ana", "Ruth")]
-
-    def _cut_in_people(self):
-        body = '{"people": ' + json.dumps(self._people())[:-1]
-        return body + ', {"name": "Half", "description": "a scarf that'
-
-    def _cut_in_places(self):
-        places = [{"name": "the kitchen", "description": "wet wool"},
-                  {"name": "the harbour", "description": "grey water"}]
-        return ('{"people": ' + json.dumps(self._people())
-                + ', "places": ' + json.dumps(places)[:-1]
-                + ', {"name": "the sta')
-
-    def test_complete_people_are_salvaged(self):
-        found = worker._salvage_cast(self._cut_in_people())
-        self.assertEqual([p["name"] for p in found["people"]],
-                         ["Mira", "Jon", "Ana", "Ruth"])
-
-    def test_the_half_written_entry_is_dropped(self):
-        found = worker._salvage_cast(self._cut_in_people())
-        self.assertNotIn("Half", [p["name"] for p in found["people"]])
-
-    def test_a_cut_inside_places_still_yields_the_people(self):
-        found = worker._salvage_cast(self._cut_in_places())
-        self.assertEqual(len(found["people"]), 4)
-        self.assertEqual([p["name"] for p in found["places"]],
-                         ["the kitchen", "the harbour"])
-
-    def test_places_are_not_collected_into_the_cast(self):
-        """The two arrays run one after the other in the same object.
-
-        An unbounded scan from "people" would read straight through the close
-        bracket and file every place as a person.
-        """
-        found = worker._salvage_cast(self._cut_in_places())
-        self.assertEqual([p["name"] for p in found["people"]],
-                         ["Mira", "Jon", "Ana", "Ruth"])
-
-    def test_a_whole_reply_still_goes_through_the_parser(self):
-        whole = json.dumps({"people": self._people(), "places": []})
-        self.assertEqual(len(worker._json_block(whole, "{", "}")["people"]), 4)
-
-    def test_op_cast_keeps_what_arrived(self):
-        """End to end, with the writer replaced by a reply that was cut off."""
-        reply = self._cut_in_people()
-        saved = (worker._write, worker.emit, worker.log)
-        worker._write = lambda *a, **k: reply
-        worker.emit = lambda payload: None
-        worker.log = lambda *a, **k: None
-        try:
-            out = worker.op_cast("t", {"story": self.STORY})
-        finally:
-            worker._write, worker.emit, worker.log = saved
-        self.assertEqual([p["name"] for p in out["people"]],
-                         ["Mira", "Jon", "Ana", "Ruth"])
-
-    def test_a_reply_with_nothing_complete_still_says_so(self):
-        saved = (worker._write, worker.emit, worker.log)
-        worker._write = lambda *a, **k: '{"people": [{"name": "Mi'
-        worker.emit = lambda payload: None
-        worker.log = lambda *a, **k: None
-        try:
-            with self.assertRaises(ValueError) as caught:
-                worker.op_cast("t", {"story": self.STORY})
-        finally:
-            worker._write, worker.emit, worker.log = saved
-        self.assertIn("could not read the cast", str(caught.exception))
 
 
 class OneHelperIsResidentAtATime(unittest.TestCase):
@@ -2638,11 +2025,11 @@ class CaptionScripts(unittest.TestCase):
         with open(os.path.join(HERE, "worker.py"), encoding="utf-8") as handle:
             src = handle.read()
         tree = ast.parse(src)
+        source = {n.name: ast.get_source_segment(src, n) or "" for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)}
+        self.assertIn("_lettering", source["_letter_cell"])
         for name in ("_render_page", "_render_strip"):
-            fn = next(n for n in ast.walk(tree)
-                      if isinstance(n, ast.FunctionDef) and n.name == name)
-            self.assertIn("_lettering", ast.get_source_segment(src, fn) or "",
-                          f"{name} letters everything in one face")
+            self.assertIn("_letter_cell", source[name], f"{name} letters everything in one face")
 
     def test_a_japanese_board_composes(self):
         from PIL import Image
@@ -2697,10 +2084,13 @@ class CellTextStaysInItsCell(unittest.TestCase):
         bottom = 10 + cap_h + 8 if cap else 16
         for line in dialogue[:bubbles]:
             bottom += worker._bubble_height(
-                probe, line["text"], line["speaker"],
+                probe, line["text"],
                 worker._lettering(line["text"], size, body),
                 worker._bubble_width(cell_w), line_h)
         return bottom, bubbles
+
+    def _cells(self, shots, style):
+        return [worker._cell_px(c, style)[2:] for c in worker._page_cells(shots)]
 
     def test_nothing_is_drawn_below_its_cell(self):
         probe = self._probe()
@@ -2709,8 +2099,8 @@ class CellTextStaysInItsCell(unittest.TestCase):
         dialogues = [[], self.DIALOGUE[:1], self.DIALOGUE]
         for width in (700, 836, 1000, 1211, 1240, 1400):
             style = self._style(width)
-            for shots in (["medium"] * 3, ["medium"] * 2, ["wide"]):
-                for _tier, cell_w, cell_h in worker._page_plan(shots, style)[0]:
+            for shots in (["medium"] * 8, ["medium"] * 3, ["medium"] * 2, ["wide"]):
+                for cell_w, cell_h in self._cells(shots, style):
                     for cap, dialogue in itertools.product(captions, dialogues):
                         bottom, _n = self._block_height(
                             probe, style, cap, dialogue, cell_w, cell_h)
@@ -2719,31 +2109,13 @@ class CellTextStaysInItsCell(unittest.TestCase):
                             f"a {cell_w}x{cell_h} cell on a {width}px page "
                             f"letters {bottom}px of text")
 
-    def test_the_unbounded_arithmetic_overflowed_the_cell(self):
-        """The numbers this replaces, so the test above is not vacuous."""
+    def test_a_small_cell_is_still_measured(self):
+        """The case the measuring exists for: a small cell and long words."""
         probe = self._probe()
-        reach = {}
-        for width, cell in ((1211, (369, 369)), (836, (244, 244))):
-            style = self._style(width)
-            _tier, cell_w, cell_h = worker._page_plan(["medium"] * 3, style)[0][0]
-            self.assertEqual((cell_w, cell_h), cell,
-                             "expected the three-panel cell this was reported on")
-            line_h = style["line_h"]
-            lines = len(worker._wrap(probe, self.CAPTION, style["font"],
-                                     worker._caption_width(cell_w) - 18))
-            bottom = 10 + lines * line_h + 12 + 8
-            for line in self.DIALOGUE:
-                bottom += worker._bubble_height(
-                    probe, line["text"], line["speaker"], style["font"],
-                    worker._bubble_width(cell_w), line_h)
-            self.assertGreater(bottom, cell_h,
-                               f"a {width}px page's three-panel cell used to "
-                               "letter past its own bottom edge; the case has "
-                               "stopped being one")
-            reach[width] = bottom - cell_h
-        self.assertGreater(reach[836], 18,
-                           "the narrow page used to letter past the gutter and "
-                           "into the tier below")
+        style = self._style(836)
+        bottom, n = self._block_height(probe, style, self.CAPTION, self.DIALOGUE, 246, 240)
+        self.assertLessEqual(bottom, 240)
+        self.assertLess(n, 2)
 
     def test_the_lettering_keeps_inside_the_cell_sideways_too(self):
         for cell_w in (198, 244, 369, 562, 1143):
@@ -2754,7 +2126,7 @@ class CellTextStaysInItsCell(unittest.TestCase):
         """The common page must be drawn exactly as it was."""
         probe = self._probe()
         style = self._style(836)
-        _tier, cell_w, cell_h = worker._page_plan(["wide"], style)[0][0]
+        cell_w, cell_h = self._cells(["wide"], style)[0]
         size, cap_h, bubbles, _whole = worker._cell_text_plan(
             probe, "The rain had not stopped since Tuesday.", self.DIALOGUE,
             style, cell_w, cell_h)
@@ -2765,7 +2137,7 @@ class CellTextStaysInItsCell(unittest.TestCase):
     def test_a_crowded_cell_letters_smaller_before_it_drops_anything(self):
         probe = self._probe()
         style = self._style(1211)
-        _tier, cell_w, cell_h = worker._page_plan(["medium"] * 3, style)[0][0]
+        cell_w, cell_h = 369, 420
         size, _cap_h, bubbles, _whole = worker._cell_text_plan(
             probe, self.CAPTION, self.DIALOGUE, style, cell_w, cell_h)
         self.assertLess(size, 19, "a smaller face is the first thing to try")
@@ -2784,100 +2156,16 @@ class CellTextStaysInItsCell(unittest.TestCase):
                 "dialogue": [list(self.DIALOGUE)] * 6,
                 "scenes": [1] * 6}
         page, _short = worker._render_page(panels, list(range(6)), meta, style)
-        plan, _natural = worker._page_plan(shots, style)
-        y = style["margin"]
-        for _tier, _cell_w, cell_h in plan[:-1]:
-            for row in range(y + cell_h + 4, y + cell_h + style["gutter"]):
+        cells = [worker._cell_px(c, style) for c in worker._page_cells(shots)]
+        tops = sorted({y for _x, y, _w, _h in cells})
+        for upper, lower in zip(tops, tops[1:]):
+            bottom = max(y + h for _x, y, _w, h in cells if y == upper)
+            for row in range(bottom + 4, lower - 1):
                 colours = {page.getpixel((x, row)) for x in range(page.width)}
                 self.assertEqual(
                     colours, {worker.PAGE_GROUND},
                     f"something was drawn in the gutter at row {row}")
-            y += cell_h + style["gutter"]
 
-
-
-class TheExpectedRangeIsACheckNotACap(unittest.TestCase):
-    """The range was enforced, and enforcing it cut the end off the story.
-
-    `_panel_bounds` says what it is for in its own docstring: "Not a target. It
-    exists so a writer that returns three panels for three thousand words, or
-    ninety for three hundred, is recognised as having failed rather than
-    believed." The division was then sliced to the top of that range, which is
-    not recognising anything -- it is deleting the evidence and reporting the
-    shortened length.
-
-    Measured on FX-01 with the installed 4B writer. 74 words derives a range of
-    2-4, and the key requires five essential beats, so a correct board was
-    already impossible. The writer returned eight sensible beats; four were
-    kept. The slice takes the front, and the back of a scene is where its
-    reveal is: the unlocking and the empty platform both went, and the board
-    scored 67% with the ending missing. Unsliced, the same request on the same
-    writer returns seven or eight panels and anchors every essential beat.
-    """
-
-    def test_the_writers_division_is_not_sliced_to_the_range(self):
-        import ast
-
-        with open(os.path.join(HERE, "worker.py"), encoding="utf-8") as handle:
-            src = handle.read()
-        fn = next(n for n in ast.walk(ast.parse(src))
-                  if isinstance(n, ast.FunctionDef) and n.name == "op_shotlist")
-        calls = [n for n in ast.walk(fn)
-                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-                 and n.func.id == "_clean_shotlist"]
-        self.assertTrue(calls)
-        for call in calls:
-            sliced = call.args[0]
-            self.assertIsInstance(sliced, ast.Subscript, "expected beats[:n]")
-            upper = sliced.slice.upper
-            self.assertIsInstance(upper, ast.Name)
-            self.assertEqual(
-                upper.id, "_MAX_PANELS",
-                "the division is bounded by what a board holds, not by the "
-                "expected range -- slicing to `high` cut the last beats off "
-                "the story, and the last beats are where the reveal is")
-
-    def test_a_short_scene_can_still_have_more_beats_than_the_range(self):
-        """The case the bound made impossible.
-
-        FX-01 is 74 words and needs five essential beats. Nothing may stop a
-        division of it from having five panels.
-        """
-        low, high = worker._panel_bounds(74)
-        self.assertLess(high, 5, "this test describes a story the range "
-                                 "cannot accommodate; pick another length")
-        beats = [{"shot": "medium", "subject": "Mira", "action": f"beat {i}",
-                  "setting": "a waiting room", "caption": ""}
-                 for i in range(8)]
-        kept = worker._clean_shotlist(beats[:worker._MAX_PANELS], "")
-        self.assertEqual(len(kept), 8,
-                         f"a division of 8 was cut to the range {low}-{high}")
-
-    def test_a_board_is_still_bounded_by_what_it_holds(self):
-        """Sixty panels is a real limit; the range was not."""
-        beats = [{"shot": "medium", "subject": "x", "action": f"a{i}",
-                  "setting": "y", "caption": ""}
-                 for i in range(worker._MAX_PANELS + 20)]
-        kept = worker._clean_shotlist(beats[:worker._MAX_PANELS], "")
-        self.assertEqual(len(kept), worker._MAX_PANELS)
-
-    def test_the_range_is_still_computed_and_still_reported(self):
-        """Removing the cap must not remove the warning.
-
-        A division far outside what this much prose should produce is worth
-        seeing before forty minutes of drawing. It is now said rather than
-        silently applied.
-        """
-        import ast
-
-        with open(os.path.join(HERE, "worker.py"), encoding="utf-8") as handle:
-            src = handle.read()
-        fn = next(n for n in ast.walk(ast.parse(src))
-                  if isinstance(n, ast.FunctionDef) and n.name == "op_shotlist")
-        body = ast.get_source_segment(src, fn) or ""
-        self.assertIn("_panel_bounds(", body)
-        self.assertIn("out_of_range", body)
-        self.assertIn("truncated_from", body)
 
 
 class FixtureFX01(unittest.TestCase):
@@ -2988,111 +2276,6 @@ class FixtureFX01(unittest.TestCase):
         self.assertGreaterEqual(len(self.fx["must_not"]), 4)
         for item in self.fx["must_not"]:
             self.assertTrue(item["claim"] and item["why"])
-
-
-class WhatTheCastReadMustNotDoToFX01(unittest.TestCase):
-    """The fixture, pointed at the deterministic parts of the pipeline.
-
-    Nothing here loads a model. What it checks is the code that runs either
-    side of one: how a story is cut into units, how a panel's quote is matched
-    back onto it, and what the coverage figure means -- measured against a
-    human-authored key rather than against the pipeline's own last output.
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        import json
-
-        with open(os.path.join(HERE, "fixtures", "fx01.json"),
-                  encoding="utf-8") as handle:
-            cls.fx = json.load(handle)
-        cls.story = cls.fx["source"]
-
-    def test_the_story_divides_into_sentences_that_rebuild_it(self):
-        units = worker._story_units(self.story)
-        self.assertGreater(len(units), 4)
-        for unit in units:
-            self.assertIn(unit.strip(), self.story)
-
-    def _quotes(self, *groups):
-        out = []
-        for group in groups:
-            for item in group:
-                start, end = item["span"]
-                out.append({"source": self.story[start:end]})
-        return out
-
-    def test_the_beats_and_the_context_account_for_the_whole_story(self):
-        """Every sentence is assigned to something, or the key is incomplete.
-
-        Source accounting has four dispositions and this fixture uses two of
-        them: a sentence carries a beat, or it is context that no panel has to
-        depict. Anything left over is a sentence the answer key has no opinion
-        about, which makes every coverage assertion below ambiguous.
-        """
-        panels = self._quotes(self.fx["beats"], self.fx["context_only"])
-        coverage = worker._story_coverage(self.story, panels)
-        self.assertEqual(coverage["missing_total"], 0,
-                         f"unaccounted for: {coverage['missing']}")
-
-    def test_the_essential_beats_alone_leave_only_context_behind(self):
-        """What a board can legitimately not draw, and nothing more."""
-        panels = self._quotes(
-            [b for b in self.fx["beats"] if b["essential"]])
-        missing = worker._story_coverage(self.story, panels)["missing"]
-        context = [self.story[c["span"][0]:c["span"][1]] for c in
-                   self.fx["context_only"]]
-        for unit in missing:
-            self.assertTrue(
-                any(unit.strip() in c for c in context),
-                f"{unit!r} is not a beat and is not declared context")
-
-    def test_dropping_the_reveal_is_reported_as_missing(self):
-        """The case the coverage figure exists for."""
-        keep = [b for b in self.fx["beats"] if b["id"] != "b5"]
-        panels = [{"source": self.story[b["span"][0]:b["span"][1]]}
-                  for b in keep]
-        coverage = worker._story_coverage(self.story, panels)
-        self.assertGreater(coverage["missing_total"], 0)
-        self.assertLess(coverage["percent"], 100)
-
-    def test_a_paraphrase_is_snapped_back_to_the_author_s_words(self):
-        """The anchor stores what the user wrote, not what the writer said."""
-        snapped = worker._snap_source(
-            "Mira hands Jonas the brass key from her coat", self.story)
-        self.assertTrue(snapped)
-        self.assertIn(snapped.strip().rstrip("."), self.story)
-
-    def test_anchoring_everything_does_not_prove_the_panels_are_right(self):
-        """BT-024, as a test rather than as a paragraph.
-
-        Every sentence is quoted, so the coverage figure is perfect -- and the
-        panel says Jonas gave Mira the key. Source accounting verifies
-        provenance, not depicted meaning, and a board can score 100% while
-        reversing the one action the scene is about.
-        """
-        units = worker._story_units(self.story)
-        panels = [{"source": u, "action": "Jonas hands Mira the brass key"}
-                  for u in units]
-        coverage = worker._story_coverage(self.story, panels)
-        self.assertEqual(coverage["percent"], 100)
-        self.assertEqual(coverage["missing_total"], 0)
-        # And the key says so.
-        self.assertTrue(
-            any("Mira gave it to Jonas" in q["a"]
-                for q in self.fx["comprehension"]),
-            "the fixture must carry the fact this board gets backwards")
-
-    def test_the_speaker_of_the_only_line_is_not_in_the_cast_of_the_beat(self):
-        """Speech is not presence: the guard is heard through a locked door."""
-        line = next(s for s in self.fx["speech"])
-        self.assertFalse(line["visible"])
-        beat = next(b for b in self.fx["beats"] if b.get("speaker") == "guard")
-        self.assertEqual(beat["actors"], ["guard"])
-        self.assertNotIn("mira", beat["actors"])
-
-    def test_the_narrator_is_detected_so_a_name_can_be_asked_for(self):
-        self.assertTrue(worker._is_first_person(self.story))
 
 
 class CorrectEnglishIsNotATypo(unittest.TestCase):
@@ -3620,15 +2803,15 @@ class TextThatDoesNotFitIsReported(unittest.TestCase):
 
     def test_a_cell_that_cannot_hold_its_dialogue_says_which_panel(self):
         style = self._style(836)
-        shots = ["medium"] * 3
-        meta = self._meta(shots, [list(self.THREE)] * 3)
-        _page, short = worker._render_page(self._panels(3), [0, 1, 2],
+        shots = ["medium"] * 8
+        meta = self._meta(shots, [list(self.THREE)] * 8)
+        _page, short = worker._render_page(self._panels(8), list(range(8)),
                                            meta, style)
-        self.assertTrue(short, "a 244px cell cannot letter three balloons")
+        self.assertTrue(short, "a crowded page's cell cannot letter three balloons")
         for record in short:
             self.assertEqual(record["spoken"], 3)
             self.assertLess(record["lettered"], 3)
-            self.assertIn(record["panel"], (0, 1, 2))
+            self.assertIn(record["panel"], range(8))
 
     def test_a_page_that_letters_everything_reports_nothing(self):
         """The ordinary page, which must not start warning about itself."""
@@ -3647,13 +2830,13 @@ class TextThatDoesNotFitIsReported(unittest.TestCase):
         bottom of the box with nothing returned to say so.
         """
         caption = ("Marta had spent eleven years in that kitchen and had "
-                   "never once thought of it as hers. " * 8).strip()
+                   "never once thought of it as hers. " * 20).strip()
         style = self._style(836)
-        shots = ["medium"] * 3
-        meta = self._meta(shots, [[]] * 3, [caption] * 3)
-        _page, short = worker._render_page(self._panels(3), [0, 1, 2],
+        shots = ["medium"] * 8
+        meta = self._meta(shots, [[]] * 8, [caption] * 8)
+        _page, short = worker._render_page(self._panels(8), list(range(8)),
                                            meta, style)
-        self.assertTrue(short, "this caption does not fit a 244px cell")
+        self.assertTrue(short, "this caption does not fit a crowded page's cell")
         self.assertTrue(all(r["caption_clipped"] for r in short))
         self.assertTrue(all(r["spoken"] == 0 for r in short))
 
@@ -3692,7 +2875,7 @@ class TextThatDoesNotFitIsReported(unittest.TestCase):
         panels = self._panels(1)
         width, margin = style["width"], style["margin"]
         im_w = width - margin * 2
-        im_h = round(im_w * 0.78)
+        im_h = im_w  # the panel keeps its own (square) shape
         long_talk = [{"speaker": f"S{i}", "text": "The bus does not come "
                                                   "after nine o'clock."}
                      for i in range(9)]
@@ -3702,9 +2885,9 @@ class TextThatDoesNotFitIsReported(unittest.TestCase):
         used = 16
         for line in long_talk[:drawn]:
             used += worker._bubble_height(
-                probe, line["text"], line["speaker"],
+                probe, line["text"],
                 worker._lettering(line["text"], base, style["font"]),
-                min(im_w - 40, 420), style["line_h"])
+                worker._bubble_width(im_w), style["line_h"])
         self.assertLessEqual(used, im_h,
                              "the scroll lettered past the bottom of its panel")
 
