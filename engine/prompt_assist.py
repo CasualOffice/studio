@@ -45,7 +45,7 @@ PROFILES: dict[str, dict[str, Any]] = {
                  "follows plain, grammatical sentences written the way you "
                  "would brief a person. Put the subject first, then the "
                  "setting, then the light, then camera and framing, then the "
-                 "medium. No tag lists and no weights.",
+                 "medium when there is one. No tag lists and no weights.",
     },
     "qwen_image": {
         "label": "Qwen-Image", "words": (80, 200),
@@ -739,6 +739,16 @@ def system_prompt(goal: str, mode: str, profile: str, *, looked: bool = False,
             "medium and its finish, as different from one another as you can "
             "make them while still suiting the subject.",
         ]
+    elif mode == "edit":
+        # A fuller edit is a more precise instruction, not a longer scene:
+        # what to change, located, and what must not move.
+        lines += [
+            "Goal: enhance. 'faithful' is the instruction said clearly, adding "
+            f"nothing. 'prompt' is the full instruction in up to {hi} words: "
+            "the thing to change, named by what it looks like and where it is; "
+            "what it becomes; and what stays exactly as it is. 'styles' is "
+            "empty.",
+        ]
     else:
         lines += [
             "Goal: enhance. 'faithful' is the request said clearly, adding "
@@ -840,19 +850,28 @@ def _close_truncated(s: str) -> str:
     return out + "".join(reversed(stack))
 
 
+# A placeholder from the schema, echoed back. A writer with nothing to put in
+# a field sometimes copies "<one medium and finish ...>" instead of leaving it
+# empty, and that must not become a style.
+_PLACEHOLDER = re.compile(r"^<[^<>]*>$")
+
+
 def _string_list(value: Any) -> list[str]:
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, list):
         return []
-    return [" ".join(str(v).split()) for v in value
-            if isinstance(v, (str, int, float)) and str(v).strip()]
+    out = [" ".join(str(v).split()) for v in value
+           if isinstance(v, (str, int, float)) and str(v).strip()]
+    return [v for v in out if not _PLACEHOLDER.match(v)]
 
 
 def _text(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     text = " ".join(value.split())
+    if _PLACEHOLDER.match(text):
+        return ""
     return re.sub(r"^(?:prompt|faithful)\s*:\s*", "", text, flags=re.I)
 
 

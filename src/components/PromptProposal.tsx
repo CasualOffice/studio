@@ -74,6 +74,10 @@ export default function PromptProposal({
   const [at, setAt] = useState(first);
   // Per variant, the additions switched off.
   const [off, setOff] = useState<Record<number, string[]>>({});
+  // A new reply into the same card starts over: the tab and the switches
+  // belonged to the last one.
+  const [shown, setShown] = useState(result);
+  if (shown !== result) { setShown(result); setAt(first); setOff({}); }
 
   if (outcome === "already_specific") {
     return (

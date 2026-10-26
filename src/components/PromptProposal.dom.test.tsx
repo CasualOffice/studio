@@ -172,6 +172,15 @@ describe("PromptProposal offers versions to compare", () => {
       .getAttribute("aria-pressed")).toBe("false");
   });
 
+  it("starts over when a new reply arrives in the same card", () => {
+    const { rerender } = render(
+      <PromptProposal result={reply} onAccept={noop} onDismiss={noop} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Faithful" }));
+    rerender(<PromptProposal result={{ ...reply }} onAccept={noop} onDismiss={noop} />);
+    expect(screen.getByRole("tab", { name: "Enriched" }).getAttribute("aria-selected"))
+      .toBe("true");
+  });
+
   it("says the picture model will load again", () => {
     render(<PromptProposal result={{ ...reply, released: "FLUX.2 Klein 4B" }}
                            onAccept={noop} onDismiss={noop} />);

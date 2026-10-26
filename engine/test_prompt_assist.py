@@ -205,6 +205,12 @@ class ReadingTheWriter(unittest.TestCase):
         self.assertEqual(parsed["styles"], [])
         self.assertFalse(parsed["unclear"], "only a real true is unclear")
 
+    def test_an_echoed_placeholder_is_not_content(self):
+        parsed, _ = pa.parse_reply('{"prompt": "A cat.", "styles": ["<style one>"], '
+                                   '"faithful": "<the request said clearly>"}')
+        self.assertEqual(parsed["styles"], [])
+        self.assertEqual(parsed["faithful"], "")
+
     def test_preview_shows_the_prose_being_written(self):
         self.assertEqual(pa.preview('{"subject": "x", "faithful": "A ca'), "A ca")
         self.assertEqual(pa.preview('{"faithful": "A cat.", "prompt": "A grey'), "A grey")
