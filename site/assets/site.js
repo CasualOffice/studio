@@ -49,7 +49,9 @@
     var show = function (n) {
       clear(); step = n;
       stage.className = "stage s" + n;
-      buttons.forEach(function (b) { b.toggleAttribute("aria-current", +b.dataset.step === n); if (+b.dataset.step === n) b.setAttribute("aria-current", "step"); });
+      buttons.forEach(function (b) {
+        if (+b.dataset.step === n) b.setAttribute("aria-current", "step"); else b.removeAttribute("aria-current");
+      });
       heroBars.forEach(function (b) { b.classList.remove("on"); });
       if (n === 1 && !still) {
         var typed = 0;

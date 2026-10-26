@@ -104,7 +104,7 @@ p { text-wrap: pretty; }
 .lede { font-size: 20px; line-height: 1.55; color: var(--ink-2); max-width: 46ch; }
 .hand { font-family: var(--hand); font-size: 1.1em; letter-spacing: .01em; }
 .scribble { position: relative; white-space: nowrap; }
-.scribble svg { position: absolute; left: -4%; bottom: -.12em; width: 108%; height: .42em; overflow: visible; }
+.scribble svg { position: absolute; left: -4%; bottom: -.02em; width: 108%; height: .42em; overflow: visible; }
 .scribble path { fill: none; stroke: var(--accent); stroke-width: 7; stroke-linecap: round;
                  stroke-dasharray: 520; stroke-dashoffset: 520; animation: draw 1.1s .5s var(--ease) forwards; }
 @keyframes draw { to { stroke-dashoffset: 0; } }
@@ -274,10 +274,10 @@ p { text-wrap: pretty; }
 .chip.on { background: var(--ink); color: var(--paper); }
 
 .story-steps { display: flex; flex-direction: column; }
-.step { min-height: 74vh; display: flex; flex-direction: column; justify-content: center; padding: 20px 0;
+.step { min-height: min(74vh, 680px); display: flex; flex-direction: column; justify-content: center; padding: 20px 0;
         opacity: .32; transition: opacity .4s var(--ease); }
 .step.on { opacity: 1; }
-.step:first-child { min-height: 58vh; justify-content: flex-start; padding-top: 40px; }
+.step:first-child { min-height: min(58vh, 520px); justify-content: flex-start; padding-top: 40px; }
 .step-no { font: 800 15px/1 var(--display); color: var(--accent); margin-bottom: 14px; display: flex; align-items: center; gap: 10px; }
 .step-no::after { content: ""; flex: 0 0 48px; height: 2px; background: var(--accent); }
 .step h3 { font-size: clamp(2rem, 3.4vw, 2.9rem); margin-bottom: 18px; }
@@ -366,14 +366,20 @@ p { text-wrap: pretty; }
 .t-up { grid-column: span 7; }
 .t-up img { aspect-ratio: 2.01; }
 .t-vid { grid-column: span 5; background: var(--butter); display: flex; flex-direction: column; justify-content: space-between; }
-.reel { display: flex; gap: 8px; padding: 22px 22px 0; }
-.reel i { flex: 1; aspect-ratio: .8; border: 2px solid var(--ink); border-radius: 8px; background: #fff; position: relative; overflow: hidden; }
-.reel i::after { content: ""; position: absolute; left: 20%; top: 30%; width: 34%; height: 50%; border-radius: 50% 50% 40% 40%;
-                 background: var(--ink); animation: walk 2.4s ease-in-out infinite; }
-.reel i:nth-child(2)::after { animation-delay: -.6s; }
-.reel i:nth-child(3)::after { animation-delay: -1.2s; }
-.reel i:nth-child(4)::after { animation-delay: -1.8s; }
-@keyframes walk { 50% { transform: translateX(70%); } }
+.reel { display: flex; gap: 6px; padding: 14px; margin: 22px 22px 0; background: var(--ink); border-radius: 10px;
+        position: relative; }
+.reel::before, .reel::after { content: ""; position: absolute; left: 8px; right: 8px; height: 4px;
+  background: repeating-linear-gradient(90deg, var(--paper) 0 8px, transparent 8px 16px); opacity: .7; }
+.reel::before { top: 4px; } .reel::after { bottom: 4px; }
+/* Four frames of one shot, each a beat further along: the camera pushes in
+   and drifts, the way a still set in motion does. */
+.reel i { flex: 1; aspect-ratio: .78; border-radius: 4px; overflow: hidden; background: #000; }
+.reel img { width: 100%; height: 100%; object-fit: cover; animation: push 3.2s ease-in-out infinite alternate; }
+.reel i:nth-child(1) img { object-position: 46% 40%; }
+.reel i:nth-child(2) img { object-position: 49% 46%; transform: scale(1.12); animation-delay: -.8s; }
+.reel i:nth-child(3) img { object-position: 52% 52%; transform: scale(1.24); animation-delay: -1.6s; }
+.reel i:nth-child(4) img { object-position: 55% 58%; transform: scale(1.36); animation-delay: -2.4s; }
+@keyframes push { to { translate: 0 -6%; scale: 1.08; } }
 
 /* ---- privacy ------------------------------------------------------------- */
 .priv { display: grid; grid-template-columns: .95fr 1.05fr; gap: 64px; align-items: center; }
@@ -476,9 +482,18 @@ pre { background: var(--ink); color: var(--paper); border-radius: 12px; padding:
   .nav-links .btn { padding: 9px 14px; font-size: 14px; }
   .hero { padding: 40px 0 64px; }
   .lede { font-size: 18px; }
-  .stage { aspect-ratio: 1 / 1.2; }
-  .ms { width: 70%; } .page { width: 60%; } .cast { width: 64%; } .player { width: 72%; }
-  .ms-text { font-size: 13px; min-height: 8.5em; }
+  /* Four overlapping cards do not fit a phone; one card at a time does,
+     each taking the stage for its own step. */
+  .stage { aspect-ratio: auto; height: 330px; }
+  .stage .card { left: 3%; right: auto; top: 14px; bottom: auto; width: 94%; }
+  .stage.s1 .card, .stage.s2 .card, .stage.s3 .card, .stage.s4 .card {
+    opacity: 0; transform: translateY(16px); pointer-events: none; }
+  .stage.s1 .ms, .stage.s2 .cast, .stage.s3 .page, .stage.s4 .player {
+    opacity: 1; transform: rotate(-1deg); }
+  .ms-text { font-size: 16px; }
+  .player .bars { height: 54px; }
+  .player-line { font-size: 16px; }
+  .ent small { display: none; }
   .section { padding: 84px 0; }
   .f-read { padding: 54px 20px 20px; } .f-read p { font-size: 17px; }
   .legend { left: 20px; right: 20px; }
