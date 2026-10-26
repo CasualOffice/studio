@@ -1068,7 +1068,10 @@ def build_variants(parsed: dict[str, Any], goal: str, mode: str) -> list[dict[st
                 _additions_in(base, parsed.get("additions") or []))
         for style in styles[:3]:
             text, phrase = with_style(base, style)
-            label = " ".join(phrase.split()[:3])
+            # The style's name, not its first three words: "Oil painting
+            # with thick brushstrokes" was labelled "Oil painting with".
+            label = re.split(r",|\s+with\s+|\s+in\s+", phrase, maxsplit=1)[0].strip(" .")
+            label = " ".join(label.split()[:4])
             add("stylistic", label, text, [phrase] if phrase else [])
         return out
 

@@ -257,6 +257,13 @@ class Variants(unittest.TestCase):
         out = pa.build_variants(self.PARSED, "style", "generate")
         self.assertEqual([v["label"] for v in out], ["Pencil sketch", "Oil painting"])
 
+    def test_a_style_is_labelled_by_its_name(self):
+        out = pa.build_variants({"prompt": "A cat on a chair.",
+                                 "styles": ["Oil painting with thick brushstrokes and warm colors",
+                                            "Minimalist 3D render, clean edges, soft shadows"]},
+                                "style", "generate")
+        self.assertEqual([v["label"] for v in out], ["Oil painting", "Minimalist 3D render"])
+
     def test_tighten_gives_one(self):
         out = pa.build_variants({"prompt": "A cat on a chair."}, "tighten", "generate")
         self.assertEqual(len(out), 1)
