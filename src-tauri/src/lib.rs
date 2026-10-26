@@ -238,6 +238,7 @@ pub fn run() {
             commands::audio_voices,
             commands::audio_preview,
             commands::generate_audiobook,
+            commands::revoice_audiobook,
             commands::character_reference,
             commands::compose_board,
             commands::bind_comic,

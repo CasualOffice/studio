@@ -161,6 +161,17 @@ pub struct AudioMarker {
     pub label: String,
 }
 
+/// One narrated sentence: samples `start..end` at 24 kHz, the words read and
+/// the voice that read them.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct AudioSpan {
+    pub start: u64,
+    pub end: u64,
+    pub text: String,
+    #[serde(default)]
+    pub voice: String,
+}
+
 // `Default` so a caller states only the provenance it actually knows. An
 // import has no seed and no adapters; a generation has all of it.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -224,6 +235,11 @@ pub struct VaultItem {
     /// between. Empty for everything that is not an audiobook.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<AudioMarker>,
+    /// Where each sentence of a narration lies, in samples, so the transcript
+    /// can follow the voice and one sentence can be read again and spliced
+    /// in. Empty for everything else and for narrations made before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<AudioSpan>,
 
     // ---- How this was actually made -------------------------------------
     //
