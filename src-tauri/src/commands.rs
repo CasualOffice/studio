@@ -2298,45 +2298,6 @@ mod tests {
     }
 }
 
-/// Work each panel up into a scene that can be drawn.
-///
-/// Separate from dividing the story on purpose. The division is terse because
-/// terse is what you need to judge whether the story was cut correctly; this
-/// is the stage that fills in surface, background and light, and it is worth
-/// reading before anything is drawn.
-#[tauri::command]
-pub async fn enrich_panels(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    job_id: String,
-    panels: serde_json::Value,
-    style: String,
-    // What the story says about each place, from the cast read. The place
-    // writer invents a room from the panel actions without it, so a kitchen
-    // the story calls green comes back yellow. Optional so a caller that has
-    // not read the cast still works.
-    places: Option<serde_json::Value>,
-) -> Result<serde_json::Value> {
-    let _job = state.job_gate.read().await;
-    state.require_unlocked()?;
-
-    let writer = story_writer(&state, None)?;
-
-    let engine = state.engine(&app).await?;
-    engine
-        .request(
-            &job_id,
-            "enrich_panels",
-            json!({
-                "panels": panels,
-                "style": style,
-                "places": places.unwrap_or_else(|| json!([])),
-                "writer": writer,
-            }),
-        )
-        .await
-}
-
 /// Stack the drawn panels into one page, captions underneath.
 ///
 /// Composed in the engine rather than the browser because the panels are
@@ -2359,6 +2320,16 @@ pub struct BoardPages {
     pub layout: String,
     pub project: Option<String>,
     pub project_name: Option<String>,
+    /// Which page each panel is on, from the board's own layout.
+    #[serde(default)]
+    pub pages: Option<Vec<u32>>,
+    /// Each panel's cell as [x, y, w, h] fractions of the page's inner area,
+    /// the shape it was drawn at.
+    #[serde(default)]
+    pub cells: Option<Vec<[f64; 4]>>,
+    /// "rtl" for manga, read right to left.
+    #[serde(default)]
+    pub direction: Option<String>,
 }
 
 /// One panel's text that would not fit the cell it was lettered into.
@@ -2519,6 +2490,9 @@ pub async fn compose_board(
         layout,
         project,
         project_name,
+        pages,
+        cells,
+        direction,
     } = board;
     state.require_unlocked()?;
     if panels.is_empty() {
@@ -2583,6 +2557,9 @@ pub async fn compose_board(
                 "dialogue": dialogue,
                 "scenes": scenes,
                 "layout": layout,
+                "pages": pages,
+                "cells": cells,
+                "direction": direction,
                 "vault_slots": slot_json,
             }),
         )
@@ -2677,84 +2654,6 @@ pub async fn compose_board(
         composition,
         overflow,
     })
-}
-
-/// Break a story into an ordered list of panels.
-///
-/// The first step of a picture board, and the one everything after it depends
-/// on: a bad division of the story cannot be rescued by good panels. It runs
-/// on the writer, because the smaller vision model could not hold the panel
-/// count or cover the whole story.
-#[tauri::command]
-pub async fn shot_list(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    job_id: String,
-    story: String,
-    // `panels: None` lets the engine divide by beat and report what the story
-    // needed. A number picked before anyone read the story is a guess, and a
-    // slider capped at twelve is why a whole chapter came back as twelve
-    // panels regardless of what was in it.
-    panels: Option<u32>,
-) -> Result<serde_json::Value> {
-    let _job = state.job_gate.read().await;
-    state.require_unlocked()?;
-
-    let host = HostInfo::probe(&state.paths());
-    let writer = models::find(&state.paths(), &host, "qwen3-4b-instruct-4bit")
-        .ok_or_else(|| AppError::msg("the prompt writer is missing from the catalog"))?;
-    if !writer.installed {
-        return Err(AppError::msg(
-            "Breaking a story into panels needs the prompt writer. Add it from \
-             the Models tab \u{2014} it is a 2.1 GiB download and runs entirely \
-             on this Mac.",
-        ));
-    }
-
-    let engine = state.engine(&app).await?;
-    engine
-        .request(
-            &job_id,
-            "shotlist",
-            json!({ "story": story, "panels": panels, "writer": writer.repo }),
-        )
-        .await
-}
-
-/// Read a story and report who is in it and where it happens.
-///
-/// Runs on its own as soon as a story is pasted: it costs a little of the
-/// text model and no picture time at all, and everything downstream — which
-/// character sheet a panel is drawn against, which room it is set in — is only
-/// as good as this. Every name it returns has been checked against the story.
-#[tauri::command]
-pub async fn story_cast(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    job_id: String,
-    story: String,
-) -> Result<serde_json::Value> {
-    let _job = state.job_gate.read().await;
-    state.require_unlocked()?;
-
-    let host = HostInfo::probe(&state.paths());
-    let writer = models::find(&state.paths(), &host, "qwen3-4b-instruct-4bit")
-        .ok_or_else(|| AppError::msg("the prompt writer is missing from the catalog"))?;
-    if !writer.installed {
-        return Err(AppError::msg(
-            "Reading a story needs the prompt writer. Add it from the Models \
-             tab \u{2014} it is a 2.1 GiB download and runs entirely on this Mac.",
-        ));
-    }
-
-    let engine = state.engine(&app).await?;
-    engine
-        .request(
-            &job_id,
-            "cast",
-            json!({ "story": story, "writer": writer.repo }),
-        )
-        .await
 }
 
 /// Whether a Hugging Face token is stored, without ever handing it back out.
@@ -2935,6 +2834,10 @@ pub struct StoryAnalysis {
     /// The book format the director plans for: manga, webtoon, comic, picture.
     #[serde(default)]
     format: Option<String>,
+    /// How many pages the board is planned for; the director fits its panels
+    /// to them. Absent means the engine's default of four.
+    #[serde(default)]
+    pages: Option<u32>,
 }
 
 /// Story analysts, best first. Qwen3.5 9B leads: newer than the 14B, faster,
@@ -2985,7 +2888,7 @@ pub async fn analyze_story(
             "story_analyze",
             json!({
                 "source": args.source, "title": args.title, "previous": args.previous,
-                "writer": writer, "mode": mode, "format": args.format,
+                "writer": writer, "mode": mode, "format": args.format, "pages": args.pages,
             }),
         )
         .await
@@ -3026,6 +2929,8 @@ pub struct Resumption {
     model_id: Option<String>,
     #[serde(default)]
     format: Option<String>,
+    #[serde(default)]
+    pages: Option<u32>,
     /// Analyse every passage again, not only the ones left unanalysed.
     #[serde(default)]
     again: bool,
@@ -3048,7 +2953,7 @@ pub async fn resume_story(
             &job_id,
             "story_resume",
             json!({"book": args.book, "chapter_id": args.chapter_id, "writer": writer,
-                   "format": args.format, "again": args.again}),
+                   "format": args.format, "pages": args.pages, "again": args.again}),
         )
         .await
 }
@@ -3278,8 +3183,10 @@ pub struct Direction {
     chapter_id: String,
     #[serde(default)]
     format: Option<String>,
-    /// The story model refines the director's plan when true; otherwise the
-    /// instant rule-based plan is returned.
+    #[serde(default)]
+    pages: Option<u32>,
+    /// The story model rewrites the briefs the director's rules left weak
+    /// when true; otherwise the instant rule-based plan is returned.
     #[serde(default)]
     refine: bool,
     #[serde(default)]
@@ -3307,7 +3214,7 @@ pub async fn direct_story(
             &job_id,
             "direct_story",
             json!({"book": args.book, "chapter_id": args.chapter_id,
-                   "format": args.format, "writer": writer}),
+                   "format": args.format, "pages": args.pages, "writer": writer}),
         )
         .await
 }

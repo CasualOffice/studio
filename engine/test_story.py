@@ -316,16 +316,6 @@ class WorkerIntegration(unittest.TestCase):
                         'narrator': 'Voice', 'vault_slots': [slot]})
             self.assertFalse(Path(slot['path']).exists())
 
-    def test_surface_enrichment_cannot_erase_action_or_emotional_direction(self):
-        import worker
-        book = example()
-        panel = story.direct(book, book['chapters'][0]['id'])[-1]
-        with patch.object(worker, '_write', return_value='{"lighting":"cold light","surfaces":"stone"}'):
-            result = worker.op_enrich_panels('test-enrichment', {'panels': [panel]})['panels'][0]
-        for field in ('action', 'cast', 'mood', 'tension', 'dialogue', 'caption'):
-            self.assertEqual(result[field], panel[field])
-        self.assertIn('cold light', result['description'])
-
     def test_writer_tokens_keep_the_scene_progress_and_a_repair_gets_more_room(self):
         import worker
         source = 'Mira ran. Jonas waited.'
@@ -340,27 +330,6 @@ class WorkerIntegration(unittest.TestCase):
         self.assertEqual([(c['label'].split(' · ')[0], c['fraction'], c['max_tokens']) for c in calls],
                          [('Understanding scene 1 of 2', 0.0, 1800), ('Understanding scene 1 of 2', 0.0, 2700),
                           ('Understanding scene 2 of 2', 0.5, 1800)])
-
-    def test_a_hand_added_panel_keeps_the_board_on_the_story_path(self):
-        import worker
-        book = example()
-        panels = story.direct(book, book['chapters'][0]['id'])
-        plain = {"shot": "medium", "action": "Jonas sits down", "setting": "station"}
-        with patch.object(worker, '_write', return_value='{"lighting":"cold light","surfaces":"stone"}'):
-            result = worker.op_enrich_panels('test-enrichment', {'panels': panels + [plain]})['panels']
-        self.assertEqual([p.get('place_key') for p in result[:-1]], [p['place_key'] for p in panels])
-        self.assertIn('cold light', result[-1]['description'])
-
-    def test_lighting_is_written_once_per_place_and_mood(self):
-        import worker
-        book = example()
-        panels = story.direct(book, book['chapters'][0]['id'])
-        places = {(p['place_key'], p['mood']) for p in panels}
-        with patch.object(worker, '_write', return_value='{"lighting":"cold light","surfaces":"stone"}') as write:
-            result = worker.op_enrich_panels('test-enrichment', {'panels': panels})['panels']
-        self.assertEqual(write.call_count, len(places))
-        self.assertLess(len(places), len(panels))
-        self.assertTrue(all('cold light' in p['description'] for p in result))
 
     def test_switching_analysts_unloads_the_previous_writer_before_loading(self):
         import sys
