@@ -239,7 +239,7 @@ export default function Audiobook({ library, models, notify, onLibraryChange, on
         unlisten();
         queue?.finish();
         // Nothing was read: no empty player left behind.
-        if (queue && !queue.duration) nowPlaying.stop();
+        if (queue && !queue.duration) { queue.close(); nowPlaying.stop(); }
       }
       onProduced();
       if (mounted.current) {
