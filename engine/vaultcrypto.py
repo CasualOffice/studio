@@ -85,18 +85,47 @@ def open_with_file_key(file_key: bytes, data: bytes) -> bytes:
     return bytes(out)
 
 
-def write_sealed(path: str, file_key: bytes, file_id: bytes, plaintext: bytes) -> int:
-    """Write a sealed blob, leaving no partial file behind on failure."""
+def seal_parts(file_key: bytes, file_id: bytes, parts: Any):
+    """Seal plaintext that arrives in pieces, yielding the sealed file in order.
+
+    Byte-identical to `seal_with_file_key` over the joined pieces. Only one
+    chunk is held back -- the last one is sealed differently, and which is
+    last is known only when the pieces run out -- so a long narration is
+    never joined into one buffer and then copied into a second one sealed."""
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+
+    if len(file_key) != 32:
+        raise ValueError("file key must be 32 bytes")
+    header = build_header(file_id)
+    aead = ChaCha20Poly1305(file_key)
+    yield header
+    pending, counter = bytearray(), 0
+    for part in parts:
+        pending += part
+        while len(pending) > CHUNK_SIZE:
+            yield aead.encrypt(_nonce(counter), bytes(pending[:CHUNK_SIZE]), _aad(header, counter, False))
+            del pending[:CHUNK_SIZE]
+            counter += 1
+    yield aead.encrypt(_nonce(counter), bytes(pending), _aad(header, counter, True))
+
+
+def write_sealed(path: str, file_key: bytes, file_id: bytes, plaintext: Any) -> int:
+    """Write a sealed blob, leaving no partial file behind on failure.
+
+    `plaintext` is bytes, or an iterable of byte pieces sealed as they come."""
     import os
     import tempfile
 
-    sealed = seal_with_file_key(file_key, file_id, plaintext)
+    parts = [plaintext] if isinstance(plaintext, (bytes, bytearray, memoryview)) else plaintext
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    size = 0
     try:
         with os.fdopen(fd, "wb") as f:
-            f.write(sealed)
+            for sealed in seal_parts(file_key, file_id, parts):
+                f.write(sealed)
+                size += len(sealed)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
@@ -106,7 +135,7 @@ def write_sealed(path: str, file_key: bytes, file_id: bytes, plaintext: bytes) -
         except OSError:
             pass
         raise
-    return len(sealed)
+    return size
 
 
 def artifact_to_png_bytes(artifact: Any) -> bytes:

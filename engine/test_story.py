@@ -195,8 +195,9 @@ class AudioSafety(unittest.TestCase):
             self.assertEqual(os.listdir(stage), [])
         self.assertEqual(calls, [('Narration.', 'Narrator'), ('Dialogue.', 'Jonas')])
         with wave.open(io.BytesIO(data)) as wav:
-            self.assertEqual(wav.getnframes(), 480)
-        self.assertAlmostEqual(seconds, .02)
+            # Two 240-sample clips with a sentence's breath between them.
+            self.assertEqual(wav.getnframes(), 240 + 2880 + 240)
+        self.assertAlmostEqual(seconds, 3360 / 24000)
 
     def test_failure_and_cancellation_delete_plaintext(self):
         for exception in [RuntimeError('voice failed'), KeyboardInterrupt()]:
@@ -274,8 +275,11 @@ class WorkerIntegration(unittest.TestCase):
             audio.writeframes(b'\x01\x00' * 240)
         with tempfile.TemporaryDirectory() as directory:
             slot = self.slot(directory, 'audio')
+            def narrate(segments, narrator, voices, rate, staging, check, recording, progress):
+                import numpy as np
+                recording.add(segments[0], np.full(240, 1 / 32767, dtype=np.float32), narrator)
             with patch.object(worker.CACHE, 'unload') as release, patch.object(worker, '_unload_assistant') as release_text, \
-                 patch('audiobook.synthesize', return_value=(buf.getvalue(), .01)):
+                 patch('audiobook.narrate_system', narrate):
                 result = worker.op_audiobook('test-audio', {'book': book, 'chapter_id': book['chapters'][0]['id'],
                     'narrator': 'Voice', 'voices': {}, 'rate': 160, 'vault_slots': [slot]})
             release.assert_called_once(); release_text.assert_called_once()
@@ -291,9 +295,13 @@ class WorkerIntegration(unittest.TestCase):
         book = example()
         with tempfile.TemporaryDirectory() as directory:
             slot = self.slot(directory, 'neural')
+            def narrate(segments, narrator, voices, rate, check, recording, progress, **kwargs):
+                import numpy as np
+                recording.add(segments[0], np.zeros(6, dtype=np.float32), narrator)
+            neural = unittest.mock.Mock(side_effect=narrate)
             with patch.object(worker.CACHE, 'unload'), patch.object(worker, '_unload_assistant'), \
-                 patch.object(worker, '_apply_policy_once'), patch('audiobook.synthesize') as system, \
-                 patch('audiobook.synthesize_neural', return_value=(b'neural audio bytes', .01)) as neural:
+                 patch.object(worker, '_apply_policy_once'), patch('audiobook.narrate_system') as system, \
+                 patch('audiobook.narrate_neural', neural):
                 result = worker.op_audiobook('test-neural', {'book': book, 'chapter_id': book['chapters'][0]['id'],
                     'model_id': audiobook.NEURAL_MODEL_ID, 'narrator': 'ryan', 'voices': {}, 'rate': 160,
                     'language': 'english', 'delivery': 'Warm', 'directions': {'mira': 'Quiet'}, 'vault_slots': [slot]})
@@ -302,7 +310,8 @@ class WorkerIntegration(unittest.TestCase):
             self.assertEqual(neural.call_args.kwargs['delivery'], 'Warm')
             self.assertEqual(neural.call_args.kwargs['directions'], {'mira': 'Quiet'})
             self.assertTrue(result['sealed'])
-            self.assertEqual(vc.open_with_file_key(bytes.fromhex(slot['key']), Path(slot['path']).read_bytes()), b'neural audio bytes')
+            self.assertEqual(vc.open_with_file_key(bytes.fromhex(slot['key']), Path(slot['path']).read_bytes()),
+                             audiobook.wav_header(6) + bytes(12))
 
     def test_audio_failure_never_writes_output(self):
         import worker
@@ -310,7 +319,7 @@ class WorkerIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             slot = self.slot(directory, 'failed')
             with patch.object(worker.CACHE, 'unload'), patch.object(worker, '_unload_assistant'), \
-                 patch('audiobook.synthesize', side_effect=RuntimeError('speech failed')):
+                 patch('audiobook.narrate_system', side_effect=RuntimeError('speech failed')):
                 with self.assertRaisesRegex(RuntimeError, 'speech failed'):
                     worker.op_audiobook('test-audio', {'book': book, 'chapter_id': book['chapters'][0]['id'],
                         'narrator': 'Voice', 'vault_slots': [slot]})
@@ -484,8 +493,8 @@ class NeuralNarration(unittest.TestCase):
         self.assertIn("Whisper", calls[1]["instruct"])
         self.assertTrue(all(c["stream"] for c in calls))
         with wave.open(io.BytesIO(data), 'rb') as wav:
-            self.assertEqual((wav.getnchannels(), wav.getsampwidth(), wav.getframerate(), wav.getnframes()), (1, 2, 24000, 6))
-        self.assertEqual(seconds, 6 / 24000)
+            self.assertEqual((wav.getnchannels(), wav.getsampwidth(), wav.getframerate(), wav.getnframes()), (1, 2, 24000, 2886))
+        self.assertEqual(seconds, 2886 / 24000)
 
     def test_preserves_text_across_bounded_chunks(self):
         text = ('  A sentence! Then another sentence.\n' * 100) + 'tail'
@@ -999,7 +1008,7 @@ class KokoroNarration(unittest.TestCase):
         self.assertEqual([(c['voice'], c['lang_code'], c['speed']) for c in calls],
                          [('af_heart', 'a', 1.25), ('hf_beta', 'a', 1.25)])
         with wave.open(io.BytesIO(data)) as wav:
-            self.assertEqual((wav.getframerate(), wav.getnchannels(), wav.getnframes()), (24000, 1, 6))
+            self.assertEqual((wav.getframerate(), wav.getnchannels(), wav.getnframes()), (24000, 1, 3 + 2880 + 3))
 
     def test_scene_markers_fall_where_each_scene_begins(self):
         segments = [{"speaker_id": None, "text": "One.", "scene": "Arrival"},
