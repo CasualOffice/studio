@@ -46,6 +46,7 @@
       "../engine/worker.py": "engine/worker.py",
       "../engine/vaultcrypto.py": "engine/vaultcrypto.py",
       "../engine/story.py": "engine/story.py",
+      "../engine/prompt_assist.py": "engine/prompt_assist.py",
       "../engine/audiobook.py": "engine/audiobook.py",
       "../engine/director.py": "engine/director.py",
       "../engine/narration.py": "engine/narration.py",

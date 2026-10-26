@@ -1175,7 +1175,8 @@ def _load_writer(req_id: str, repo: str | None = None) -> tuple[Any, Any]:
 
 def _write(req_id: str, system: str, user: str, max_tokens: int = 160,
            temperature: float = 0.3, repo: str | None = None,
-           label: str = "Writing", fraction: float | None = None) -> str:
+           label: str = "Writing", fraction: float | None = None,
+           preview: Any = None) -> str:
     """One turn with the writer.
 
     Streamed rather than taken in one call, for two reasons.
@@ -1225,7 +1226,10 @@ def _write(req_id: str, system: str, user: str, max_tokens: int = 160,
                   # longer than eight seconds of watching a sentence arrive.
                   # Only the tail, because the interface shows a line, not a
                   # transcript, and the channel is shared with everything else.
-                  "text": "".join(pieces)[-400:]})
+                  # A caller whose reply is structured passes `preview` to
+                  # show the prose being written rather than its JSON.
+                  "text": (preview("".join(pieces)) if preview
+                           else "".join(pieces)[-400:])})
     return "".join(pieces)
 
 
@@ -1271,164 +1275,12 @@ def _unload_assistant() -> None:
         pass
 
 
-# For edits the model reports facts about the picture. It never writes the
-# instruction: that is assembled from the user's words plus these facts.
-SCENE_SYSTEM = (
-    "Describe this picture as four short labelled lines and nothing else.\n"
-    "Each value is a phrase of two to six words. No sentences. No opinions.\n"
-    "If something is unclear, write: unknown\n\n"
-    "SUBJECT: what the main thing is, with colour or material\n"
-    "SURFACE: its texture or finish\n"
-    "LIGHT: the lighting and its direction\n"
-    "SETTING: what it sits on and what is behind it\n\n"
-    "Example\n"
-    "SUBJECT: a beige ceramic teapot\n"
-    "SURFACE: smooth glazed stoneware\n"
-    "LIGHT: soft daylight from the left\n"
-    "SETTING: crumpled linen cloth, pale wall\n"
-)
-
-# Structured scene direction for a text-only idea.
-#
-# These models read prompts through a T5 encoder, which parses grammar: flowing
-# description outperforms a list of tags, and long prompts outperform short
-# ones. The earlier version asked for comma-separated keywords under
-# twenty-five words, which is how you prompt Stable Diffusion and close to the
-# opposite of what works here.
-#
-# Slots rather than free writing, because a 2B model asked for "a vivid prompt"
-# produces adjective soup. Asked what the light is doing, it answers.
-SCENE_DIRECTION_SYSTEM = (
-    "You are an art director writing the prompt for an image model.\n\n"
-    "First work out what the person actually wants to see. They are describing "
-    "a picture in their head, often in a hurry, often badly: misspelled, "
-    "ungrammatical, half a sentence. Read through that to the picture. Then "
-    "write the prompt you would give an illustrator who cannot ask "
-    "questions.\n\n"
-    "Say it in your own words. You are not editing their sentence, you are "
-    "describing what they meant -- so rephrase freely, fix the grammar, and "
-    "use the right word where they reached for the nearest one. What must "
-    "survive is the thing they asked for, not the words they asked in.\n\n"
-    "Work through the fields below, then write them out as one flowing "
-    "sentence or two. Everything the fields cover is yours to decide -- and "
-    "you must decide it, because a prompt that leaves light, lens and framing "
-    "unsaid gets whatever the model felt like.\n\n"
-    "  SUBJECT      who or what, with material, age, wear\n"
-    "  APPEARANCE   what they are wearing or made of, in detail\n"
-    "  ACTION       what is happening, in this instant\n"
-    "  SETTING      where it is, and what else is in the frame\n"
-    "  COMPOSITION  framing, camera height, what is near and what is far\n"
-    "  LIGHT        source, direction, quality, colour\n"
-    "  STYLE        medium and finish\n\n"
-    "Rules:\n"
-    "1. Keep the subject and every attribute given to it. If they say a red "
-    "car, it is still a car and still red -- a sedan is a car, a motorbike is "
-    "not.\n"
-    "2. Correct the spelling and the grammar, always. 'a hous at nite' is a "
-    "house at night. 'me and him was walking' is two people walking.\n"
-    "3. Never write 'beautiful', 'stunning', 'high quality', '8k', "
-    "'cinematic' or 'masterpiece'. They describe nothing.\n"
-    "4. No field labels in the answer. One paragraph, 40 to 80 words.\n"
-    "5. If the request names no thing at all -- 'make it better', 'something "
-    "nice' -- you cannot direct it. Reply with exactly: UNCLEAR\n\n"
-    "Reply with the prompt and nothing else.\n\n"
-    "Examples\n"
-    "Request: a cat on a chair\n"
-    "A tabby cat with dense grey-brown fur lies curled on a worn oak chair, "
-    "one paw tucked under its chin, tail hanging over the seat edge. Late "
-    "afternoon sun comes low through a window to the left, warming the "
-    "chair's arm and throwing a long soft shadow across the floorboards. "
-    "Close, slightly above eye level, the room falling away out of focus "
-    "behind. Oil on canvas, visible brushwork.\n\n"
-    "Request: a pictuer of a hous at nite\n"
-    "A narrow brick house stands at the end of a wet street at night, paint "
-    "flaking from its window frames, one upstairs light burning behind a thin "
-    "curtain. The road is black and mirror-slick, holding the orange smear of "
-    "a streetlamp just out of frame. Shot from across the road at standing "
-    "height, the house small in a wide, quiet frame. Photographic, long "
-    "exposure, grain in the shadows.\n\n"
-    "Request: make it look better\n"
-    "UNCLEAR\n"
-)
-
-
-# The same job for a clip. A video model is steered by what *moves*: a still
-# scene description tells it nothing about motion, and the result drifts or
-# sits frozen. Camera and subject motion are the two levers that matter, and
-# both have to be gradual -- these models cover a second or two, so anything
-# that reads like a cut or a fast pan comes out as a smear.
-MOTION_DIRECTION_SYSTEM = (
-    "You make a video request precise. You do not invent a scene.\n\n"
-    "Rules, in order of importance:\n"
-    "1. Never introduce a thing the request does not already contain. No new "
-    "objects, no new people, no new places.\n"
-    "2. Keep every thing the request does name.\n"
-    "3. Make what is already there specific, and say how it moves. These "
-    "clips last a second or two, so motion is gradual: drifting, settling, "
-    "rising, swaying. Never 'suddenly', 'quickly' or 'explodes'. No cuts, no "
-    "scene changes.\n"
-    "4. Never write 'cinematic', 'stunning', 'high quality' or '4k'.\n"
-    "5. If you are told what the picture shows, the clip starts from that "
-    "picture: say how what is already there moves, and introduce nothing it "
-    "does not contain.\n"
-    "6. If the request names no thing at all, reply with exactly: UNCLEAR\n\n"
-    "Reply with the rewritten request on one line and nothing else.\n\n"
-    "Examples\n"
-    "Request: steam from a teapot\n"
-    "steam rising from a glazed stoneware teapot, thinning and drifting "
-    "slowly to the right\n\n"
-    "Request: make it move\n"
-    "UNCLEAR\n"
-)
-
-# Words that carry no intent, so their presence proves nothing about whether a
-# rewrite kept the user's meaning.
+# Words that carry no intent, so `_significant` leaves them out.
 _STOPWORDS = {
     "a", "an", "the", "it", "its", "this", "that", "make", "change", "to", "into",
     "of", "and", "or", "is", "are", "be", "please", "with", "for", "in", "on",
     "my", "me", "i", "want", "add", "more", "less", "very", "some", "all",
 }
-
-# References that only make sense if you can see the picture.
-_VAGUE = ("it", "this", "that", "them", "these", "those", "the image",
-          "the picture", "the photo")
-
-
-# Words that can only be attributes -- how a thing looks, not another thing.
-# A clarification is allowed to add these freely; anything else it adds is a
-# new object, which is the failure this guards against.
-_ATTRIBUTE_HINTS = (
-    "ed", "ing", "ish", "less", "en", "y",   # worn, faded, greying, reddish
-)
-
-# How much longer a clarification may reasonably be than the request.
-#
-# These caps were set to stop the model writing its own scene from nothing,
-# and measured against eight ordinary requests they rejected five good
-# rewrites -- "a red car with sun-faded paint and a dented wing, water running
-# down the windows" was thrown away for being too long. A three word request
-# becoming twenty-five words is not the model overreaching, it is the entire
-# reason someone pressed the button.
-#
-# The case they were guarding against is now caught earlier and better: a
-# request that names nothing returns UNCLEAR before any of this runs, and the
-# retention check below still guarantees nothing the user asked for is lost.
-# So these are loose, and retention does the real work.
-# Direction, not paraphrase. A four-word request becoming seventy words of
-# subject, light, framing and medium is the whole job now, not evidence of
-# overreach -- so the ceiling is a sanity bound on runaway output rather than a
-# limit on richness. Retention below is what keeps the rewrite honest.
-_MAX_EXPANSION = 60
-
-# How many more things a clarification may name than the request did. Enough
-# that a bowl of ramen may have its broth, noodles, egg and nori -- which was
-# rejected outright before -- while a request that comes back naming a dozen
-# unrelated objects is still refused.
-# Likewise. An art direction names the room, the window, the light and the
-# floor; counting those as "new things" and refusing is how the enhancer ended
-# up writing thirteen words when it was asked for a picture.
-_MAX_NEW_THINGS = 20
-
 
 # Endings English adds to a word that is still the same word. Ordered longest
 # first so "running" loses "ing" rather than "g".
@@ -1455,68 +1307,6 @@ def _stem(word: str) -> str:
             break
     # "carries" -> "carri" -> "carry" territory: normalise the trailing i.
     return w[:-1] + "y" if w.endswith("i") else w
-
-
-# Why a rewrite was not offered, in words a person can act on. The reason
-# matters: "your prompt was already fine" and "I wrote something worse than
-# yours" are different facts, and reporting the first when the second is true
-# is what makes this feature look like it does nothing.
-_WHY_REJECTED = {
-    "dropped": "The rewrite lost something you asked for, so it was not used.",
-    "lost_intent": "The rewrite drifted away from what you asked for.",
-    "too_long": "The rewrite invented far more than you described.",
-    "rejected": "The rewrite added things you did not ask for.",
-    "empty": "The writer returned nothing usable.",
-}
-
-
-def _added_words(original: str, improved: str) -> list[str]:
-    """Significant words the rewrite introduced.
-
-    Shown so a proposal can be read at a glance instead of diffed by eye. Only
-    words that carry content -- the point is to answer "what did it add?",
-    which is the first thing anyone asks of a suggestion.
-    """
-    had = {_stem(w) for w in _significant(original)}
-    seen: set[str] = set()
-    out: list[str] = []
-    for w in _significant(improved):
-        st = _stem(w)
-        if st in had or st in seen:
-            continue
-        seen.add(st)
-        out.append(w)
-    return out
-
-
-def _first_line(raw: str) -> str:
-    """The line of a reply that is the answer, not the preamble."""
-    for candidate in raw.strip().splitlines():
-        candidate = candidate.strip().strip("`").strip()
-        if not candidate or candidate.lower().startswith(("request:", "here", "sure")):
-            continue
-        return candidate.rstrip(" .,;") + "."
-    return ""
-
-
-def _clean_prompt_request(text: str) -> tuple[str, list[str]]:
-    """Remove prompt folklore that does not describe visible content.
-
-    This runs before the writer, not after it, so the intent guard evaluates
-    only meaningful words and does not reject a better prompt merely because
-    it correctly dropped "8k" or "masterpiece".
-    """
-    cleaned = text
-    removed: list[str] = []
-    for phrase in sorted(_EMPTY_MODIFIERS, key=len, reverse=True):
-        pattern = re.compile(r"(?<![\w-])" + re.escape(phrase) + r"(?![\w-])",
-                             re.IGNORECASE)
-        if pattern.search(cleaned):
-            removed.append(phrase)
-            cleaned = pattern.sub("", cleaned)
-    cleaned = re.sub(r"\s*[,;]\s*(?=[,;]|$)", "", cleaned)
-    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ,;.-")
-    return cleaned, removed
 
 
 def _edits(a: str, b: str) -> int:
@@ -1670,224 +1460,6 @@ def _misspelling_of(typed: str, candidate: str) -> bool:
         and _edits(typed, candidate) <= limit
 
 
-# Words that carry no subject of their own, for the retention check only.
-#
-# Two kinds. The medium -- "picture", "photo", "drawing" -- is not a thing in
-# the scene: "a pictuer of a hous" and "a photograph of a house" are the same
-# request, and insisting the rewrite keep the word "picture" rejects the
-# correction. And pronouns and auxiliaries, because "me and him was walking"
-# becoming "two people walking" is the grammar fix being asked for, not a loss.
-_NOT_A_SUBJECT = {
-    "picture", "pictur", "pic", "photo", "photograph", "image", "img",
-    "drawing", "draw", "painting", "paint", "render", "shot", "art",
-    "artwork", "illustration", "wallpaper",
-    "him", "her", "his", "hers", "she", "he", "they", "them", "their",
-    "was", "were", "been", "has", "had", "have", "did", "does", "doing",
-    "walking",
-    # Words people instruct with rather than describe with. "my dog but make
-    # him look like a king" is four content words and five of these, and
-    # counting them as things the rewrite lost refused every rendering of it.
-    "but", "look", "looks", "looking", "like", "make", "makes", "making",
-    "turn", "turns", "into", "show", "shows", "want", "wants", "kind",
-    "sort", "type", "style", "version", "also", "then", "just", "really",
-    # And the placeholders for a thing not yet named. A request built on one
-    # is still a request -- "something scary in an old house" is a house --
-    # and UNCLEAR above already catches the case where it is the *only* thing.
-    "something", "somthing", "anything", "stuff", "things", "thing",
-}
-
-
-def _dropped_words(original: str, line: str) -> list[str]:
-    """Significant words in the request that the rewrite does not carry.
-
-    The comparison is by stem and by prefix in both directions, so "rise" and
-    "rises" agree, and "rainy" is satisfied by "rain".
-    """
-    # Whole words as well as stems: the dictionary check has to see "sitting",
-    # not the stem "sitt", to know it is a word.
-    line_words = [g.lower() for g in _significant(line)]
-    kept = {_stem(g) for g in line_words}
-    out: list[str] = []
-    for w in _significant(original):
-        word = w.lower()
-        # The medium is not a subject, misspelled or not: "a pictuer of a
-        # hous" and "a photograph of a house" are the same request.
-        if any(word == n or _misspelling_of(word, n) for n in _NOT_A_SUBJECT):
-            continue
-        stem = _stem(word)
-        # A prefix match with no bound on the difference is not a stem match,
-        # it is "starts with the same letters" -- and a longer word that starts
-        # with the same letters is a different thing, not an inflection of this
-        # one. Unbounded, the check accepted every one of these as intact:
-        #
-        #   a cat on a chair    -> a catalogue on a chair
-        #   a red car           -> a red cardigan
-        #   a man on a boat     -> a mango on a boat
-        #   2 red cars          -> three red carts
-        #
-        # which is exactly what `_misspelling_of` below exists to stop, arrived
-        # at from the other side: cat -> hat is caught and cat -> catalogue was
-        # not.
-        #
-        # One letter, not zero. Zero fails two of this file's own tests: "a man
-        # runs" against "running", and the inflection cases in
-        # `RepairDroppedWords`. That leaves one substitution still accepted --
-        # "cars" against "carts", which agree after stemming to within a letter
-        # -- and one letter of slack is the price of not calling every English
-        # verb a dropped word. The bound is the tested contract; the residue is
-        # known and is not claimed to be closed.
-        if any(stem == k
-               or ((k.startswith(stem) or stem.startswith(k))
-                   and abs(len(k) - len(stem)) <= 1)
-               for k in kept):
-            continue
-        # A corrected spelling is the same word, not a missing one.
-        if any(_misspelling_of(word, g) for g in line_words):
-            continue
-        out.append(w)
-    return out
-
-
-def _repair_dropped(original: str, line: str) -> str | None:
-    """Put back what the rewrite left out, rather than throwing it away.
-
-    A rewrite that drops a word is usually a paraphrase, not a deletion: asked
-    for "a rainy street" the writer returns wet asphalt and slick pavement and
-    never says rain. Rejecting that loses a good description over a word that
-    is arguably still there, and the user sees their prompt come back
-    unchanged and concludes the feature does nothing.
-
-    So the missing words are appended and the result re-checked. The wording
-    is plainer than the model's own, which is the right trade: the picture has
-    to contain what was asked for, and no amount of better prose is worth
-    losing it.
-    """
-    missing = _dropped_words(original, line)
-    # A word whose near-spelling is already in the rewrite is not missing, it
-    # is disagreed with: asked for a cat "setting" on a chair the writer wrote
-    # "sitting", which is almost certainly what was meant. Appending the
-    # original produced "...sitting on a worn oak chair, setting." -- the word
-    # dangling off the end, meaning nothing, in every rewrite that corrected a
-    # homophone. Better to leave it rejected and show the attempt, so the
-    # choice between "setting" and "sitting" is made by the person who typed
-    # it rather than by a string that satisfies a check.
-    written = [g.lower() for g in _significant(line)]
-    if any(_edits(w.lower(), g) <= 2 and w.lower()[:1] == g[:1]
-           and len(g) >= 5 for w in missing for g in written):
-        return None
-    if not missing or len(missing) > 2:
-        # One word missing is a paraphrase; two is a paraphrase with a
-        # compound in it. Three or more is the rewrite ignoring a clause --
-        # "an old bicycle against a brick wall" coming back as a bicycle --
-        # and pasting the clause on the end would paper over exactly the
-        # failure this check exists to catch. Those are still rejected, and
-        # the caller draws again instead.
-        return None
-    fixed = line.rstrip(" .,;") + ", " + " ".join(missing) + "."
-    return fixed if not _dropped_words(original, fixed) else None
-
-
-def _clarified(original: str, raw: str) -> str | None:
-    """The rewrite, or None. Callers that need to know why use the pair."""
-    return _clarified_with_reason(original, raw)[0]
-
-
-def _clarified_with_reason(original: str, raw: str) -> tuple[str | None, str]:
-    """Take the model's rewrite, or reject it.
-
-    Returns the rewrite and why it was or was not accepted. The reason
-    matters to the caller: "unclear" is a fact about the request and the user
-    can act on it, while every other rejection is a fact about the *rewrite* --
-    the request was fine and the model's answer was not. Reporting those as
-    "this does not say what to draw yet" tells people their prompt is broken
-    when it is not, which is worse than saying nothing at all.
-
-    The old version answered vague requests by inventing a subject -- "make it
-    look better" produced a painting in a dark room with a large window, none
-    of which the user had asked for -- and with a T5 encoder every invented
-    noun is something the image actually contains.
-    """
-    line = ""
-    for candidate in raw.strip().splitlines():
-        candidate = candidate.strip().strip("`").strip()
-        # Models like to preface. Take the first line that is the answer.
-        if not candidate or candidate.lower().startswith(("request:", "here", "sure")):
-            continue
-        line = candidate
-        break
-    if not line:
-        return None, "empty"
-    if line.strip().upper().startswith("UNCLEAR"):
-        return None, "unclear"
-
-    # Deliberately not trimmed to a sentence. The model was asked for one
-    # line, and that trim falls back to the last clause when there is no full
-    # stop -- which cut "a tabby cat..., curled on a worn oak chair" at the
-    # comma, deleting the chair and failing the retention check below.
-    line = line.rstrip(" .,;") + "."
-    if not _keeps_intent(original, line):
-        return None, "lost_intent"
-
-    # A word the rewrite no longer says is reported, not refused.
-    #
-    # This used to reject. It made rephrasing impossible: "me and him was
-    # walking in forrest" cannot become good English without losing "him" and
-    # "was", and "a pictuer of a hous" cannot be fixed without losing
-    # "pictuer". The guard made sense when the rewrite was applied the instant
-    # it existed -- silently swapping the user's words was worth preventing.
-    # It is now shown for approval with the changes named, so vetoing a good
-    # rewrite on behalf of someone who can see it is the wrong call. The
-    # subject test above still refuses a rewrite about something else.
-    dropped = _dropped_words(original, line)
-    # The same filtered view retention uses. Taken raw, the head word of
-    # "somthing scary in a old hosue" is "somthing" -- a placeholder for a
-    # thing not yet named -- and every rewrite that named one was refused for
-    # not repeating it.
-    kept = [w for w in _significant(original)
-            if not any(w.lower() == n or _misspelling_of(w.lower(), n)
-                       for n in _NOT_A_SUBJECT)]
-    # Losing a modifier is rephrasing. Losing the subject is a different
-    # picture. "a cat on a chair" coming back as "a hat rests on a chair" keeps
-    # the chair and passes any test that asks whether *some* of the request
-    # survived, so the head word is checked by name and a rewrite that loses
-    # half of what was asked for is refused however well it reads.
-    head_lost = bool(kept) and kept[0].lower() in {w.lower() for w in dropped}
-    if dropped and (head_lost or len(dropped) * 2 >= len(kept)):
-        return None, "dropped"
-    log_reason = "rephrased" if dropped else "ok"
-
-    # A rewrite far longer than the request is inventing, not clarifying.
-    # The floor matters as much as the ratio: "a teapot" is one significant
-    # word, and naming its glaze, its spout and its wear is a legitimate
-    # clarification that a ratio alone would reject.
-    if len(_significant(line)) > max(90, _MAX_EXPANSION * len(_significant(original))):
-        return None, "too_long"
-
-    # Length alone cannot tell a described teapot from a list of furniture.
-    # Each "a ..." is another thing in the picture, so counting them catches
-    # what the ratio cannot: adding attributes keeps the count flat, while
-    # inventing objects drives it up one article at a time.
-    def things(text: str) -> int:
-        return len(re.findall(r"\b(?:a|an|the)\s+[a-z]", text.lower()))
-
-    if things(line) - things(original) > _MAX_NEW_THINGS:
-        return None, "rejected"
-
-    # A count alone cannot separate a described room from a list of its
-    # contents: an eighty-word direction legitimately names the coat, the
-    # window, the lamp and the floor. What separates them is shape. "a cat, a
-    # book, a window, a rug, a fireplace, a lamp..." is almost entirely
-    # article-noun pairs, while a direction spends most of its words on what
-    # those things look like and how they are lit.
-    density = things(line) / max(1, len(_significant(line)))
-    if things(line) > 6 and density > 0.45:
-        return None, "rejected"
-    # "rephrased" when the wording moved off the user's words, "ok" when it did
-    # not. Both are accepted; the caller names the difference so the person
-    # approving it can see what changed.
-    return line, log_reason
-
-
 def _carries(part: str, text: str) -> bool:
     """Whether `text` still says what `part` said.
 
@@ -1896,9 +1468,6 @@ def _carries(part: str, text: str) -> bool:
     but not by "a narrow kitchen, dark green walls". Used on the one field at a
     time, because that is the grain at which a brief loses the story: it keeps
     the room and drops the thing happening in it.
-
-    Deliberately not `_keeps_intent`, which asks whether *any* word survived
-    and so can never fail on a real paragraph.
     """
     wanted = [_stem(w) for w in _significant(part)]
     if not wanted:
@@ -1923,23 +1492,27 @@ SAME_REQUEST_SYSTEM = (
 
 def _same_request(req_id: str, original: str, rewritten: str,
                   writer: str | None) -> bool:
-    """Ask the writer whether a rewrite it cannot be string-matched to still holds.
+    """Ask the writer whether a rewrite the checks could not place still holds.
 
-    The literal checks cannot see that "a golden retriever in a velvet robe
-    and a gold crown" is "my dog but make him look like a king" -- it repeats
-    neither "dog" nor "king". Refusing on that basis threw away exactly the
-    rewrites worth having, because the better the rephrasing the fewer of the
-    original words it repeats.
+    The constraint checks in `prompt_assist` are literal on purpose, and the
+    soft ones -- the writer's own list, the subject, a camera word -- are the
+    ones a good paraphrase trips: "a golden retriever in a velvet robe" is "my
+    dog but make him look like a king" without repeating "dog". So when only
+    those fail, this is asked once. It is never asked to excuse quoted text, a
+    count, a negation, a colour binding or a pace; those are the losses a
+    model judging its own rewrite is known to wave through.
 
-    Costs one short answer. Wrong answers fail closed: anything that is not a
-    clear SAME leaves the rewrite refused and shown for approval, which is
-    where a literal failure sent it anyway.
+    Sixteen tokens rather than six: a thinking writer's template can spend a
+    few on an empty reasoning block before the verdict, and a verdict cut to
+    "SA" fails closed for no reason. Anything but a clear SAME fails closed.
     """
+    import prompt_assist
+
     try:
         verdict = _write(
             req_id, SAME_REQUEST_SYSTEM,
             f"Original: {original}\nRewrite: {rewritten}",
-            max_tokens=6, temperature=0.0, repo=writer,
+            max_tokens=16, temperature=0.0, repo=writer,
             label="Checking the rewrite",
         )
     except Cancelled:
@@ -1951,45 +1524,7 @@ def _same_request(req_id: str, original: str, rewritten: str,
     except Exception as exc:
         log(req_id, f"could not check the rewrite: {exc}", "warn")
         return False
-    return verdict.strip().upper().startswith("SAME")
-
-
-def _keeps_intent(original: str, rewritten: str) -> bool:
-    """A rewrite that loses the request is worse than no rewrite.
-
-    Matched on four-character prefixes, which a typo defeats: "hosue" and
-    "house" share three. So a misspelled request whose rewrite spelled it
-    correctly read as a rewrite about something else, and the correction was
-    thrown away for being one -- the same bug the retention check had, in the
-    one place it had not been fixed.
-
-    This is a floor, not a guarantee: one surviving word passes it. The check
-    that every content word survived is `_carries`, and this is deliberately
-    not that. What this stops is a rewrite about something else entirely.
-
-    Its prefix match is deliberately left unbounded, unlike the one in
-    `_dropped_words`. Bounding it by length was tried and does not work here:
-    "red" -> "reddish" is a legitimate four-letter growth and "man" -> "mango"
-    is a two-letter substitution, so no length threshold separates them. The
-    place to catch a swapped subject is `_dropped_words`, which compares
-    stems -- and it does.
-    """
-    def words(text: str) -> set[str]:
-        cleaned = "".join(c.lower() if c.isalnum() else " " for c in text)
-        return {w for w in cleaned.split()
-                if len(w) > 2 and w not in _STOPWORDS and w not in _NOT_A_SUBJECT}
-
-    wanted = words(original)
-    if not wanted:
-        return True
-    got = words(rewritten)
-    return any(
-        any(w.startswith(g[:4]) or g.startswith(w[:4]) or _misspelling_of(w, g)
-            for g in got)
-        for w in wanted
-    )
-
-
+    return prompt_assist.strip_think(verdict).upper().startswith("SAME")
 
 
 ASSIST_MAX_EDGE = 512
@@ -2032,211 +1567,6 @@ def _significant(text: str) -> list[str]:
     """
     cleaned = "".join(c.lower() if c.isalnum() else " " for c in text)
     return [w for w in cleaned.split() if len(w) > 2 and w not in _STOPWORDS]
-
-
-def _parse_scene(text: str) -> dict[str, str]:
-    """Pull the labelled facts out of the model's answer.
-
-    Tolerant on purpose: a small model will drop a line, change the case, or
-    wrap the whole thing in prose. Anything missing simply is not used.
-    """
-    facts: dict[str, str] = {}
-    for line in (text or "").splitlines():
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        key = key.strip().strip("-*# ").upper()
-        value = " ".join(value.split()).strip(" .")
-        if key in ("SUBJECT", "SURFACE", "LIGHT", "SETTING",
-                   "ACTION", "MOTION", "CAMERA", "MOOD") and value:
-            if value.lower() in ("unknown", "n/a", "none", "skip", "-"):
-                continue
-            # Guard against an answer that turns into a paragraph.
-            facts[key] = " ".join(value.split()[:12])
-    return facts
-
-
-def _compose_edit_instruction(user_prompt: str, subject: str) -> str:
-    """Build the edit instruction from the user's own words.
-
-    Deliberately not a rewrite. Asking a small model to restate an instruction
-    after showing it a picture meant it mixed the picture's details into the
-    request and sometimes replaced the request altogether -- "make it blue"
-    came back as "remove the background". The model is now asked only what the
-    subject is; the sentence is assembled here, so the user's wording survives
-    literally and their intent cannot be substituted.
-    """
-    text = user_prompt.strip().rstrip(".")
-    if not text:
-        return text
-    if not subject:
-        return f"{text}, keeping everything else in the picture unchanged."
-
-    # Replace the first standalone pronoun with what the picture actually
-    # shows. Word boundaries matter: a naive search matches inside "it" in
-    # "white", and index arithmetic across a padded copy silently shifts by one.
-    pronoun = re.compile(r"\b(it|this|that|them|these|those)\b", re.IGNORECASE)
-    if pronoun.search(text):
-        text = pronoun.sub(subject, text, count=1)
-    else:
-        # No pronoun to resolve. Name the subject only when the request does
-        # not already say what it applies to.
-        significant = [w.lower() for w in subject.split() if len(w) > 3]
-        if not any(w in text.lower() for w in significant):
-            text = f"{text} on {subject}"
-
-    # Collapse any double spaces the substitution introduced.
-    text = " ".join(text.split())
-    return f"{text}, keeping everything else in the picture unchanged."
-
-
-EDIT_CLARIFY_SYSTEM = (
-    "You make an image-editing request unambiguous. You are told what the "
-    "picture contains. You use that only to say exactly which thing the "
-    "request means.\n\n"
-    "Rules, in order of importance:\n"
-    "1. Change nothing about what is being asked for. If the request says "
-    "make it red, the result is still red.\n"
-    "2. Use the observations only to replace a vague reference with a "
-    "specific one. 'the jacket' becomes 'the green field jacket' when the "
-    "picture shows a green field jacket.\n"
-    "3. Ignore every observation the request does not refer to. If the "
-    "request is about a jacket, the wall, the floor and the lighting are "
-    "irrelevant and must not appear.\n"
-    "4. Add nothing else. No new objects, no style, no mood, no camera.\n"
-    "5. End with 'leave everything else unchanged.'\n\n"
-    "Reply with the rewritten instruction on one line and nothing else.\n\n"
-    "Examples\n"
-    "Observed: subject: a green field jacket; setting: a grey wall\n"
-    "Request: make the jacket red\n"
-    "change the green field jacket to red, leave everything else unchanged.\n\n"
-    "Observed: subject: a beige ceramic teapot; surface: a linen cloth\n"
-    "Request: remove the lid\n"
-    "remove the lid from the beige ceramic teapot, leave everything else "
-    "unchanged.\n"
-)
-
-
-def _clarify_edit(req_id: str, user_prompt: str, facts: dict[str, str],
-                  writer: str | None = None) -> tuple[str, str, str]:
-    """Rewrite an edit request using what the picture shows.
-
-    The picture is there to settle *which* thing is meant, and nothing more.
-    The previous version pasted every observation into a template, so "make the
-    jacket red" came back carrying the wall, the floor and the fabric weave --
-    detail the editor never needed and, worse, was now being told to preserve.
-
-    Returns the instruction to use, why the rewrite was or was not taken, and
-    the line the writer actually produced. The reason used to be dropped here:
-    a rejected rewrite came back indistinguishable from a request that needed
-    no work, so `op_assist` answered "Nothing to add." after having tried one
-    and thrown it away.
-    """
-    if not facts:
-        return _enrich_edit_instruction(user_prompt, facts), "composed", ""
-
-    observed = "; ".join(f"{k.lower()}: {v}" for k, v in facts.items())
-    try:
-        raw = _write(
-            req_id, EDIT_CLARIFY_SYSTEM,
-            f"Observed: {observed}\nRequest: {user_prompt}",
-            max_tokens=120, temperature=0.2, repo=writer,
-        )
-    except Cancelled:
-        # See `_same_request`: a cancelled write is not an unavailable writer,
-        # and treating it as one composed an instruction and went on working.
-        raise
-    except Exception as exc:
-        log(req_id, f"writer unavailable, composing directly: {exc}", "warn")
-        return _enrich_edit_instruction(user_prompt, facts), "composed", ""
-
-    line, why = _clarified_with_reason(user_prompt, raw)
-    # A rewrite that lost the request, or that the writer refused, is worse
-    # than the plain request: the user's own words already say what they want.
-    # The reason travels out with it so the caller can report a rejection as
-    # one rather than as a request that was already good enough.
-    return (line or user_prompt), why, _first_line(raw)
-
-
-def _enrich_edit_instruction(user_prompt: str, facts: dict[str, str]) -> str:
-    """Deepen the request with what the picture shows, without replacing it.
-
-    The user's words lead the sentence and are never paraphrased. What the
-    model observed is appended as context to preserve, which is the part an
-    editor actually needs: told only "make it blue", it is free to discard the
-    glaze, the lighting and the backdrop along the way.
-    """
-    head = _compose_edit_instruction(user_prompt, facts.get("SUBJECT", ""))
-    if not facts:
-        return head
-
-    # Drop the generic tail; the specific one below replaces it.
-    head = head.replace(", keeping everything else in the picture unchanged.", "")
-
-    def conflicts(fact: str) -> bool:
-        """Is the user already asking to change this?
-
-        Told "put it on a dark wooden table", appending "leaving the linen
-        cloth unchanged" instructs the editor to preserve the exact thing being
-        replaced. A preservation hint that contradicts the request is worse
-        than no hint, so anything the request touches is left out.
-        """
-        request = set(_significant(user_prompt))
-        return bool(request & set(_significant(fact)))
-
-    # Words naming the parts of a scene, so "move it to a table" is understood
-    # to be about the setting even when it shares no word with the observation.
-    SETTING_WORDS = {"background", "behind", "table", "floor", "wall", "surface",
-                     "scene", "setting", "backdrop", "place", "put", "move"}
-    LIGHT_WORDS = {"light", "lighting", "shadow", "bright", "dark", "dim",
-                   "sunlit", "exposure", "glow"}
-    SURFACE_WORDS = {"texture", "material", "finish", "glossy", "matte",
-                     "smooth", "rough", "shiny"}
-
-    request_words = set(_significant(user_prompt)) | set(user_prompt.lower().split())
-
-    preserve = []
-    for key, guard in (("SURFACE", SURFACE_WORDS), ("LIGHT", LIGHT_WORDS)):
-        fact = facts.get(key)
-        if fact and not conflicts(fact) and not (request_words & guard):
-            preserve.append(fact)
-
-    keep = facts.get("SETTING")
-    if keep and (conflicts(keep) or (request_words & SETTING_WORDS)):
-        keep = None
-
-    clauses = [head]
-    if preserve:
-        clauses.append("preserving its " + " and ".join(preserve))
-    if keep:
-        clauses.append(f"and leaving {keep} unchanged")
-    elif preserve:
-        clauses.append("and leaving the rest of the picture unchanged")
-    else:
-        clauses.append("keeping everything else in the picture unchanged")
-    return ", ".join(clauses).replace(", and ", " and ") + "."
-
-
-# Words that promise quality without describing anything. They survive from
-# Stable Diffusion prompting, where they acted as style tokens; on a T5 encoder
-# they consume attention and contribute nothing.
-# Words that describe a wish rather than a picture. Removing them before the
-# rewrite keeps the intent guard honest: it should judge whether the subject
-# survived, not whether "8k" did.
-#
-# Deliberately narrow. "beautiful", "professional" and "perfect" were in this
-# list and are not folklore -- they modify the subject. "a professional
-# kitchen" is a kind of kitchen, "a beautiful ruin" is a judgement the picture
-# has to carry, and deleting them changed what was asked for while reporting
-# that nothing had been removed. Only terms that name a rendering target, an
-# award, or a resolution belong here.
-_EMPTY_MODIFIERS = (
-    "masterpiece", "best quality", "high quality", "highly detailed",
-    "ultra detailed", "ultra realistic", "8k", "4k", "uhd", "hdr",
-    "award winning", "award-winning", "trending on artstation",
-    "artstation", "unreal engine", "octane render",
-)
-
 
 
 # --------------------------------------------------------------------------
@@ -4581,7 +3911,10 @@ def op_shotlist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
 # together. It is a stamp on the reply, so a log, a bug report or a saved
 # response says which contract it was written against rather than leaving the
 # reader to infer it from which fields happen to be present.
-ASSIST_REPLY_VERSION = 1
+#
+# 2: variants, goal, target model, the constraints held, and what the reader
+# saw with where it is.
+ASSIST_REPLY_VERSION = 2
 
 # Every field of an assist reply, and what it means when nothing set it.
 #
@@ -4609,6 +3942,15 @@ _ASSIST_DEFAULTS: dict[str, Any] = {
     "dropped": [],
     "corrected": [],
     "removed": [],
+    # Version 2.
+    "goal": "enhance",
+    "mode": "generate",
+    "target_label": "",
+    "variants": [],
+    "locked": [],
+    "regions": [],
+    "target_region": "",
+    "released": "",
 }
 
 
@@ -4631,25 +3973,49 @@ def _assist_reply(prompt: str, original: str, **fields: Any) -> dict[str, Any]:
     }
 
 
+def _public_variant(v: dict[str, Any]) -> dict[str, Any]:
+    """A variant as the interface sees it: no matcher internals."""
+    return {"kind": v["kind"], "label": v["label"], "prompt": v["prompt"],
+            "additions": v["additions"], "missing": v["missing"],
+            "reworded": v.get("reworded", [])}
+
+
 def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
-    """Rewrite a prompt, optionally looking at the image being edited."""
+    """Help with a prompt: variants written for the model it is going to.
+
+    The request says which model will read the prompt (`target`), whether it
+    is a new picture, an edit or a clip (`mode`), and what the person wants
+    from the help (`goal`): a fuller description, the same request said
+    clearly, or stylistic alternatives. The writing and the checking live in
+    `prompt_assist`; this loads models, stages the picture and builds the
+    reply.
+    """
+    import prompt_assist as pa
+
     # An explicit null means the reader is not installed. Absent means the
     # caller did not care and the default applies. The distinction matters:
     # without it, a missing reader would fall back to the default repo and
     # fail at load time instead of degrading to a text-only rewrite.
     repo = req.get("assistant", "mlx-community/Qwen2-VL-2B-Instruct-4bit")
+    writer = req.get("writer")
     original_prompt = (req.get("prompt") or "").strip()
     if not original_prompt:
         raise ValueError("write something first, then ask for help improving it")
-    user_prompt, removed = _clean_prompt_request(original_prompt)
+    mode = req.get("mode") if req.get("mode") in pa.MODES else "generate"
+    goal = req.get("goal") if req.get("goal") in pa.GOALS else "enhance"
+    target = req.get("target") or {}
+    profile = pa.profile_for(mode, target.get("id"), target.get("family"))
+    target_label = target.get("name") or pa.PROFILES[profile]["label"]
+    common = {"goal": goal, "mode": mode, "target_label": target_label}
+
+    user_prompt, removed = pa.clean_request(original_prompt)
     if not user_prompt:
         return _assist_reply(
             original_prompt, original_prompt,
-            unclear=True, outcome="unclear", removed=removed,
+            unclear=True, outcome="unclear", removed=removed, **common,
             note="Name something visible instead of quality labels.",
         )
 
-    mode = req.get("mode", "generate")
     # Sources normally arrive sealed as `vault_inputs`, which are decrypted to
     # temporary files this function owns and deletes. `images` carries a
     # plaintext path the caller owns, so it is kept apart: everything in
@@ -4663,272 +4029,134 @@ def op_assist(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
     # files this function actually created may be deleted on the way out.
     derived = [p for p in staged if p not in direct and p not in raw_staged]
     try:
-        # Both of these read the picture first. An edit needs to know which
-        # jacket is meant; a clip starting from a photograph needs to know
-        # what is in it before it can say how it moves.
-        # The writer is text-only -- Qwen3 has no vision encoder at all -- so
-        # reading a picture is the reader's job and nothing else can stand in
-        # for it. When the reader is absent the rewrite still happens, just
-        # from the words alone, which is far more use than refusing.
-        can_read = bool(repo)
-        # An edit is an edit whether or not anything can look at the picture.
-        #
-        # This used to require a staged image and an installed reader, so an
-        # edit request with no reader fell through to the `else` below and was
-        # handed the scene-direction system prompt -- the one that writes a
-        # fresh picture from nothing. That is the opposite of what was asked
-        # for, on the one request where the user has already said exactly what
-        # they want changed about a picture that exists.
-        #
-        # The edit path does not need the reader. `_clarify_edit` composes the
-        # instruction from the user's own words and, handed no facts, returns
-        # them with "keeping everything else in the picture unchanged" and no
-        # inference at all -- which is the conservative answer, and the right
-        # one when nothing has seen the picture.
-        editing = mode == "edit"
-        looking = bool(staged) and can_read
-        animating = mode == "video" and looking
-        blind = bool(staged) and not can_read
-
-        def ask(text: str, images: list[str], max_tokens: int, temperature: float) -> str:
-            # Only the picture-reading path needs the vision model, and it is
-            # loaded here rather than up front so a plain text request never
-            # pays for it.
-            #
-            # The import belongs here for the same reason the load does. It sat
-            # at the top of this function, so every text-only rewrite -- which
-            # is most of them, and now every edit made without a reader --
-            # imported mlx_vlm and its dependencies before writing a word.
-            from mlx_vlm import generate as vlm_generate
-            from mlx_vlm.prompt_utils import apply_chat_template
-
-            model, processor, config = _load_assistant(req_id, repo)
-            formatted = apply_chat_template(
-                processor, config, text, num_images=len(images)
-            )
-            out = vlm_generate(
-                model, processor, formatted, images or None,
-                max_tokens=max_tokens, temperature=temperature, verbose=False,
-            )
-            return out if isinstance(out, str) else getattr(out, "text", str(out))
-
-        description = ""
-        if editing:
-            # One narrow question: what is this? The instruction itself is
-            # composed from the user's words, not written by the model.
-            #
-            # Asked only when there is a picture and something to read it with.
-            # With no facts the composer does not guess: it keeps the words as
-            # given and says the rest of the picture is unchanged.
-            facts: dict[str, str] = {}
-            if looking:
-                emit({"id": req_id, "type": "progress", "phase": "denoise",
-                      "progress": None, "message": "Looking at your picture"})
-                raw = ask(SCENE_SYSTEM, staged, 90, 0.1)
-                facts = _parse_scene(raw)
-                description = " · ".join(
-                    f"{k.lower()}: {v}" for k, v in facts.items())
-                log(req_id, f"scene: {description or 'nothing readable'}")
-            improved, why, attempt = _clarify_edit(req_id, user_prompt, facts,
-                                                   req.get("writer"))
-            if why not in ("ok", "composed"):
-                # The rewrite was tried and thrown away, which is a fact about
-                # the rewrite and not about the request. Said here because the
-                # reason used to stop at `_clarify_edit`: this path returned
-                # the untouched request with no `outcome` at all, the
-                # interface's fallback chain read that as "your words were
-                # already fine", and the answer to a failed rewrite was
-                # "Nothing to add."
-                log(req_id,
-                    f"edit rewrite rejected ({why}); keeping the request",
-                    "warn")
-                return _assist_reply(
-                    original_prompt, original_prompt,
-                    saw_image=bool(staged) and not blind,
-                    # What the cleaner stripped before anything was judged.
-                    # Absent from every rejection reply, so a rejected rewrite
-                    # handed back the original with its folklore intact and no
-                    # sign that a cleaned version had ever existed -- which is
-                    # the one fact explaining why a rewrite was attempted.
-                    removed=removed,
-                    outcome="rewrite_rejected",
-                    description=description, rejected_because=why,
-                    # What it wrote, so the choice is the user's. The edit
-                    # checks are the same literal ones as below, so the text
-                    # they refuse is often the text that was wanted.
-                    attempt=attempt,
-                    note=_WHY_REJECTED.get(
-                        why, "Your words were kept: the rewrite drifted from "
-                             "them. Try again, or add a detail yourself."),
-                )
-        else:
+        # Only an edit or a clip from a picture reads it. The writer is
+        # text-only, so reading is the reader's job and nothing else can stand
+        # in for it; with no reader the help still runs from the words, and
+        # says so rather than pretending to have looked.
+        looked = False
+        regions: list[dict[str, str]] = []
+        if staged and repo and mode in ("edit", "video"):
             emit({"id": req_id, "type": "progress", "phase": "denoise",
-                  "progress": None, "message": "Writing the prompt"})
-            system = (MOTION_DIRECTION_SYSTEM if mode == "video"
-                      else SCENE_DIRECTION_SYSTEM)
-            seen = ""
-            if animating:
-                # What the picture holds, so the motion belongs to it rather
-                # than to the words alone.
-                emit({"id": req_id, "type": "progress", "phase": "denoise",
-                      "progress": None, "message": "Looking at your picture"})
-                facts = _parse_scene(ask(SCENE_SYSTEM, staged, 90, 0.1))
-                seen = "; ".join(f"{k.lower()}: {v}" for k, v in facts.items())
-                description = seen
-            # The writer, not the picture-reader: this is a writing task.
-            raw = _write(req_id, system,
-                         (f"The picture shows: {seen}\n" if seen else "")
-                         + f"Request: {user_prompt}",
-                         # Room to actually write. The default of 160 tokens is
-                         # about 120 words, so a fielded prompt was being cut
-                         # off mid-sentence and then judged on the fragment.
-                         max_tokens=420, temperature=0.6,
-                         repo=req.get("writer"), label="Improving the prompt")
-            improved, why = _clarified_with_reason(user_prompt, raw)
-            if improved is None and why in ("dropped", "lost_intent"):
-                # Ask before repairing. The string comparison could not place
-                # it, and the better the rephrasing the fewer of the original
-                # words it repeats -- so this is precisely where the literal
-                # checks reject the rewrites worth having. "my dog but make
-                # him look like a king" rendered as a golden retriever on a
-                # marble throne repeats neither "dog" nor "king".
-                attempt = _first_line(raw)
-                if attempt and _same_request(req_id, user_prompt, attempt,
-                                             req.get("writer")):
-                    log(req_id, f"{why} by the letter, same request by the "
-                                f"writer's own reading; keeping it")
-                    improved, why = attempt, "rephrased"
-            if improved is None and why == "dropped":
-                # Only now, and it shows: repairing appends the missing word to
-                # the end of the sentence, so the prompt finishes "...atop a
-                # marble throne, his fur catching the light, king." It is worth
-                # having when the alternative is losing the request, and worth
-                # avoiding whenever the reading above can settle it instead.
-                repaired = _repair_dropped(user_prompt, _first_line(raw))
-                if repaired:
-                    log(req_id, f"rewrite dropped a word; repaired to {repaired!r}")
-                    improved, why = repaired, "repaired"
-            if improved is None and why not in ("unclear", "empty"):
-                # The rewrite was rejected, not the request. These checks are
-                # deliberately literal -- they are what stops "an old bicycle
-                # against a brick wall" coming back as a bicycle -- so a good
-                # paraphrase gets caught too: "a rainy street" rendered as
-                # "wet" and "slick" loses the word "rainy" while keeping the
-                # picture. Sampling is the difference, so it is worth one more
-                # draw at a lower temperature before giving up.
-                log(req_id, f"rewrite rejected ({why}); trying once more",
-                    "warn")
-                raw = _write(req_id, system,
-                             (f"The picture shows: {seen}\n" if seen else "")
-                             + f"Request: {user_prompt}",
-                             max_tokens=420, temperature=0.25,
-                             repo=req.get("writer"),
-                             label="Improving the prompt")
-                improved, why = _clarified_with_reason(user_prompt, raw)
-            if improved is None and why in ("dropped", "lost_intent"):
-                # Again on the second draw. The first pass adjudicated and the
-                # retry did not, so a rewrite that was right both times was
-                # refused on the second -- the one that actually reaches the
-                # user.
-                attempt = _first_line(raw)
-                if attempt and _same_request(req_id, user_prompt, attempt,
-                                             req.get("writer")):
-                    log(req_id, "second draw reads as the same request; keeping it")
-                    improved, why = attempt, "rephrased"
-            if improved is None:
-                if why == "unclear":
-                    # A fact about the request: it names nothing that could be
-                    # drawn. Inventing a subject to fill the gap is what made
-                    # this useless before.
-                    return _assist_reply(
-                        original_prompt, original_prompt,
-                        saw_image=bool(staged) and not blind,
-                        unclear=True,
-                        outcome="unclear", description=description,
-                        removed=removed,
-                        note=("This does not say what to draw yet. Name "
-                              "the thing you want and I can make it "
-                              "specific."),
-                    )
-                # Everything else is a fact about the *rewrite*, not the
-                # request: it drifted, dropped something, or ran long. The
-                # request was fine, so it is kept as written rather than the
-                # user being told their prompt is the problem.
-                log(req_id, f"rewrite rejected ({why}); keeping the request",
-                    "warn")
-                return _assist_reply(
-                    original_prompt, original_prompt,
-                    saw_image=bool(staged) and not blind,
-                    # What the cleaner stripped before anything was judged. See
-                    # the edit rejection above: without it the user is handed
-                    # back their folklore with no sign a cleaned version existed.
-                    removed=removed,
-                    outcome="rewrite_rejected",
-                    description=description, rejected_because=why,
-                    # What it wrote, so a rejection is a choice rather than a
-                    # loss. This path had no `attempt` at all, so the whole
-                    # rewrite was discarded in silence -- and the checks here
-                    # are literal by design, which means the text they refuse
-                    # is often the one the user wanted. Asked for a cat
-                    # "setting" on a chair the writer says "sitting", which is
-                    # certainly what was meant and cannot be proven so by any
-                    # string comparison. Show it and let them decide.
-                    attempt=_first_line(raw),
-                    note=_WHY_REJECTED.get(
-                        why, "Your words were kept: the rewrite drifted from "
-                             "them. Try again, or add a detail yourself."),
-                )
+                  "progress": None, "message": "Looking at your picture"})
+            regions = pa.parse_regions(
+                _read_picture(req_id, repo, staged, pa.READER_SYSTEM))
+            looked = True
+            log(req_id, "picture: " + ("; ".join(
+                pa.describe_region(r) for r in regions) or "nothing readable"))
+        target_region = pa.resolve_target(user_prompt, regions) \
+            if mode == "edit" else None
 
-        if not _keeps_intent(user_prompt, improved):
-            log(req_id, f"discarding rewrite {improved!r}: it lost the request", "warn")
-            return _assist_reply(
-                original_prompt, original_prompt,
-                saw_image=bool(staged) and not blind,
-                # See the rejection above: without this the user is handed back
-                # their folklore with no sign a cleaned version existed.
-                removed=removed,
-                outcome="rewrite_rejected", rejected_because="lost_intent",
-                attempt=improved,
-                note=_WHY_REJECTED["lost_intent"],
-                description=description)
+        locked = pa.extract_constraints(user_prompt)
+        system = pa.system_prompt(goal, mode, profile, looked=looked,
+                                  has_picture=bool(staged))
+        user = pa.user_message(user_prompt, locked, regions, target_region, mode)
+        budget = pa.token_budget(goal, profile, user_prompt)
+        # Said in the reply, because the person will pay for it on their next
+        # run: the writer and the generator are never resident together, so
+        # whatever was loaded is released here and loads again after.
+        released = CACHE.label if CACHE.loaded is not None else ""
+
+        def write(temperature: float) -> str:
+            return _write(req_id, system, user, max_tokens=budget,
+                          temperature=temperature, repo=writer,
+                          label="Writing the prompt", preview=pa.preview)
+
+        def same(rewritten: str) -> bool:
+            return _same_request(req_id, user_prompt, rewritten, writer)
+
+        emit({"id": req_id, "type": "progress", "phase": "denoise",
+              "progress": None, "message": "Writing the prompt"})
+        result = pa.propose(write, same, user_prompt, goal, mode, locked,
+                            target_region, log=lambda m: log(req_id, m))
     finally:
         # Never `staged`: it may hold a path the caller owns.
         _discard_staged(derived)
         _discard_staged(raw_staged)
 
-    changed = improved.strip() != original_prompt.strip()
+    held = [c["text"] for c in result.get("checks") or locked if c["hard"]]
+    context = {
+        **common,
+        "saw_image": looked,
+        "regions": [pa.describe_region(r) for r in regions],
+        "target_region": pa.describe_region(target_region) if target_region else "",
+        "description": " · ".join(pa.describe_region(r) for r in regions),
+        "removed": removed,
+        "locked": held,
+        "released": released,
+    }
+    blind = ""
+    if mode == "edit" and not looked:
+        # Plainly, and first: the old reply to an edit without a reader was a
+        # scene invented around the request, presented as a proposal.
+        blind = ("Your picture was not looked at -- the picture reader is not "
+                 "installed -- so this only tidies your words. Add the reader "
+                 "from Models to have it name what is where."
+                 if staged else
+                 "No picture was given, so this only tidies your words.")
+    elif mode == "video" and staged and not looked:
+        blind = ("Your starting picture was not looked at -- the picture "
+                 "reader is not installed -- so the motion is written from "
+                 "your words alone.")
+
+    if result.get("unclear"):
+        return _assist_reply(
+            original_prompt, original_prompt, unclear=True, outcome="unclear",
+            **context,
+            note=("This does not say what to draw yet. Name the thing you want "
+                  "and I can make it specific."))
+
+    variants = result["variants"]
+    best = pa.primary(variants, goal)
+    if best is None:
+        log(req_id, f"no usable reply after {result['calls']} writes", "warn")
+        return _assist_reply(
+            original_prompt, original_prompt, outcome="rewrite_rejected",
+            rejected_because="empty", **context,
+            note=" ".join(x for x in (
+                blind, "The writer returned nothing usable. Try again.") if x))
+
+    same_text = all(" ".join(v["prompt"].split()).rstrip(".").lower()
+                    == user_prompt.rstrip(".").lower() for v in variants)
+    if same_text:
+        return _assist_reply(
+            original_prompt, original_prompt, outcome="already_specific",
+            variants=[_public_variant(v) for v in variants], **context,
+            note=blind)
+
+    notes = [blind] if blind else []
+    if best["missing"]:
+        # Offered anyway, with the loss named. The person can see the
+        # suggestion and the gap together and decide; throwing it away would
+        # decide for them, and the checks are literal enough to be wrong.
+        notes.append("Check before using: this version no longer says "
+                     + ", ".join(best["missing"]) + ".")
     return _assist_reply(
-        improved, original_prompt,
-        saw_image=bool(staged) and not blind, description=description,
-        removed=removed, changed=changed,
-        # Every reply says which of these happened, so the interface never has
-        # to guess from whether the text came back the same. "Yours was already
-        # fine" and "I tried and the result was worse" look identical
-        # otherwise, and saying the first when the second is true is why this
-        # feature reads as doing nothing.
-        outcome="proposal" if changed else "already_specific",
-        added=_added_words(original_prompt, improved),
-        # Spellings it fixed, named so they are visible rather than slipped in.
-        # The retention check used to count a corrected word as a lost one and
-        # throw the whole rewrite away, so an enhancer that could not fix a
-        # typo was the entire behaviour anyone saw.
-        corrected=_corrections(original_prompt, improved),
-        # Words the rewrite no longer says. Reported rather than refused: a
-        # request cannot be put into good English without losing some of the
-        # words it was typed in, and the person approving the rewrite can see
-        # for themselves whether the one it dropped mattered.
-        #
-        # Diffed against the prompt that was judged, not the one that was
-        # typed. Against the typed one, every word the cleaner had already
-        # stripped came back a second time as a word the rewrite had dropped --
-        # "a masterpiece 8k cat" reported `removed: [masterpiece, 8k]` and
-        # `dropped: [masterpiece]`, and the interface drew both as the same red
-        # chip. The user was told one word had been deliberately removed and
-        # accidentally lost.
-        dropped=_dropped_words(user_prompt, improved),
-        note=("Rewritten from your words only. Install the prompt assistant "
-              "(1.2 GiB) if you want it to look at the picture as well."
-              if blind else ""))
+        best["prompt"], original_prompt, changed=True, outcome="proposal",
+        variants=[_public_variant(v) for v in variants],
+        added=best["additions"],
+        dropped=best["missing"],
+        # Spellings it fixed, named so they are visible rather than slipped
+        # in. Against the cleaned prompt: a word the cleaner stripped is
+        # reported once, under `removed`, not again as a change.
+        corrected=_corrections(user_prompt, best["prompt"]),
+        note=" ".join(notes), **context)
+
+
+def _read_picture(req_id: str, repo: str, images: list[str], question: str) -> str:
+    """One question to the picture reader.
+
+    Imported and loaded here rather than up front so a text-only request
+    never pays for the vision model or its libraries.
+    """
+    from mlx_vlm import generate as vlm_generate
+    from mlx_vlm.prompt_utils import apply_chat_template
+
+    model, processor, config = _load_assistant(req_id, repo)
+    formatted = apply_chat_template(processor, config, question,
+                                    num_images=len(images))
+    out = vlm_generate(model, processor, formatted, images or None,
+                       max_tokens=160, temperature=0.1, verbose=False)
+    return out if isinstance(out, str) else getattr(out, "text", str(out))
 
 
 def op_unload_assistant(req_id: str, _req: dict[str, Any]) -> dict[str, Any]:

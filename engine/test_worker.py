@@ -79,30 +79,6 @@ class DropNamed(unittest.TestCase):
         self.assertIsNone(worker._drop_named({"width": 512}, "out of memory"))
 
 
-class KeepsIntent(unittest.TestCase):
-    """A rewrite that loses the request is worse than no rewrite.
-
-    A 2B model handed an image will sometimes describe the picture instead of
-    following the instruction, turning "make it blue" into "remove the
-    background". Performing a *different* edit silently is the worst outcome.
-    """
-
-    def test_rejects_a_rewrite_that_dropped_the_request(self):
-        self.assertFalse(worker._keeps_intent("make it blue", "remove the background."))
-
-    def test_accepts_a_faithful_rewrite(self):
-        self.assertTrue(worker._keeps_intent(
-            "make it blue", "change the teapot to blue, keeping the cloth unchanged"))
-
-    def test_tolerates_inflection(self):
-        self.assertTrue(worker._keeps_intent("make it red", "turn the jacket reddish"))
-
-    def test_ignores_filler_words(self):
-        # "make"/"it"/"the" carry no intent, so matching only those is not enough.
-        self.assertFalse(worker._keeps_intent("add a hat", "make the image better"))
-
-
-
 class SplitGenKwargs(unittest.TestCase):
     def test_required_and_optional_are_separated(self):
         req = {"prompt": "x", "steps": 4, "guidance": 3.5, "width": 512}
@@ -218,140 +194,6 @@ class Staging(unittest.TestCase):
             leftovers = [f for f in os.listdir(worker._stage_dir())
                          if f.startswith(entry["id"])]
             self.assertEqual(leftovers, [], "conversion left a file behind")
-
-
-
-
-class EditInstruction(unittest.TestCase):
-    """The user's wording must survive verbatim.
-
-    Letting a 2B model restate an instruction after showing it a picture meant
-    it folded the picture's details into the request, and sometimes replaced
-    the request outright. The sentence is now assembled from the user's own
-    words; the model only supplies a subject noun.
-    """
-
-    def test_pronoun_is_resolved_to_the_subject(self):
-        out = worker._compose_edit_instruction("make it blue", "a beige ceramic teapot")
-        self.assertIn("blue", out)
-        self.assertIn("teapot", out)
-        self.assertNotIn(" it ", f" {out} ")
-        # Word boundaries: substitution must not run words together or leave
-        # double spaces, both of which broke an earlier index-based version.
-        self.assertNotIn("  ", out)
-        self.assertTrue(out.startswith("make a beige ceramic teapot blue"), out)
-
-    def test_does_not_match_inside_another_word(self):
-        out = worker._compose_edit_instruction("make the white parts warmer", "a jacket")
-        self.assertIn("white", out, "a pronoun search matched inside 'white'")
-
-    def test_users_own_words_are_preserved(self):
-        for request in ("add steam coming out", "remove the handle",
-                        "make the lid gold"):
-            out = worker._compose_edit_instruction(request, "a teapot")
-            first = request.split()[0]
-            self.assertTrue(out.lower().startswith(first),
-                            f"{out!r} did not begin with {request!r}")
-
-    def test_intent_cannot_be_replaced(self):
-        # Whatever the subject, the request has to still be in there.
-        out = worker._compose_edit_instruction("make it blue", "a car in a field at night")
-        self.assertIn("blue", out, "the actual request was lost")
-
-    def test_says_what_to_leave_alone(self):
-        out = worker._compose_edit_instruction("make it red", "a jacket")
-        self.assertIn("unchanged", out)
-
-    def test_works_without_a_subject(self):
-        out = worker._compose_edit_instruction("brighten the sky", "")
-        self.assertTrue(out.lower().startswith("brighten the sky"))
-
-
-
-
-class Enhancement(unittest.TestCase):
-    """Deepen the request; never replace it.
-
-    The instruction has to keep working as an instruction: the user's words
-    lead, and what the picture shows is appended as context to preserve.
-    """
-
-    FACTS = {
-        "SUBJECT": "a beige ceramic teapot",
-        "SURFACE": "smooth glazed stoneware",
-        "LIGHT": "soft daylight from the left",
-        "SETTING": "crumpled linen cloth, pale wall",
-    }
-
-    def test_request_leads_and_survives(self):
-        out = worker._enrich_edit_instruction("make it blue", self.FACTS)
-        self.assertTrue(out.lower().startswith("make a beige ceramic teapot blue"), out)
-        self.assertIn("blue", out)
-
-    def test_image_facts_are_added_as_context(self):
-        out = worker._enrich_edit_instruction("make it blue", self.FACTS)
-        self.assertIn("glazed stoneware", out)
-        self.assertIn("daylight", out)
-        self.assertIn("linen", out)
-
-    def test_degrades_to_the_plain_instruction(self):
-        out = worker._enrich_edit_instruction("make it blue", {})
-        self.assertIn("make it blue", out)
-        self.assertIn("unchanged", out)
-
-    def test_partial_facts_are_fine(self):
-        out = worker._enrich_edit_instruction("add steam", {"SUBJECT": "a teapot"})
-        self.assertIn("add steam", out)
-        self.assertIn("teapot", out)
-
-    def test_scene_parsing_tolerates_mess(self):
-        facts = worker._parse_scene(
-            "Here you go:\n"
-            "- SUBJECT: a red car\n"
-            "surface: glossy paint\n"
-            "LIGHT: unknown\n"
-            "SETTING: a wet street\n"
-        )
-        self.assertEqual(facts.get("SUBJECT"), "a red car")
-        self.assertEqual(facts.get("SURFACE"), "glossy paint")
-        self.assertNotIn("LIGHT", facts, "'unknown' should be dropped, not used")
-
-
-
-class NoContradiction(unittest.TestCase):
-    """Never ask the editor to preserve what the user asked to change.
-
-    Told "put it on a dark wooden table", appending "leaving the linen cloth
-    unchanged" instructs the model to keep the exact thing being replaced.
-    """
-
-    FACTS = {
-        "SUBJECT": "a beige ceramic teapot",
-        "SURFACE": "smooth glazed stoneware",
-        "LIGHT": "soft daylight from the left",
-        "SETTING": "crumpled linen cloth, pale wall",
-    }
-
-    def test_setting_is_not_preserved_when_it_is_the_target(self):
-        for request in ("put it on a dark wooden table",
-                        "change the background to a forest",
-                        "move it to the floor"):
-            out = worker._enrich_edit_instruction(request, self.FACTS)
-            self.assertNotIn("linen", out, f"contradicted itself for {request!r}: {out}")
-
-    def test_lighting_is_not_preserved_when_it_is_the_target(self):
-        out = worker._enrich_edit_instruction("make the lighting darker", self.FACTS)
-        self.assertNotIn("daylight", out, out)
-
-    def test_surface_is_not_preserved_when_it_is_the_target(self):
-        out = worker._enrich_edit_instruction("give it a rough matte finish", self.FACTS)
-        self.assertNotIn("glazed", out, out)
-
-    def test_unrelated_request_still_gets_the_context(self):
-        out = worker._enrich_edit_instruction("make it blue", self.FACTS)
-        self.assertIn("glazed stoneware", out)
-        self.assertIn("linen", out)
-
 
 
 
@@ -531,79 +373,6 @@ class SuggestedAlternatives(unittest.TestCase):
             worker._drop_named(opt, "'guidance' is not a parameter of this route."),
             "guidance")
 
-
-
-class Clarification(unittest.TestCase):
-    """Making a request precise is not the same as writing a scene.
-
-    The old enhancer was told it was "directing a photograph", so it invented
-    one: "make it look better" came back as a painting in a dark room with a
-    large window, none of which the user had asked for. With a T5 encoder
-    every invented noun is something the picture actually contains.
-    """
-
-    def test_a_request_that_names_nothing_is_refused(self):
-        self.assertIsNone(worker._clarified("make it look better", "UNCLEAR"))
-        self.assertIsNone(worker._clarified("something nice", "  unclear  "))
-
-    def test_an_inflected_verb_still_counts_as_kept(self):
-        # "rises" and "rising" share three letters, and a four-letter prefix
-        # decided the word had been dropped -- so a correct rewrite of any
-        # prompt containing a verb was thrown away.
-        for original, rewrite in (
-            ("steam rises from the teapot", "steam rising from a glazed teapot"),
-            ("a man runs", "a man running along a wet road"),
-            ("she moves closer", "she moving closer, one hand out"),
-            ("leaves fall", "leaves falling through cold air"),
-            ("he carries a bag", "he carrying a canvas bag"),
-        ):
-            with self.subTest(original=original):
-                self.assertIsNotNone(worker._clarified(original, rewrite))
-
-    def test_a_dropped_subject_is_rejected(self):
-        # "an old bicycle against a brick wall" came back without the wall.
-        self.assertIsNone(worker._clarified(
-            "an old bicycle against a brick wall",
-            "an old bicycle with a rusted steel frame"))
-
-    def test_everything_named_is_kept(self):
-        out = worker._clarified(
-            "a cat on a chair",
-            "a tabby cat with dense grey-brown fur, curled on a worn oak chair")
-        self.assertIsNotNone(out)
-        self.assertIn("cat", out)
-        self.assertIn("chair", out)
-
-    def test_a_whole_invented_paragraph_is_rejected(self):
-        # Far longer than the request means it stopped clarifying.
-        bloat = ("a cat, a book, a window, a rug, a fireplace, a lamp, a vase, "
-                 "a painting, a bookshelf, a rocking chair, a cushion, a blanket, "
-                 "a teapot, a clock, a mirror, a plant, a basket, a candle")
-        self.assertIsNone(worker._clarified("a cat", bloat))
-
-    def test_a_preamble_is_skipped(self):
-        out = worker._clarified(
-            "a red car",
-            "Sure! Here is the rewrite:\na red car with sun-faded paint")
-        self.assertEqual(out, "a red car with sun-faded paint.")
-
-    def test_a_short_request_may_still_expand(self):
-        # One significant word legitimately expands; a ratio alone rejected it.
-        out = worker._clarified(
-            "a teapot",
-            "a glazed stoneware teapot with a chipped spout and crazed white glaze")
-        self.assertIsNotNone(out)
-
-    def test_empty_quality_labels_are_removed_before_rewriting(self):
-        cleaned, removed = worker._clean_prompt_request(
-            "masterpiece, 8k, a red bicycle, highly detailed")
-        self.assertEqual(cleaned, "a red bicycle")
-        self.assertEqual(set(removed), {"masterpiece", "8k", "highly detailed"})
-
-    def test_quality_cleanup_keeps_descriptive_content(self):
-        cleaned, _ = worker._clean_prompt_request(
-            "a weathered red bicycle against a brick wall")
-        self.assertEqual(cleaned, "a weathered red bicycle against a brick wall")
 
 
 class ShotListParsing(unittest.TestCase):
@@ -1039,111 +808,6 @@ class MemoryHeadroom(unittest.TestCase):
             self.assertLess(worker._free_ram_gib(), worker._MIN_FREE_GIB, str(e))
 
 
-class EnhancerMayRephrase(unittest.TestCase):
-    """Losing a word is reported; losing the subject is still refused.
-
-    Retention used to reject any rewrite that dropped a word, which made
-    rephrasing impossible: "me and him was walking in forrest" cannot become
-    good English without losing "him" and "was". It is shown for approval now,
-    with the changes named, so vetoing a good rewrite on behalf of someone who
-    can see it is the wrong call.
-    """
-
-    def test_a_modifier_may_be_rephrased_away(self):
-        out, why = worker._clarified_with_reason(
-            "a red car in the rain at night",
-            "A red sedan sits in rain at night, wet asphalt reflecting a lamp.")
-        self.assertIsNotNone(out)
-        self.assertEqual(why, "rephrased")
-        self.assertIn("car", worker._dropped_words(
-            "a red car in the rain at night",
-            "A red sedan sits in rain at night, wet asphalt reflecting a lamp."))
-
-    def test_the_subject_may_not_be(self):
-        # "a cat on a chair" keeps the chair, so any test asking whether *some*
-        # of the request survived passes it. The head word is checked by name.
-        for typed, rewrite in [
-            ("a cat on a chair", "A hat rests on a chair."),
-            ("a dog in the snow", "A log lies in the snow."),
-        ]:
-            out, why = worker._clarified_with_reason(typed, rewrite)
-            self.assertIsNone(out, f"{typed!r} -> {rewrite!r} was accepted")
-            self.assertEqual(why, "dropped")
-
-    def test_losing_half_the_request_is_refused(self):
-        out, _ = worker._clarified_with_reason(
-            "an old bicycle against a brick wall", "A bicycle leans in a yard.")
-        self.assertIsNone(out, "the wall was dropped and it passed")
-
-    def test_instruction_words_are_not_things_to_keep(self):
-        # "my dog but make him look like a king" is four content words and five
-        # of these; counting them as lost refused every rendering of it.
-        for w in ("but", "look", "like", "make", "turn", "into", "something"):
-            self.assertIn(w, worker._NOT_A_SUBJECT)
-
-    def test_a_placeholder_is_not_a_word_to_keep(self):
-        # "somthing scary in a old hosue" names a house. Treating the
-        # placeholder as a thing the rewrite had to repeat refused every
-        # rendering of it.
-        lost = worker._dropped_words(
-            "somthing scary in a old hosue",
-            "A derelict Victorian house looms in fog, boarded windows, door ajar.")
-        self.assertNotIn("somthing", lost)
-        self.assertNotIn("hosue", lost, "the spelling fix read as a loss")
-
-    def test_a_mood_word_rendered_as_detail_goes_to_the_adjudicator(self):
-        # "scary" becoming fog, boarding and an open door is the translation
-        # being asked for, and no string comparison can see it. The literal
-        # layer refuses, and op_assist asks the writer whether it is still the
-        # same request -- which is the only thing that can answer.
-        out, why = worker._clarified_with_reason(
-            "somthing scary in a old hosue",
-            "A derelict Victorian house looms in fog, boarded windows, door ajar.")
-        self.assertIsNone(out)
-        self.assertEqual(why, "dropped")
-        self.assertIn("SAME", worker.SAME_REQUEST_SYSTEM)
-        self.assertIn("DIFFERENT", worker.SAME_REQUEST_SYSTEM)
-
-    def test_a_misspelling_no_longer_reads_as_a_different_request(self):
-        # `_keeps_intent` matched four-character prefixes, and "hosue" and
-        # "house" share three -- so correcting the spelling looked like
-        # changing the subject.
-        self.assertTrue(worker._keeps_intent(
-            "a hosue at nite", "A house at night, one window lit."))
-
-    def test_a_list_of_objects_is_still_refused(self):
-        # A count cannot separate a described room from a list of its contents;
-        # an eighty-word direction legitimately names several things. Shape can:
-        # a list is almost entirely article-noun pairs.
-        out, why = worker._clarified_with_reason(
-            "a cat on a chair",
-            "a cat, a chair, a book, a window, a rug, a fireplace, a lamp, "
-            "a vase, a painting, a bookshelf, a cushion, a blanket, a clock.")
-        self.assertIsNone(out)
-        self.assertEqual(why, "rejected")
-
-    def test_a_long_direction_is_not(self):
-        out, why = worker._clarified_with_reason(
-            "a cat on a chair",
-            "A tabby cat with dense grey-brown fur lies curled on a worn oak "
-            "chair, one paw tucked under its chin, tail hanging over the seat "
-            "edge. Late afternoon sun comes low through a window to the left, "
-            "warming the chair's arm and throwing a long soft shadow across "
-            "the floorboards. Oil on canvas, visible brushwork.")
-        self.assertIsNotNone(out, f"a real direction was refused as {why}")
-
-    def test_the_instruction_asks_for_direction_not_paraphrase(self):
-        system = worker.SCENE_DIRECTION_SYSTEM
-        for field in ("SUBJECT", "COMPOSITION", "LIGHT", "STYLE"):
-            self.assertIn(field, system)
-        self.assertIn("rephrase freely", system)
-        self.assertIn("UNCLEAR", system)
-        # The rule that made it timid. It said "Never introduce a thing the
-        # request does not already contain", which is why a four-word request
-        # came back as thirteen words with no light and no framing.
-        self.assertNotIn("Never introduce a thing", system)
-
-
 class EnhancerFixesSpelling(unittest.TestCase):
     """The thing anyone means by "enhancer", which it could not do.
 
@@ -1172,18 +836,7 @@ class EnhancerFixesSpelling(unittest.TestCase):
         ("a horse in a field", "a house in a field"),
     ]
 
-    def test_a_corrected_spelling_is_not_a_lost_word(self):
-        for typed, rewrite in self.TYPOS:
-            out, why = worker._clarified_with_reason(typed, rewrite)
-            self.assertIsNotNone(out, f"{typed!r} rejected as {why}")
 
-    def test_a_different_word_is_still_a_lost_word(self):
-        # Two earlier attempts at this were worse than the bug. Plain edit
-        # distance let "a cat on a chair" come back as "a hat on a chair" and
-        # called it a spelling fix.
-        for typed, rewrite in self.SWAPS:
-            out, _ = worker._clarified_with_reason(typed, rewrite)
-            self.assertIsNone(out, f"{typed!r} -> {rewrite!r} was accepted")
 
     def test_a_real_word_is_never_a_misspelling_of_another(self):
         self.assertFalse(worker._misspelling_of("horse", "house"))
@@ -1208,19 +861,7 @@ class EnhancerFixesSpelling(unittest.TestCase):
         self.assertIn(["hous", "house"], pairs)
         self.assertIn(["nite", "night"], pairs)
 
-    def test_a_disagreed_word_is_not_appended_as_nonsense(self):
-        # Appending the dropped word produced "...sitting on a worn oak chair,
-        # setting." -- dangling off the end, meaning nothing, on every rewrite
-        # that corrected a homophone.
-        self.assertIsNone(worker._repair_dropped(
-            "a cat setting on a chair",
-            "a tabby cat with dense fur, sitting on a worn oak chair"))
 
-    def test_a_paraphrase_is_still_repaired(self):
-        fixed = worker._repair_dropped(
-            "a rainy street", "a wet street, slick asphalt under grey light")
-        self.assertIsNotNone(fixed)
-        self.assertIn("rainy", fixed)
 
 
 class ComicBindsIntoOneFile(unittest.TestCase):
@@ -1541,161 +1182,6 @@ class DivisionSurvivesAnImperfectWriter(unittest.TestCase):
         self.assertEqual(len(panels), 3)
 
 
-class EnhancerAcceptsGoodRewrites(unittest.TestCase):
-    """The validators must not throw away work the model got right.
-
-    Measured against eight ordinary requests, the expansion caps rejected five
-    good rewrites -- "a red car with sun-faded paint and a dented wing, water
-    running down the windows" was refused for being too long. A three word
-    request becoming twenty-five words is the reason someone pressed the
-    button, not evidence the model overreached. Retention stays strict; the
-    caps do not.
-    """
-
-    def test_a_short_request_may_expand_a_long_way(self):
-        out, why = worker._clarified_with_reason(
-            "a bowl of ramen",
-            "a bowl of ramen with clear broth, pale yellow noodles, a soft white "
-            "egg floating in the centre, and dark strips of nori resting on the rim.")
-        self.assertEqual(why, "ok", f"rejected as {why}")
-        self.assertIsNotNone(out)
-
-    def test_detail_added_to_a_named_subject_is_kept(self):
-        out, why = worker._clarified_with_reason(
-            "a red car in the rain at night",
-            "a red car with sun-faded paint and a dented wing, sitting in a "
-            "puddled parking lot at night, rain sliding down the windows.")
-        self.assertEqual(why, "ok", f"rejected as {why}")
-
-    def test_what_the_user_wrote_still_has_to_survive(self):
-        # The loosened caps must not weaken the guarantee that matters.
-        out, why = worker._clarified_with_reason(
-            "an old bicycle against a brick wall",
-            "an ornate bronze sundial on a lawn, with a stone birdbath beside it.")
-        self.assertIsNone(out, "a rewrite about something else was accepted")
-
-    def test_every_outcome_has_a_name(self):
-        # The interface reports what happened rather than inferring it from
-        # whether the text came back unchanged.
-        for why in ("dropped", "lost_intent", "too_long", "rejected", "empty"):
-            self.assertIn(why, worker._WHY_REJECTED, f"{why} has no explanation")
-
-
-class CleanPromptRequest(unittest.TestCase):
-    """The cleaner must remove folklore, not meaning.
-
-    It removed "beautiful", "professional" and "perfect", which modify the
-    subject: "a professional kitchen" is a kind of kitchen and "a beautiful
-    ruin" is a judgement the picture has to carry. Worse, the removal happened
-    before the intent guard, so the guard never saw the words and the reply
-    said nothing had been taken out. Video prompts go through the same path.
-    """
-
-    def test_folklore_goes(self):
-        for text, gone in (
-            ("a harbour at dawn, 8k, masterpiece", {"8k", "masterpiece"}),
-            ("a fox, trending on artstation", {"trending on artstation"}),
-            ("a street, ultra detailed, unreal engine",
-             {"ultra detailed", "unreal engine"}),
-        ):
-            cleaned, removed = worker._clean_prompt_request(text)
-            self.assertEqual(set(removed), gone, text)
-            for g in gone:
-                self.assertNotIn(g, cleaned.lower())
-
-    def test_words_that_modify_the_subject_stay(self):
-        for text in (
-            "a professional kitchen",
-            "a beautiful ruin at dusk",
-            "perfect symmetry in a stairwell",
-            "a stunning view over the bay",
-            "an amazing race through the market",
-            "a gorgeous tiled floor",
-        ):
-            cleaned, removed = worker._clean_prompt_request(text)
-            self.assertEqual(cleaned, text, f"{text!r} was altered")
-            self.assertEqual(removed, [], f"{text!r} reported removals")
-
-    def test_a_prompt_of_pure_folklore_is_left_for_the_caller(self):
-        cleaned, removed = worker._clean_prompt_request("masterpiece, 8k, hdr")
-        self.assertEqual(cleaned, "")
-        self.assertTrue(removed)
-
-
-class RepairDroppedWords(unittest.TestCase):
-    """A paraphrase is repaired; a deletion is not.
-
-    Rejecting a rewrite because it said "wet" instead of "rainy" hands the
-    user back their own prompt unchanged, and they reasonably conclude the
-    feature does nothing. Pasting a whole missing clause back on, though,
-    papers over the failure the retention check exists to catch.
-    """
-
-    def test_one_paraphrased_word_is_put_back(self):
-        out = worker._repair_dropped(
-            "a woman on a rainy street",
-            "a woman in a navy coat walking on a wet city street.")
-        self.assertIsNotNone(out)
-        self.assertIn("rainy", out)
-        self.assertIn("navy coat", out, "the description must survive the repair")
-        self.assertEqual(worker._dropped_words("a woman on a rainy street", out), [])
-
-    def test_a_dropped_clause_is_still_rejected(self):
-        # The rewrite lost the wall entirely. Three words is not a paraphrase.
-        out = worker._repair_dropped(
-            "an old bicycle against a brick wall",
-            "an old bicycle with a rusted steel frame and cracked tires.")
-        self.assertIsNone(out, "a deleted clause must not be pasted back on")
-
-    def test_nothing_missing_is_not_a_repair(self):
-        self.assertIsNone(worker._repair_dropped(
-            "a tabby cat on a chair",
-            "a tabby cat curled on a worn oak chair."))
-
-    def test_dropped_words_understands_inflection(self):
-        self.assertEqual(
-            worker._dropped_words("the sun rises", "the sun rising over water."), [])
-        self.assertEqual(
-            worker._dropped_words("a rainy street", "rain falling on the street."), [])
-
-
-class ClarifyReasons(unittest.TestCase):
-    """A rejected rewrite is not a vague request.
-
-    `_clarified` collapsed six different outcomes into None, and op_assist
-    reported all of them as "this does not say what to draw yet". So a request
-    that named a subject perfectly well was blamed for the model's bad answer.
-    """
-
-    def test_unclear_is_reported_as_unclear(self):
-        _, why = worker._clarified_with_reason("make it better", "UNCLEAR")
-        self.assertEqual(why, "unclear")
-
-    def test_a_dropped_noun_is_blamed_on_the_rewrite(self):
-        # The request names a wall; the rewrite loses it.
-        out, why = worker._clarified_with_reason(
-            "an old bicycle against a brick wall",
-            "a rusted old bicycle leaning on its kickstand.")
-        self.assertIsNone(out)
-        self.assertNotEqual(why, "unclear",
-                            "a dropped noun must not be called a vague request")
-
-    def test_a_good_rewrite_is_accepted(self):
-        out, why = worker._clarified_with_reason(
-            "a tabby cat on a chair",
-            "a tabby cat curled on a worn oak chair.")
-        self.assertEqual(why, "ok")
-        self.assertIsNotNone(out)
-        self.assertIn("cat", out)
-        self.assertIn("chair", out)
-
-    def test_the_old_name_still_returns_just_the_text(self):
-        self.assertIsNone(worker._clarified("make it better", "UNCLEAR"))
-        self.assertIsInstance(
-            worker._clarified("a tabby cat on a chair",
-                              "a tabby cat curled on a worn oak chair."), str)
-
-
 class AssistOwnsOnlyWhatItMade(unittest.TestCase):
     """op_assist must never delete a file the caller owns.
 
@@ -1841,15 +1327,13 @@ class PanelFidelity(unittest.TestCase):
             self.assertTrue(worker._carries(self.SUBJECT, brief), brief)
 
     def test_a_brief_that_lost_the_moment_is_caught(self):
-        # Every one of these passed `_keeps_intent`, which is why it is not
-        # the check for this: it asks whether *any* word survived.
+        # Every one of these keeps *some* word of the panel, which is why an
+        # any-word check was never the check for this.
         for brief in (
             "A narrow kitchen, dark green walls, bare oak boards, one window.",
             "Warm hallway light falling across a narrow flat.",
             "A kitchen.",
         ):
-            self.assertTrue(worker._keeps_intent(
-                f"medium shot. {self.SUBJECT}. {self.ACTION}. a narrow kitchen", brief))
             self.assertFalse(worker._carries(self.ACTION, brief), brief)
 
     def test_carries_is_not_defeated_by_inflection(self):
@@ -2822,11 +2306,10 @@ class OneHelperIsResidentAtATime(unittest.TestCase):
 class CancelIsNotAFailedCheck(unittest.TestCase):
     """Pressing Cancel was swallowed and the job carried on.
 
-    Both helpers sit behind a bare `except Exception`, which is right for a
+    The SAME check sits behind a bare `except Exception`, which is right for a
     missing writer and wrong for `Cancelled`: caught there it became an
-    ordinary negative result -- a DIFFERENT verdict, or a directly composed
-    instruction -- and the request went on to build a reply about a rewrite the
-    user had already stopped waiting for.
+    ordinary negative result -- a DIFFERENT verdict -- and the request went on
+    to build a reply about a rewrite the user had already stopped waiting for.
     """
 
     def _source(self, name):
@@ -2839,7 +2322,7 @@ class CancelIsNotAFailedCheck(unittest.TestCase):
         return ast.get_source_segment(src, fn) or ""
 
     def test_cancellation_is_re_raised_before_the_general_handler(self):
-        for name in ("_same_request", "_clarify_edit"):
+        for name in ("_same_request",):
             src = self._source(name)
             with self.subTest(fn=name):
                 self.assertIn("except Cancelled:", src)
@@ -2857,8 +2340,6 @@ class CancelIsNotAFailedCheck(unittest.TestCase):
         try:
             with self.assertRaises(worker.Cancelled):
                 worker._same_request("t", "a cat", "a tabby cat", None)
-            with self.assertRaises(worker.Cancelled):
-                worker._clarify_edit("t", "make it red", {"subject": "a jacket"})
         finally:
             worker._write = saved
 
@@ -2871,10 +2352,6 @@ class CancelIsNotAFailedCheck(unittest.TestCase):
         worker._write = boom
         try:
             self.assertFalse(worker._same_request("t", "a cat", "a dog", None))
-            line, why, _attempt = worker._clarify_edit(
-                "t", "make it red", {"subject": "a jacket"})
-            self.assertEqual(why, "composed")
-            self.assertIn("red", line)
         finally:
             worker._write = saved
 
@@ -3086,69 +2563,6 @@ class TiledUpscaleIsBounded(unittest.TestCase):
         self.assertIn("_refuse_tiled_upscale", body)
         self.assertLess(body.index("_refuse_tiled_upscale"),
                         body.index("for (y0, y1) in ys"))
-
-
-class EditRewriteRejectionIsReported(unittest.TestCase):
-    """A rejected edit rewrite said "Nothing to add."
-
-    `_clarified_with_reason` returns the reason and `_clarify_edit` dropped it,
-    so the edit path returned the untouched request with no `outcome` at all.
-    The interface's fallback chain reads that as "your words were already
-    fine" -- reported after a rewrite had been written, checked and thrown
-    away.
-    """
-
-    def _clarify(self, reply, prompt="make the jacket red"):
-        saved = (worker._write, worker.log)
-        worker._write = lambda *a, **k: reply
-        worker.log = lambda *a, **k: None
-        try:
-            return worker._clarify_edit("t", prompt,
-                                        {"SUBJECT": "a green field jacket"})
-        finally:
-            worker._write, worker.log = saved
-
-    def test_a_rejected_rewrite_comes_back_with_its_reason(self):
-        line, why, attempt = self._clarify("a bicycle on a wet street at dawn")
-        self.assertEqual(line, "make the jacket red", "the request is kept")
-        self.assertEqual(why, "lost_intent")
-        self.assertIn("bicycle", attempt, "what it wrote has to survive too")
-
-    def test_an_accepted_rewrite_says_so(self):
-        good = "change the green field jacket to red, leave everything else unchanged."
-        line, why, _attempt = self._clarify(good)
-        self.assertEqual(line, good)
-        self.assertEqual(why, "ok")
-
-    def test_composing_directly_is_not_a_rejection(self):
-        """With no observations there is no rewrite to reject."""
-        line, why, _attempt = worker._clarify_edit("t", "make the jacket red", {})
-        self.assertEqual(why, "composed")
-        self.assertIn("jacket", line)
-
-    def test_op_assist_carries_the_reason_into_its_reply(self):
-        import ast
-
-        with open(os.path.join(HERE, "worker.py"), encoding="utf-8") as handle:
-            src = handle.read()
-        fn = next(n for n in ast.walk(ast.parse(src))
-                  if isinstance(n, ast.FunctionDef) and n.name == "op_assist")
-        for node in ast.walk(fn):
-            if (isinstance(node, ast.Assign)
-                    and isinstance(node.value, ast.Call)
-                    and getattr(node.value.func, "id", "") == "_clarify_edit"):
-                target = node.targets[0]
-                self.assertIsInstance(
-                    target, ast.Tuple,
-                    "op_assist takes the rewrite and drops the reason again")
-                self.assertIn("why", [e.id for e in target.elts])
-                break
-        else:
-            self.fail("op_assist no longer calls _clarify_edit")
-        body = ast.get_source_segment(src, fn) or ""
-        edit_branch = body[:body.index("Writing the prompt")]
-        self.assertIn("rewrite_rejected", edit_branch)
-        self.assertIn("rejected_because", edit_branch)
 
 
 class CaptionScripts(unittest.TestCase):
@@ -3801,75 +3215,343 @@ class EveryAnswerHasTheSameShape(unittest.TestCase):
         self.assertEqual(reply["original"], "typed")
 
 
-class RemovedAndDroppedAreDifferentFacts(unittest.TestCase):
-    """The same word was reported twice, as two contradictory things.
+class FakeWriter:
+    """Stands in for `_write` and the picture reader, recording every call.
 
-    `removed` is what the cleaner stripped on the way in -- quality folklore
-    the user typed and the enhancer does not pass on. `dropped` is what the
-    rewrite no longer says. They are different facts and the interface draws
-    them as the same red chip under different labels.
-
-    `dropped` was diffed against the prompt as typed rather than the cleaned
-    one that was actually judged, so every stripped word came back a second
-    time as a word the rewrite had lost. "a masterpiece 8k cat on a chair"
-    reported `removed: [masterpiece, 8k]` and `dropped: [masterpiece]`: the
-    user was told the same word had been taken out on purpose and lost by
-    accident.
+    `replies` are handed out in order to prompt-writing calls; the SAME check
+    is answered by `verdict`. Nothing is loaded and nothing is inferred, so
+    these tests can say exactly what op_assist does with each kind of answer
+    a real writer gives -- clean, wrapped in reasoning, broken, or wrong.
     """
 
-    def test_the_cleaner_and_the_rewrite_do_not_report_the_same_word(self):
-        typed = "a masterpiece 8k cat on a chair"
-        cleaned, removed = worker._clean_prompt_request(typed)
-        self.assertIn("masterpiece", removed)
-        # The rewrite is judged against the cleaned prompt, so the diff that
-        # names what it lost has to be against the same text.
-        dropped = worker._dropped_words(cleaned, "a tabby cat on an oak chair.")
-        self.assertNotIn("masterpiece", dropped)
-        self.assertFalse(set(dropped) & set(removed),
-                         "a word cannot be both deliberately removed and lost")
+    def __init__(self, replies, verdict="SAME", regions=None):
+        self.replies = list(replies)
+        self.verdict = verdict
+        self.regions = regions
+        self.calls = []
+        self.judged = []
 
-    def test_the_reply_diffs_against_the_prompt_that_was_judged(self):
-        """Asserted at the call site, because that is where it was wrong.
+    def write(self, _req_id, system, user, max_tokens=160, temperature=0.3,
+              repo=None, label="", fraction=None, preview=None):
+        if system == worker.SAME_REQUEST_SYSTEM:
+            self.judged.append(user)
+            return self.verdict
+        self.calls.append({"system": system, "user": user, "temperature": temperature,
+                           "max_tokens": max_tokens, "repo": repo, "preview": preview})
+        reply = self.replies.pop(0) if self.replies else ""
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
 
-        The first attempt at this fixed the comment and the test and not the
-        code: `_dropped_words` was still being called with `original_prompt` in
-        `op_assist` while a test called it with the cleaned prompt directly and
-        passed. A test of a pure function cannot see which argument production
-        hands it.
-        """
-        import ast
+    def read(self, _req_id, _repo, _images, question):
+        self.question = question
+        return self.regions or ""
 
-        with open(os.path.join(HERE, "worker.py"), encoding="utf-8") as handle:
-            src = handle.read()
-        fn = next(n for n in ast.walk(ast.parse(src))
-                  if isinstance(n, ast.FunctionDef) and n.name == "op_assist")
-        calls = [n for n in ast.walk(fn)
-                 if isinstance(n, ast.Call)
-                 and isinstance(n.func, ast.Name)
-                 and n.func.id == "_dropped_words"]
-        self.assertTrue(calls, "op_assist no longer reports dropped words")
-        for call in calls:
-            first = call.args[0]
-            self.assertIsInstance(first, ast.Name)
-            self.assertEqual(
-                first.id, "user_prompt",
-                "dropped words are diffed against the prompt that was judged, "
-                "not the one that was typed -- otherwise every word the "
-                "cleaner stripped is reported a second time as a loss")
 
-    def test_a_word_the_rewrite_really_loses_is_still_named(self):
-        cleaned, _removed = worker._clean_prompt_request(
-            "a masterpiece cat on a chair")
-        self.assertIn("chair", worker._dropped_words(cleaned, "a tabby cat."))
+def _assist(fake, prompt, mode="generate", goal="enhance", target=None,
+            picture=False, reader=True):
+    req = {"prompt": prompt, "mode": mode, "goal": goal,
+           "writer": "mlx-community/Qwen3.5-9B-MLX-4bit",
+           "target": target or {"id": "flux2-klein-4b-4bit", "family": "flux2",
+                                "name": "FLUX.2 Klein 4B"}}
+    if not reader:
+        req["assistant"] = None
+    patches = {
+        "_write": fake.write,
+        "_read_picture": fake.read,
+        "_stage_vault_inputs": lambda _i: ["/tmp/staged.png"] if picture else [],
+        "_downscale_for_assist": lambda paths: paths,
+        "_discard_staged": lambda _paths: None,
+        "emit": lambda *_a, **_k: None,
+        "log": lambda *_a, **_k: None,
+    }
+    with unittest.mock.patch.multiple(worker, **patches):
+        return worker.op_assist("t", req)
+
+
+def _reply(**fields):
+    return json.dumps(fields)
+
+
+class AssistWritesForTheTargetModel(unittest.TestCase):
+    """The writer is told which model, which mode and which goal."""
+
+    def test_the_target_model_reaches_the_system_prompt(self):
+        for target, expect in (
+            ({"id": "flux2-klein-9b-4bit", "family": "flux2"}, "Qwen3 language model"),
+            ({"id": "qwen-image-2512-8bit", "family": "qwen"}, "renders written text"),
+            ({"id": "z-image-turbo-4bit", "family": "z-image"}, "photographic"),
+            ({"id": "flux1-dev-4bit", "family": "flux"}, "T5 encoder"),
+        ):
+            with self.subTest(target=target["id"]):
+                fake = FakeWriter([_reply(prompt="a cat on a chair, in soft light")])
+                _assist(fake, "a cat on a chair", target=target)
+                self.assertIn(expect, fake.calls[0]["system"])
+
+    def test_the_best_writer_is_used_not_a_hardcoded_one(self):
+        fake = FakeWriter([_reply(faithful="A cat on a chair.",
+                                  prompt="A cat sits on a chair.")])
+        _assist(fake, "a cat on a chair")
+        self.assertEqual(fake.calls[0]["repo"], "mlx-community/Qwen3.5-9B-MLX-4bit")
+
+    def test_no_copyable_examples_reach_any_writer(self):
+        """The tabby on a worn oak chair was copied into unrelated requests."""
+        import prompt_assist as pa
+
+        for goal in pa.GOALS:
+            for mode in pa.MODES:
+                for profile in pa.PROFILES:
+                    text = pa.system_prompt(goal, mode, profile).lower()
+                    for copied in ("tabby", "oak chair", "brick house",
+                                   "teapot", "wet street", "oil on canvas"):
+                        self.assertNotIn(copied, text, (goal, mode, profile))
+
+    def test_the_reply_says_what_it_was_written_for(self):
+        fake = FakeWriter([_reply(prompt="A cat sits on a chair.")])
+        out = _assist(fake, "a cat on a chair", goal="tighten")
+        self.assertEqual(out["version"], 2)
+        self.assertEqual(out["goal"], "tighten")
+        self.assertEqual(out["mode"], "generate")
+        self.assertEqual(out["target_label"], "FLUX.2 Klein 4B")
+
+
+class AssistReadsWhateverTheWriterSends(unittest.TestCase):
+    """Think tags, broken JSON and prose are all still answers."""
+
+    GOOD = _reply(
+        subject="a cat", quoted_text=[], constraints=[],
+        faithful="A cat sitting on a chair.",
+        prompt="A grey cat sits upright on a wooden kitchen chair, lit by "
+               "soft morning light from a window, seen from eye level.",
+        additions=["grey", "wooden kitchen", "lit by soft morning light from a window"],
+        styles=["watercolour illustration with loose washes"])
+
+    def test_three_variants_from_one_call(self):
+        fake = FakeWriter([self.GOOD])
+        out = _assist(fake, "a cat on a chair")
+        self.assertEqual(len(fake.calls), 1, "one write, not a chain")
+        self.assertEqual([v["kind"] for v in out["variants"]],
+                         ["faithful", "enriched", "stylistic"])
+        self.assertEqual(out["outcome"], "proposal")
+        self.assertIn("morning light", out["prompt"], "the enriched one leads")
+        stylistic = out["variants"][2]
+        self.assertTrue(stylistic["prompt"].endswith(
+            "Watercolour illustration with loose washes."))
+        self.assertIn("Watercolour illustration with loose washes",
+                      stylistic["additions"])
+
+    def test_additions_are_only_phrases_the_prompt_really_contains(self):
+        reply = _reply(prompt="A cat sits on a chair by a window.",
+                       additions=["by a window", "a velvet cushion"])
+        out = _assist(FakeWriter([reply]), "a cat on a chair")
+        self.assertEqual(out["added"], ["by a window"],
+                         "a chip must remove something that is there")
+
+    def test_think_tags_are_stripped_before_parsing(self):
+        fake = FakeWriter(["<think>\nThe user wants a cat.\n</think>\n" + self.GOOD])
+        out = _assist(fake, "a cat on a chair")
+        self.assertEqual(out["outcome"], "proposal")
+        self.assertNotIn("think", out["prompt"].lower())
+
+    def test_an_unclosed_think_block_is_not_the_prompt(self):
+        fake = FakeWriter(["<think>I should describe", self.GOOD])
+        out = _assist(fake, "a cat on a chair")
+        self.assertEqual(len(fake.calls), 2, "the empty answer was retried")
+        self.assertNotIn("should describe", out["prompt"])
+
+    def test_json_cut_off_mid_answer_is_still_read(self):
+        truncated = ('{"subject": "a cat", "faithful": "A cat on a chair.", '
+                     '"prompt": "A grey cat sits on a wooden chair in soft light')
+        out = _assist(FakeWriter([truncated]), "a cat on a chair")
+        self.assertEqual(out["outcome"], "proposal")
+        self.assertIn("soft light", out["prompt"])
+
+    def test_json_with_a_trailing_comma_is_still_read(self):
+        out = _assist(FakeWriter(['{"prompt": "A cat on a chair by a window.",}']),
+                      "a cat on a chair")
+        self.assertIn("window", out["prompt"])
+
+    def test_nothing_usable_twice_is_said_plainly(self):
+        fake = FakeWriter(["{{{", ""])
+        out = _assist(fake, "a cat on a chair")
+        self.assertEqual(len(fake.calls), 2)
+        self.assertEqual(out["outcome"], "rewrite_rejected")
+        self.assertEqual(out["prompt"], "a cat on a chair", "the words are kept")
+        self.assertIn("nothing usable", out["note"])
+
+    def test_a_prose_answer_keeps_every_line(self):
+        """Only the first line used to be kept, so a second-line detail vanished."""
+        prose = "A cat sits on a chair.\nThe chair is red and has no cushion."
+        out = _assist(FakeWriter([prose]), "a cat on a chair", goal="tighten")
+        self.assertIn("no cushion", out["prompt"])
+
+    def test_unclear_is_reported_as_unclear(self):
+        out = _assist(FakeWriter(['{"unclear": true}']), "make it better")
+        self.assertEqual(out["outcome"], "unclear")
+        self.assertTrue(out["unclear"])
+
+    def test_cancel_propagates(self):
+        fake = FakeWriter([worker.Cancelled("stopped")])
+        with self.assertRaises(worker.Cancelled):
+            _assist(fake, "a cat on a chair")
+        self.assertEqual(fake.judged, [], "no verdict after a cancel")
+
+    def test_the_draft_shows_prose_not_json(self):
+        fake = FakeWriter([self.GOOD])
+        _assist(fake, "a cat on a chair")
+        preview = fake.calls[0]["preview"]
+        self.assertEqual(preview('{"subject": "a cat", "prompt": "A grey cat si'),
+                         "A grey cat si")
+
+
+class AssistHoldsWhatTheRequestFixes(unittest.TestCase):
+    """Counts, negations, quoted text and pace survive or are named as lost."""
+
+    REQUEST = "2 red cars with no sunroof, plain white background"
+
+    def test_a_dropped_negation_is_retried_cooler_and_never_waved_through(self):
+        lost = _reply(prompt="Two red cars with a glass sunroof on a plain white background.")
+        kept = _reply(prompt="Two red cars, neither with a sunroof, on a plain "
+                             "white background.")
+        fake = FakeWriter([lost, kept], verdict="SAME")
+        out = _assist(fake, self.REQUEST)
+        self.assertEqual(len(fake.calls), 2)
+        self.assertLess(fake.calls[1]["temperature"], fake.calls[0]["temperature"])
+        self.assertEqual(fake.judged, [],
+                         "a lost negation is never put to the writer's own judgement")
+        self.assertEqual(out["dropped"], [])
+        self.assertIn("neither with a sunroof", out["prompt"])
+
+    def test_a_loss_that_survives_the_retry_is_named(self):
+        lost = _reply(prompt="Three red cars on a white background.")
+        out = _assist(FakeWriter([lost, lost]), self.REQUEST)
+        self.assertEqual(out["outcome"], "proposal")
+        self.assertIn("2 red cars", out["dropped"])
+        self.assertIn("no sunroof", out["dropped"])
+        self.assertIn("no longer says", out["note"])
+        self.assertIn("2 red cars", out["variants"][0]["missing"])
+
+    def test_the_constraints_are_handed_to_the_writer(self):
+        fake = FakeWriter([_reply(prompt="Two red cars without a sunroof on a "
+                                         "plain white background.")])
+        _assist(fake, self.REQUEST)
+        self.assertIn("Must keep: 2 red cars; no sunroof", fake.calls[0]["user"])
+
+    def test_quoted_text_with_4k_survives_the_cleaner(self):
+        request = 'A shop sign reading exactly "BEST QUALITY 4K", 8k, masterpiece'
+        fake = FakeWriter([_reply(
+            quoted_text=["BEST QUALITY 4K"],
+            prompt='A painted shop sign that reads "Best Quality 4k" in bold '
+                   'white capitals above a door.')])
+        out = _assist(fake, request, goal="tighten")
+        self.assertIn('"BEST QUALITY 4K"', fake.calls[0]["user"],
+                      "the writer was never shown the lettering")
+        self.assertEqual(sorted(out["removed"]), ["8k", "masterpiece"])
+        self.assertIn('"BEST QUALITY 4K"', out["prompt"],
+                      "lettering whose case drifted is put back exactly")
+        self.assertEqual(out["dropped"], [])
+
+    def test_quoted_text_the_writer_lost_is_flagged(self):
+        request = 'A sign reading "OPEN LATE"'
+        lost = _reply(prompt="A neon sign glowing above a doorway at night.")
+        out = _assist(FakeWriter([lost, lost]), request)
+        self.assertIn('"OPEN LATE"', out["dropped"])
+
+    def test_a_sprint_stays_a_sprint(self):
+        request = "A runner sprints quickly across the track. Locked camera."
+        slowed = _reply(prompt="A runner moves in a slow, grounded drift across "
+                               "the track; the camera stays locked.")
+        kept = _reply(prompt="A runner sprints quickly across the red track, "
+                             "arms pumping, while the locked camera holds the lane.")
+        fake = FakeWriter([slowed, kept])
+        out = _assist(fake, request, mode="video",
+                      target={"id": "wan22-ti2v-5b-8bit", "family": "wan"})
+        system = fake.calls[0]["system"]
+        self.assertNotIn("Never 'suddenly', 'quickly'", system)
+        self.assertIn("Keep the pace they asked for", system)
+        self.assertIn("sprints quickly", out["prompt"])
+        self.assertEqual(out["dropped"], [])
+
+    def test_a_soft_miss_is_judged_once_and_accepted(self):
+        """The subject reworded is the case a good paraphrase trips."""
+        reply = _reply(subject="dog", prompt="A golden retriever wearing a "
+                                             "velvet robe and a gold crown.")
+        fake = FakeWriter([reply], verdict="SAME")
+        out = _assist(fake, "my dog but make him look like a king", goal="tighten")
+        self.assertEqual(len(fake.judged), 1)
+        self.assertEqual(len(fake.calls), 1, "no retry once it is judged the same")
+        self.assertEqual(out["dropped"], [])
+        self.assertIn("dog", out["variants"][0]["reworded"])
+
+    def test_tighten_is_one_variant_and_a_smaller_budget(self):
+        fake = FakeWriter([_reply(prompt="A cat on a chair.")])
+        _assist(fake, "a cat on a chiar", goal="tighten")
+        tight = fake.calls[0]["max_tokens"]
+        fake2 = FakeWriter([_reply(prompt="A cat on a chair.")])
+        _assist(fake2, "a cat on a chiar", goal="enhance")
+        self.assertLess(tight, fake2.calls[0]["max_tokens"])
+        self.assertIn("Add nothing", fake.calls[0]["system"])
+
+
+class AssistEditsLookBeforeTheyResolve(unittest.TestCase):
+    """An edit names the region it means, or says it could not look."""
+
+    REGIONS = ("1. man in a jacket | centre, foreground | red, black\n"
+               "2. brick wall | background | brown\n"
+               "3. bicycle | left, background | blue\n")
+
+    def test_it_resolves_to_the_most_plausible_region(self):
+        fake = FakeWriter([_reply(prompt="Make the man's jacket in the centre "
+                                         "foreground blue, keeping the wall unchanged.")],
+                          regions=self.REGIONS)
+        out = _assist(fake, "make it blue", mode="edit", picture=True,
+                      target={"id": "flux1-kontext-4bit", "family": "flux"})
+        self.assertTrue(out["saw_image"])
+        self.assertIn("'it' most likely means: man in a jacket (centre, "
+                      "foreground, red, black)", fake.calls[0]["user"])
+        self.assertTrue(out["target_region"].startswith("man in a jacket"))
+        self.assertEqual(len(out["regions"]), 3)
+        self.assertIn("Kontext", fake.calls[0]["system"])
+        self.assertIn("left", fake.question, "the reader is asked for positions")
+
+    def test_a_named_thing_beats_the_prominent_one(self):
+        fake = FakeWriter([_reply(prompt="Make the bicycle on the left red.")],
+                          regions=self.REGIONS)
+        out = _assist(fake, "make the bike on the left red", mode="edit",
+                      picture=True)
+        # "bike" is not "bicycle", so the place settles it -- but only among
+        # things it could mean; with nothing named, "it" is not asked about.
+        self.assertNotIn("'it' most likely means", fake.calls[0]["user"])
+        out2 = _assist(FakeWriter([_reply(prompt="Make the bicycle red.")],
+                                  regions=self.REGIONS),
+                       "make the bicycle red", mode="edit", picture=True)
+        self.assertTrue(out2["target_region"].startswith("bicycle"))
+        self.assertEqual(out["outcome"], "proposal")
+
+    def test_without_a_reader_it_says_it_did_not_look(self):
+        fake = FakeWriter([_reply(prompt="Make the jacket red, keeping everything "
+                                         "else unchanged.")])
+        out = _assist(fake, "make the jacket red", mode="edit", picture=True,
+                      reader=False)
+        self.assertFalse(out["saw_image"])
+        self.assertIn("not looked at", out["note"])
+        self.assertIn("You cannot see the picture", fake.calls[0]["system"])
+        self.assertNotIn("The picture contains", fake.calls[0]["user"])
+
+    def test_an_edit_is_written_as_an_instruction(self):
+        fake = FakeWriter([_reply(prompt="Make the jacket red.")])
+        _assist(fake, "make the jacket red", mode="edit", reader=False)
+        self.assertIn("imperative", fake.calls[0]["system"])
+        self.assertIn("not a description of a new picture", fake.calls[0]["system"])
 
 
 class ALongerWordIsADifferentWord(unittest.TestCase):
-    """A rewrite could swap the subject for a word that starts the same way.
+    """A brief could swap the subject for a word that starts the same way.
 
-    `_dropped_words` compared stems with an unbounded prefix match, which is
-    not a stem match -- it is "starts with the same letters", and a longer word
-    starting with the same letters is a different thing rather than an
-    inflection. So every one of these was accepted as having kept the subject:
+    A stem compared by unbounded prefix is not a stem match -- it is "starts
+    with the same letters", and a longer word starting with the same letters
+    is a different thing rather than an inflection. So every one of these was
+    once accepted as having kept the subject:
 
         a cat on a chair  ->  a catalogue on a chair
         a red car         ->  a red cardigan
@@ -3886,35 +3568,14 @@ class ALongerWordIsADifferentWord(unittest.TestCase):
         ("a bell over the door", "a bellows over the door.", "bell"),
     )
 
-    def test_a_longer_word_does_not_stand_in_for_the_subject(self):
-        for original, line, lost in self.SWAPS:
-            with self.subTest(original=original):
-                self.assertIn(lost, worker._dropped_words(original, line))
-
     def test_the_swap_reaches_the_check_that_gates_a_rewrite(self):
-        """`_carries` is the all-words check, and it must see the loss too.
-
-        `_keeps_intent` is not the check to assert this on. It is an `any` over
-        content words -- one survivor passes it, which is what it is for -- so
-        "a catalogue on a chair" passes on "chair" alone and correctly. Its
-        prefix match is left unbounded on purpose: "red" -> "reddish" grows by
-        four letters legitimately while "man" -> "mango" grows by two and does
-        not, so no length threshold tells them apart. Stems do, which is why
-        the bound belongs where it is.
-        """
+        """`_carries` is the all-words check, and it must see the loss."""
         for original, line, _lost in self.SWAPS:
             with self.subTest(original=original):
                 self.assertFalse(
                     worker._carries(original, line),
                     f"{line!r} was accepted as carrying {original!r}")
 
-    def test_an_inflection_is_still_the_same_word(self):
-        """The bound is one letter, which is what an inflection needs."""
-        for original, line in (("the sun rises", "the sun rising over the roofs."),
-                               ("trees in the mist", "a tree line in the mist."),
-                               ("a man runs", "a man running down the street.")):
-            with self.subTest(original=original):
-                self.assertEqual(worker._dropped_words(original, line), [])
 
 
 class TextThatDoesNotFitIsReported(unittest.TestCase):
