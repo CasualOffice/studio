@@ -1057,3 +1057,127 @@ class TagsOverrideTheWriter(unittest.TestCase):
 
     def test_a_stray_straight_quote_inside_a_field_is_escaped(self):
         self.assertEqual(story._loads('{"action": "Agnes says "hello" twice", "place": "pier"}')['place'], 'pier')
+
+
+class SceneDetection(unittest.TestCase):
+    """Scenes come from the story's own breaks, not from a sentence count."""
+
+    def test_separators_headings_and_time_or_place_shifts_start_scenes(self):
+        source = ('Mira waited on the pier. The ferry was late.\n\n'
+                  'She checked her watch.\n\n'
+                  'Hours later, the ferry came in.\n\n'
+                  'Back at the house, Jonas made tea.\n\n'
+                  '* * *\n\n'
+                  'Rain fell all night.\n\n'
+                  'Morning\n\n'
+                  'The sun came up.')
+        starts = story.scene_starts(source)
+        opened = [source[at:at + 12] for at in starts]
+        self.assertEqual(opened, ['Hours later,', 'Back at the ', '* * *\n\nRain ', 'Morning\n\nThe'])
+
+    def test_two_blank_lines_end_a_scene_and_a_plain_paragraph_does_not(self):
+        source = 'Mira left.\n\nShe walked home.\n\n\n\nJonas slept.'
+        self.assertEqual([source[at:at + 5] for at in story.scene_starts(source)], ['Jonas'])
+
+    def test_a_passage_never_crosses_a_scene_and_numbers_it(self):
+        source = 'Mira waited. ' * 3 + '\n\nThe next morning the ferry came. It was empty.'
+        groups = story.passages(source, max_words=999, max_units=99, scenes=True)
+        self.assertEqual(len(groups), 2)
+        self.assertEqual([g[0]['section'] for g in groups], [0, 1])
+        self.assertEqual(''.join(u['text'] for g in groups for u in g), source)
+        # The audiobook's passages are unchanged.
+        self.assertEqual(len(story.passages(source, max_words=999, max_units=99)), 1)
+
+    def test_analysed_scenes_carry_their_story_scene(self):
+        source = 'Mira waited.\n\nLater, the ferry came.'
+        def write(_, prompt):
+            group = json.loads(prompt.split('Numbered source units:\n')[1].split('\nYour previous reply')[0])
+            return json.dumps({"title": "t", "characters": [], "looks": [], "places": [], "speakers": [],
+                               "beats": [{"units": [u["id"] for u in group], "importance": 2, "action": "a",
+                                          "place": "pier", "mood": "m", "cast": []}]})
+        book = story.analyze(source, write)
+        self.assertEqual([s['section'] for s in book['chapters'][0]['scenes']], [0, 1])
+
+
+class SpeakingRoles(unittest.TestCase):
+    """A tag naming a role gives the line to that role, as a minor character."""
+
+    def analysed(self, source, characters, speakers):
+        group = story.passages(source, max_words=999, max_units=99)[0]
+        reply = {"title": "t", "characters": characters,
+                 "beats": [{"units": [u["id"] for u in group], "importance": 2, "action": "a", "place": "p",
+                            "mood": "m", "cast": []}], "speakers": speakers}
+        return story.analyze(source, lambda *_: json.dumps(reply), passage_words=999, passage_units=99)
+
+    def test_fx01_the_guards_call_is_the_guards_even_when_the_writer_says_mira(self):
+        fixture = json.loads((Path(__file__).parent / 'fixtures' / 'fx01.json').read_text())
+        book = self.analysed(fixture['source'], [
+            {"id": "m", "name": "Mira Vale", "aliases": ["Mira", "Mi"], "visual": "", "voice": ""},
+            {"id": "j", "name": "Jonas", "aliases": [], "visual": "", "voice": ""}],
+            [{"quote": 1, "id": "m"}])
+        people = {c['id']: c for c in book['characters']}
+        line = next(d for s in book['chapters'][0]['scenes'] for b in s['beats'] for d in b['dialogue'])
+        self.assertEqual(line['text'], 'Last train!')
+        self.assertEqual(people[line['speaker_id']]['name'], 'The guard')
+        self.assertIn('guard', people[line['speaker_id']]['aliases'])
+        # Mira named herself, so she is the narrator and no Narrator is added.
+        self.assertEqual(sorted(c['name'] for c in book['characters']), ['Jonas', 'Mira Vale', 'The guard'])
+
+    def test_a_declared_role_is_reused_not_duplicated(self):
+        source = 'A guard called, “Last train!” The guard called, “Doors closing!”'
+        book = self.analysed(source, [{"id": "g", "name": "A guard", "aliases": ["guard"], "visual": "", "voice": ""}], [])
+        self.assertEqual([c['name'] for c in book['characters']], ['A guard'])
+        lines = [d['speaker_id'] for s in book['chapters'][0]['scenes'] for b in s['beats'] for d in b['dialogue']]
+        self.assertEqual(lines, [book['characters'][0]['id']] * 2)
+
+    def test_a_sound_or_an_action_verb_makes_no_person(self):
+        source = 'The rain began. A voice called, “Hello?” The radio said, “Storm warning.”'
+        book = self.analysed(source, [], [])
+        self.assertEqual(book['characters'], [])
+
+
+class SelfNamedNarrator(unittest.TestCase):
+    """A narrator who names themselves is that character, not a second person."""
+
+    SOURCE = 'My name is Mira Vale. I unhooked the key from my coat. “Take it,” I said. Jonas took it.'
+
+    def analysed(self, characters, cast):
+        group = story.passages(self.SOURCE, max_words=999, max_units=99)[0]
+        reply = {"title": "t", "characters": characters,
+                 "beats": [{"units": [u["id"] for u in group], "importance": 2, "action": "a", "place": "p",
+                            "mood": "m", "cast": [{"id": c, "feel": ""} for c in cast]}],
+                 "speakers": [{"quote": 1, "id": "n"}]}
+        return story.analyze(self.SOURCE, lambda *_: json.dumps(reply), passage_words=999, passage_units=99)
+
+    def test_a_generic_narrator_beside_the_named_one_is_merged_into_her(self):
+        book = self.analysed([{"id": "m", "name": "Mira Vale", "aliases": ["Mira"], "visual": "", "voice": ""},
+                              {"id": "n", "name": "Narrator", "aliases": [], "visual": "tall", "voice": ""},
+                              {"id": "j", "name": "Jonas", "aliases": [], "visual": "", "voice": ""}], ["m", "n", "j"])
+        names = [c['name'] for c in book['characters']]
+        self.assertEqual(sorted(names), ['Jonas', 'Mira Vale'])
+        mira = next(c for c in book['characters'] if c['name'] == 'Mira Vale')
+        self.assertTrue(story.is_narrator(mira))
+        self.assertEqual(mira['visual'], 'tall')
+        beat = book['chapters'][0]['scenes'][0]['beats'][0]
+        self.assertEqual([a['character_id'] for a in beat['visible']].count(mira['id']), 1)
+        self.assertEqual(beat['dialogue'][0]['speaker_id'], mira['id'])
+
+    def test_an_unnamed_narrator_takes_the_name_the_text_gives(self):
+        book = self.analysed([{"id": "n", "name": "Narrator", "aliases": [], "visual": "", "voice": ""}], ["n"])
+        self.assertEqual([c['name'] for c in book['characters']], ['Mira Vale'])
+
+    def test_a_saved_book_with_both_is_put_right_for_the_board(self):
+        book = self.analysed([{"id": "n", "name": "Narrator", "aliases": [], "visual": "", "voice": ""}], ["n"])
+        old = copy.deepcopy(book)
+        narrator = old['characters'][0]
+        old['characters'] = [{**narrator, "name": "Narrator", "aliases": []},
+                             {"id": "mira", "name": "Mira Vale", "aliases": [], "visual": "", "voice": ""}]
+        fixed = story.ensure_cast(old)
+        self.assertIsNot(fixed, old)
+        self.assertEqual([c['name'] for c in fixed['characters']], ['Mira Vale'])
+        self.assertIs(story.ensure_cast(fixed), fixed)
+
+    def test_i_am_with_a_capital_is_not_a_name(self):
+        characters = [{"id": "n", "name": "Narrator", "aliases": [], "visual": "", "voice": ""}]
+        story._settle_narrator(characters, [], 'I am Tired of waiting. I sat down. I slept.')
+        self.assertEqual(characters[0]['name'], 'Narrator')

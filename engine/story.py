@@ -90,14 +90,64 @@ def units(source):
     return result
 
 
-def passages(source, max_words=450, max_units=8):
-    """Bound calls at source-unit boundaries; explicit scene breaks end a call."""
+# Where a story changes scene without saying so with a separator: the
+# paragraph opens on a jump in time, or on a prepositional move to a place
+# ("Back at the house, ...", "At the station, ..."). A comma is required for
+# the place form, so a sentence that merely starts with "In the" does not count.
+TIME_SHIFT = re.compile(
+    r"(?:Later|Hours later|Days later|Weeks later|Months later|Years later|Meanwhile|"
+    r"(?:The|That) next (?:day|morning|evening|night|week)|Next (?:morning|day|week)|"
+    r"That (?:night|evening|afternoon|morning)|By (?:morning|nightfall|evening|noon|dawn)|"
+    r"The following (?:day|morning|evening|week)|In the morning|At dawn|At dusk|"
+    r"(?:Two|Three|Four|Five|Six|Several|A few|Many) (?:hours|days|weeks|months|years) (?:later|passed)|"
+    r"(?:Hours|Days|Weeks|Months|Years) passed|When (?:morning|night|evening) came)\b")
+PLACE_SHIFT = re.compile(r"(?:Back (?:at|in|on|inside)|At|In|Inside|Outside|On) (?:the|her|his|my|their|our) [^,.!?\n]{1,40},")
+SEPARATOR = re.compile(r"\s*(?:\*\s*\*\s*\*|---+|~~~+|#+)\s*")
+
+
+def scene_starts(source):
+    """Offsets where a new scene begins, decided from the text alone.
+
+    Passages used to be cut every eight sentences, so a scene -- and with it
+    a page break and the scene's one Peak -- began wherever the count ran out.
+    The story usually says where its scenes change: a separator line, two or
+    more blank lines, a heading, or a paragraph that opens on a jump in time
+    or a move to another place. Only paragraph starts are candidates, so a
+    shift in the middle of a paragraph never splits it."""
+    starts, opened = [], None
+    for m in re.finditer(r"(?:\A|\n[ \t]*\n)(\s*)(?=\S)", source):
+        at = m.end()
+        line_end = source.find("\n", at)
+        line = source[at:line_end if line_end >= 0 else len(source)].strip()
+        separator = bool(SEPARATOR.fullmatch(line))
+        heading = (line_end >= 0 and len(line.split()) <= 8 and re.match(r"[A-Z0-9]", line) is not None
+                   and not re.search(r'[.!?"”’…:;,)\]]$', line))
+        # A separator or heading opens its scene itself, so the paragraph
+        # after it is already inside that scene.
+        if opened is not None and not opened and (
+                source[m.start():at].count("\n") >= 3 or separator or heading
+                or TIME_SHIFT.match(line) or PLACE_SHIFT.match(line)):
+            starts.append(at)
+        opened = separator or heading
+    return starts
+
+
+def passages(source, max_words=450, max_units=8, scenes=False):
+    """Bound calls at source-unit boundaries; explicit scene breaks end a call.
+
+    With `scenes`, every unit also carries the number of the scene it belongs
+    to, and a call never crosses from one scene into the next."""
+    starts = scene_starts(source) if scenes else []
     groups, group, words = [], [], 0
     for unit in units(source):
         if len(unit["text"]) > 16000:
             raise ValueError("A single source passage is over 16,000 characters; split it at paragraph boundaries before analysis")
         n = len(unit["text"].split())
+        section = sum(1 for s in starts if s <= unit["start"] + len(unit["text"]) - len(unit["text"].lstrip()))
+        if scenes:
+            unit["section"] = section
         if group and (len(group) >= max_units or words + n > max_words
+                      or (scenes and group[-1].get("section") != section)
                       or re.search(r'\n\s*(?:\*\s*\*\s*\*|---+)\s*\n', unit["text"])):
             groups.append(group)
             group, words = [], 0
@@ -110,7 +160,8 @@ def passages(source, max_words=450, max_units=8):
             start = unit["start"]
             for at in range(0, len(pieces), max_words):
                 end = unit["start"] + pieces[min(at + max_words, len(pieces)) - 1].end()
-                groups.append([{"start": start, "end": end, "text": source[start:end]}])
+                groups.append([{"start": start, "end": end, "text": source[start:end],
+                                **({"section": section} if scenes else {})}])
                 start = end
             continue
         # Paragraph breaks do not end a call. Dialogue puts nearly every line
@@ -144,15 +195,20 @@ Use ids from the character bible. Declare in characters only people new to the
 bible (short local id c1, c2, with the name exactly as the source gives it), or
 a known person with a new literal alias. Never use a pronoun, a group, or a
 phrase describing someone as a name. For unnamed first-person narration the
-name Narrator is allowed; never when a known character already narrates.
-visual is lasting identity only (face, hair, build), never clothing.
+name Narrator is allowed; never when a known character already narrates. A
+first-person narrator who gives their own name is that person: declare them by
+that name with the aliases I, me and my, not as Narrator.
+visual is lasting identity (face, hair, build, age); clothing goes in looks.
 cast lists who is visible in a beat; keep someone only heard out of it. feel is
 their expression and pose in a few words.
 looks gives, once for this passage, each visible person's COMPLETE current outfit
-and condition; a change REPLACES the old outfit. Omit people whose look has not
-changed from the continuity state. places gives each place's layout, objects,
+and condition; a change REPLACES the old outfit. When the source never says what
+someone wears, choose one plain outfit that fits the story's time and place, so
+they are drawn the same way throughout. Omit people whose look has not changed
+from the continuity state. places gives each place's layout, objects,
 light and weather once; place is a short stable name, reused when the story
-returns there. Do not invent events, appearance or details the source lacks.
+returns there. Do not invent events, faces or details the source lacks; an
+outfit chosen where none is stated is the only exception.
 Never copy quotation marks into any field; describe speech, do not quote it.
 """
 
@@ -575,6 +631,106 @@ def is_narrator(character):
     return character["name"] == "Narrator" or bool(set(character["aliases"]).intersection({"I", "me", "my"}))
 
 
+# A narrator naming themselves: "My name is Mira Vale", "call me Ishmael".
+# "I'm Mira" counts only for someone already in the cast -- "I'm Tired" is not
+# a name, and a capital after "I am" is too weak to invent a person from.
+SELF_NAMED = re.compile(r"\b(?:[Mm]y name(?: is|'s|’s)|[Cc]all me|(?:[Pp]eople|[Tt]hey|[Ee]veryone) call(?:s|ed)? me)\s+"
+                        r"([A-Z][\w'’-]+(?:\s+[A-Z][\w'’-]+)?)")
+SELF_NAMED_WEAK = re.compile(r"\bI(?:'m|’m| am)\s+([A-Z][\w'’-]+(?:\s+[A-Z][\w'’-]+)?)")
+
+
+def _same_person(character, name):
+    """Whether `name` is this character: the name, an alias, or the first name."""
+    said = name.casefold()
+    known = {n.casefold() for n in [character["name"], *character["aliases"]] if n.strip()}
+    first = {n.split()[0] for n in known if n.split()}
+    return said in known or said.split()[0] in first and len(said.split()[0]) > 2
+
+
+def _settle_narrator(characters, scenes, source):
+    """Make a first-person narrator who names themselves that one character.
+
+    "My name is Mira Vale" told the analyst who "I" is, and it still declared
+    a separate Narrator beside Mira -- two people, two cast sheets, and every
+    "I" sentence drawn as a stranger. The named character takes the
+    narrator's lines and appearances, the aliases I, me and my, and the
+    generic Narrator is removed. Changes `characters` and `scenes` in place."""
+    narration = QUOTE.sub(" ", source)
+    found = SELF_NAMED.search(narration)
+    weak = None if found else SELF_NAMED_WEAK.search(narration)
+    name = (found or weak).group(1) if (found or weak) else None
+    if not name:
+        return characters
+    named = next((c for c in characters if c["name"] != "Narrator" and _same_person(c, name)), None)
+    generic = [c for c in characters if c["name"] == "Narrator"]
+    if named is None:
+        if weak or not (generic or len(FIRST_PERSON.findall(narration)) >= 2):
+            return characters
+        if generic:
+            # The narrator the analyst could not name is the one the text names.
+            generic[0]["name"] = name
+            named, generic = generic[0], generic[1:]
+        else:
+            named = {"id": str(uuid.uuid4()), "name": name, "aliases": [], "visual": "", "voice": ""}
+            characters.append(named)
+    named["aliases"] = list(dict.fromkeys([*named["aliases"], "I", "me", "my"]))
+    for other in generic:
+        if not named["visual"]:
+            named["visual"] = other["visual"]
+        if not named["voice"]:
+            named["voice"] = other["voice"]
+        for scene in scenes:
+            for beat in scene["beats"]:
+                seen, kept = set(), []
+                for actor in beat["visible"]:
+                    if actor["character_id"] == other["id"]:
+                        actor = {**actor, "character_id": named["id"]}
+                    if actor["character_id"] not in seen:
+                        seen.add(actor["character_id"])
+                        kept.append(actor)
+                beat["visible"] = kept
+                for line in beat["dialogue"]:
+                    if line.get("speaker_id") == other["id"]:
+                        line["speaker_id"] = named["id"]
+        characters.remove(other)
+    return characters
+
+
+# Speech verbs that only ever introduce speech, for naming an unnamed speaker
+# from a tag: "a guard called". The wider list also holds verbs that are
+# actions on their own ("began", "laughed"), which must not make a person.
+ROLE_VERBS = (r'said|says|asked|asks|replied|answered|called|calls|shouted|yelled|cried|whispered|'
+              r'muttered|murmured|snapped|told|warned|announced|barked|hissed|screamed|growled|pleaded')
+ROLE_TAG = re.compile(r"(?<![\w’'])(?:[Aa]n?|[Tt]he|[Aa]nother|[Ss]ome)\s+((?:[a-z]+\s+)?[a-z]{3,})\s+(?:" + ROLE_VERBS + r")\b")
+# What a tag can name that is not a person to draw: a sound, a device, a crowd.
+NOT_A_ROLE = {"voice", "voices", "sound", "cry", "shout", "call", "whisper", "radio", "speaker", "loudspeaker",
+              "announcement", "sign", "note", "letter", "door", "wind", "rain", "bell", "phone", "tannoy",
+              "crowd", "people", "children", "men", "women", "others", "group", "everyone", "someone",
+              "somebody", "television", "screen", "recording", "message", "storm", "sea", "night"}
+
+
+def _role(tag, characters):
+    """The person a tag names by role -- "a guard called" -- found in the cast,
+    or made as a minor character when the analysis never declared them.
+
+    Without one, the guard's "Last train!" went to whoever the writer guessed,
+    and the guard was not in the cast at all."""
+    m = ROLE_TAG.search(tag)
+    if not m or m.group(1).split()[-1] in NOT_A_ROLE:
+        return None
+    phrase = m.group(1)
+    noun = phrase.split()[-1]
+    for c in characters:
+        names = {n.casefold() for n in [c["name"], *c["aliases"]]}
+        if phrase in names or noun in names or f"the {noun}" in names or f"a {noun}" in names:
+            return c["id"]
+    person = {"id": str(uuid.uuid4()), "name": f"The {phrase}",
+              "aliases": list(dict.fromkeys([phrase, noun, f"a {phrase}", f"the {phrase}"])),
+              "visual": "", "voice": ""}
+    characters.append(person)
+    return person["id"]
+
+
 def _ensure_narrator(characters, source):
     """A story told in the first person gets a Narrator: in a comic they are a
     person to draw, and in the prose their own lines need someone to belong to.
@@ -590,6 +746,23 @@ def _ensure_narrator(characters, source):
     return [*characters, {"id": str(uuid.uuid4()), "name": "Narrator", "aliases": [], "visual": "", "voice": ""}]
 
 
+def ensure_cast(book):
+    """The book with its narrator and speaking roles settled, for a board.
+
+    Books analysed before a self-named narrator was merged, or before a role
+    in a speech tag ("a guard called") became a person, are put right here;
+    the same book comes back when nothing changed, so a caller can tell
+    whether there is anything to save."""
+    fixed = copy.deepcopy(book)
+    source = "\n\n".join(c["source"] for c in fixed["chapters"])
+    _settle_narrator(fixed["characters"], [s for c in fixed["chapters"] for s in c["scenes"]], source)
+    fixed["characters"] = _ensure_narrator(fixed["characters"], source)
+    for chapter in fixed["chapters"]:
+        _attribute_by_tags([b for s in chapter["scenes"] for b in s["beats"]], chapter["source"], 0,
+                           fixed["characters"])
+    return book if fixed == book else fixed
+
+
 def ensure_narrator(book):
     """The book with a Narrator if any chapter is told in the first person --
     for books analysed before the narrator was a character."""
@@ -598,7 +771,7 @@ def ensure_narrator(book):
     return book if characters is book["characters"] else {**book, "characters": characters}
 
 
-def _attribute_by_tags(beats, text, base, characters):
+def _attribute_by_tags(beats, text, base, characters, roles=True):
     """Give an unattributed line the speaker its speech tag names.
 
     The writer leaves many lines unattributed even when the prose says who
@@ -607,7 +780,11 @@ def _attribute_by_tags(beats, text, base, characters):
     counts: a character's name or alias, or "I" for a first-person narrator,
     beside a speech verb. A bare "she said" is left alone; guessing it is how
     lines end up in the wrong mouth. The second half of an utterance the tag
-    interrupts takes the speaker of the first."""
+    interrupts takes the speaker of the first.
+
+    A tag that names a role rather than a name -- "a guard called" -- gives
+    the line to that role, made a minor character if needed (`roles`; added
+    to `characters` in place)."""
     names = []
     for c in characters:
         for name in [c["name"], *c["aliases"]]:
@@ -644,6 +821,11 @@ def _attribute_by_tags(beats, text, base, characters):
         # small writer gave '"I'm not late," I said' to the woman being
         # answered. Pronoun tags below only fill gaps.
         named = who(after) or who(before)
+        if not named and roles:
+            named = _role(after, characters) or _role(before, characters)
+            if named and not any(cid == named for _, cid in names):
+                c = next(c for c in characters if c["id"] == named)
+                names.extend((n, c["id"]) for n in [c["name"], *c["aliases"]])
         if named:
             line["speaker_id"] = named
             tagged.add(n)
@@ -720,6 +902,16 @@ def _unanalysed_scene(group, scene_id, number):
             "start": group[0]["start"], "end": group[-1]["end"], "beats": beats, "unanalysed": True}
 
 
+def _with_section(scene, group):
+    """The scene numbered by the story's own scene it falls in, when known.
+
+    Several passages can share one scene of the story; the director treats
+    them as one, so the scene keeps one Peak and a page breaks only where the
+    story itself changes scene."""
+    section = group[0].get("section") if group else None
+    return {**scene, "section": section} if section is not None else scene
+
+
 class Stop(Exception):
     """Raised by a writer or progress callback to end analysis early.
 
@@ -775,7 +967,9 @@ def analyze(source, write, previous=None, title="Chapter", progress=lambda *_: N
         "version": 1, "id": str(uuid.uuid4()), "characters": [], "chapters": []}
     validate_book(book)
     chapter_id = str(uuid.uuid4())
-    groups = passages(source, max_words=passage_words, max_units=passage_units)
+    # A drawn chapter needs real scenes: a page breaks and a Peak lands on
+    # them. The audiobook only needs bounded calls.
+    groups = passages(source, max_words=passage_words, max_units=passage_units, scenes=mode == "full")
     scenes = []
     continuity = _continuity(book["chapters"])
     for i, group in enumerate(groups):
@@ -786,14 +980,15 @@ def analyze(source, write, previous=None, title="Chapter", progress=lambda *_: N
                 group, i + 1, f"{chapter_id}-s{i + 1}", book["characters"], continuity,
                 write, mode, warn, refuse)
         except Stop:
-            scenes.extend(_unanalysed_scene(g, f"{chapter_id}-s{j + 1}", j + 1)
+            scenes.extend(_with_section(_unanalysed_scene(g, f"{chapter_id}-s{j + 1}", j + 1), g)
                           for j, g in enumerate(groups[i:], i))
             break
-        scenes.append(scene)
+        scenes.append(_with_section(scene, group))
         for beat in scene["beats"]:
             _remember_state(continuity, beat)
     # Once more over the whole chapter: a tag's name can sit in the passage
     # before, and unanalysed passages have no attribution of their own.
+    _settle_narrator(book["characters"], [s for c in book["chapters"] for s in c["scenes"]] + scenes, source)
     book["characters"] = _ensure_narrator(book["characters"], source)
     _attribute_by_tags([b for s in scenes for b in s["beats"]], source, 0, book["characters"])
     chapter = {"id": chapter_id, "title": title.strip() or "Chapter",
@@ -844,11 +1039,14 @@ def resume(book, chapter_id, write, progress=lambda *_: None, passage_words=450,
                     stopped = True
             if stopped:
                 scene = _unanalysed_scene(group, scene_id, k + 1)
+            if "section" in chapter["scenes"][k]:
+                scene = {**scene, "section": chapter["scenes"][k]["section"]}
             replaced[k].append(scene)
             done += 1
     for k, scene in enumerate(chapter["scenes"]):
         rebuilt.extend(replaced.get(k, [scene]))
     chapter["scenes"] = rebuilt
+    _settle_narrator(book["characters"], [s for c in book["chapters"] for s in c["scenes"]], chapter["source"])
     book["characters"] = _ensure_narrator(book["characters"], chapter["source"])
     _attribute_by_tags([b for s in rebuilt for b in s["beats"]], chapter["source"], 0, book["characters"])
     validate_book(book)
@@ -909,7 +1107,8 @@ def validate_book(book):
 def _with_tags(book, chapter):
     """The chapter with speech tags applied, for books analysed before them."""
     chapter = copy.deepcopy(chapter)
-    _attribute_by_tags([b for s in chapter["scenes"] for b in s["beats"]], chapter["source"], 0, book["characters"])
+    _attribute_by_tags([b for s in chapter["scenes"] for b in s["beats"]], chapter["source"], 0,
+                       book["characters"], roles=False)
     return chapter
 
 
