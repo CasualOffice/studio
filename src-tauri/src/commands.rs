@@ -2320,22 +2320,7 @@ pub async fn enrich_panels(
     let _job = state.job_gate.read().await;
     state.require_unlocked()?;
 
-    let host = HostInfo::probe(&state.paths());
-    let writer = [
-        "qwen3-14b-story-4bit",
-        "qwen3-8b-story-4bit",
-        "qwen3-4b-instruct-4bit",
-    ]
-    .into_iter()
-    .filter(|id| *id != "qwen3-14b-story-4bit" || host.total_ram_gib >= 24.0)
-    .filter_map(|id| models::find(&state.paths(), &host, id))
-    .find(|m| {
-        m.installed
-            && !m.hopeless
-            && m.broken.is_none()
-            && (m.id != "qwen3-14b-story-4bit" || host.total_ram_gib >= 24.0)
-    })
-    .ok_or_else(|| AppError::msg("Install a story analyst or prompt writer from Models."))?;
+    let writer = story_writer(&state, None)?;
 
     let engine = state.engine(&app).await?;
     engine
@@ -2346,7 +2331,7 @@ pub async fn enrich_panels(
                 "panels": panels,
                 "style": style,
                 "places": places.unwrap_or_else(|| json!([])),
-                "writer": writer.repo,
+                "writer": writer,
             }),
         )
         .await
@@ -2952,36 +2937,25 @@ pub struct StoryAnalysis {
     format: Option<String>,
 }
 
+/// Story analysts, best first. Qwen3.5 9B leads: newer than the 14B, faster,
+/// and inside a 16 GB Mac. The 14B needs 24 GB.
+const STORY_WRITERS: &[&str] = &[
+    "qwen3.5-9b-story-4bit",
+    "qwen3-14b-story-4bit",
+    "qwen3-8b-story-4bit",
+    "qwen3-4b-instruct-4bit",
+];
+
 /// The story analyst to use: the one asked for, or the best installed one.
 fn story_writer(state: &AppState, model_id: Option<&str>) -> Result<String> {
     let host = HostInfo::probe(&state.paths());
-    let ids = if let Some(id) = model_id {
-        vec![id]
-    } else if host.total_ram_gib >= 24.0 {
-        vec![
-            "qwen3-14b-story-4bit",
-            "qwen3-8b-story-4bit",
-            "qwen3-4b-instruct-4bit",
-        ]
-    } else {
-        vec!["qwen3-8b-story-4bit", "qwen3-4b-instruct-4bit"]
-    };
-    ids.into_iter()
-        .filter(|id| {
-            [
-                "qwen3-14b-story-4bit",
-                "qwen3-8b-story-4bit",
-                "qwen3-4b-instruct-4bit",
-            ]
-            .contains(id)
-        })
+    STORY_WRITERS
+        .iter()
+        .copied()
+        .filter(|id| model_id.map_or(true, |asked| asked == *id))
+        .filter(|id| *id != "qwen3-14b-story-4bit" || host.total_ram_gib >= 24.0)
         .filter_map(|id| models::find(&state.paths(), &host, id))
-        .find(|m| {
-            m.installed
-                && !m.hopeless
-                && m.broken.is_none()
-                && (m.id != "qwen3-14b-story-4bit" || host.total_ram_gib >= 24.0)
-        })
+        .find(|m| m.installed && !m.hopeless && m.broken.is_none())
         .map(|m| m.repo)
         .ok_or_else(|| {
             AppError::msg("Install a story analyst or the prompt writer from Models first.")

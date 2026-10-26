@@ -669,6 +669,15 @@ class DialogueFromSource(unittest.TestCase):
 
 
 class LongChapterRobustness(unittest.TestCase):
+    def test_a_placeholder_visual_is_no_description(self):
+        # Qwen3.5 answers "none defined" for someone the story never describes.
+        source = 'Jonas waited.'
+        for placeholder in ('none', 'None defined.', 'not described', 'N/A'):
+            data = reply(story.passages(source)[0], [{"id": "j", "name": "Jonas", "aliases": [],
+                                                      "visual": placeholder, "voice": ""}])
+            book = story.analyze(source, lambda *_: json.dumps(data))
+            self.assertEqual(book['characters'][0]['visual'], '', placeholder)
+
     def test_character_visual_stays_bounded_across_many_scenes(self):
         source = ' '.join(f'Mira walked {i}.' for i in range(90))
         def write(_, prompt):

@@ -14,8 +14,8 @@ import { anchorOverflow, artOf, fromArrays, identify, setArt, toArrays,
 import { loadBoardDraft, loadSavedBoard, type BoardDraft, type Coverage }
   from "../lib/boardDraft";
 import { CUSTOM_STYLE, STYLES, drawBatch, isKnownStyle, lockCustomStyle, lockStyle,
-         panelPrompt, panelReferences, storyPanelReferences, panelSeed, placeKey, placePrompt, identityPrompt, storyContinuityReference,
-         placeSeed, previousPanel, reviveLock, sheetPrompt, styleHasMoved,
+         panelPrompt, panelReferences, panelSeed, placeKey, placePrompt, identityPrompt,
+         placeSeed, reviveLock, sheetPrompt, styleHasMoved,
          styleLabel, shotClass } from "../lib/board";
 import type { StyleLock } from "../lib/board";
 
@@ -1312,10 +1312,6 @@ export default function Storyboard({
     const id = newJobId();
     setJobId(id);
     const un = await onEngineProgress((p) => { if (p.job_id === id) setProg(p); });
-    // What the last moment looked like, when there is one in this scene. The
-    // board had no continuity at all: every panel was drawn from the sheet and
-    // the room, so the light, the weather and the state of the character's
-    // clothes reset between one panel and the next inside a single scene.
     try {
       let identity = sheetId;
       if (panel.cast !== undefined) {
@@ -1346,7 +1342,10 @@ export default function Storyboard({
               prompt: identityPrompt(style, `${actor.name}: ${visual}`),
               negative_prompt: null, width: panelPx, height: panelPx,
               steps: model.steps_default || 4, guidance: Math.min(1.0, model.guidance_max),
-              seed: panelSeed(actors.indexOf(actor), 0), count: 1,
+              // Seeded by who they are, not where they stand in the panel:
+              // by position every first-listed character shared one seed, and
+              // two thinly described people came back as the same face.
+              seed: placeSeed(actor.character_id), count: 1,
               images: [], image_strength: null, i2i_mode: null,
               low_ram: true, preview: false, cache_limit_gb: null,
               allow_over_budget: false, loras: [], mask: null,
@@ -1376,13 +1375,8 @@ export default function Storyboard({
         }
       }
       if (stop.current) return false;
-      const continuation = panel.cast !== undefined
-        ? storyContinuityReference(i, board, drawnRef.current) : null;
-      const refs = panel.cast !== undefined
-        ? storyPanelReferences(panel, identity, continuation,
-            places[placeKey(panel)] ?? null, model.max_edit_images || 1)
-        : panelReferences(panel, identity, places[placeKey(panel)] ?? null,
-            previousPanel(i, board, drawnRef.current), model.max_edit_images || 1);
+      const refs = panelReferences(panel, identity, places[placeKey(panel)] ?? null,
+        model.max_edit_images || 1);
       const params = {
         job_id: id, model_id: model.id,
         prompt: panelPrompt({ ...panel, cast: panel.cast?.map((actor) => ({

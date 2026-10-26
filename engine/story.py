@@ -366,6 +366,9 @@ def quotes(text):
 VISUAL_LIMIT = 600
 
 
+NO_VISUAL = re.compile(r"(?:none|n/?a|unknown|unspecified|not (?:described|specified|given|stated|mentioned)|none (?:given|defined|described|stated|mentioned))\.?", re.I)
+
+
 def _merge_visual(known, new):
     """Add only facts not already known; identity text stays bounded.
 
@@ -447,6 +450,10 @@ def parse_scene(raw, group, bible, scene_id):
         if name.casefold() in {"i", "me", "my", "he", "she", "they", "him", "her", "we", "you"}:
             raise ValueError("use a canonical name, not a pronoun")
         visual = _text(person.get("visual", ""), "visual")
+        # "none", "not described": an answer about the description, not one.
+        # Kept, it reached every panel prompt as the character's look.
+        if NO_VISUAL.fullmatch(visual.strip()):
+            visual = ""
         voice = _text(person.get("voice", ""), "voice")
         if existing:
             existing["aliases"] = list(dict.fromkeys([*existing["aliases"], *aliases, name]))

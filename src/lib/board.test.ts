@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { cameraWords, shotClass, CHAIN_LIMIT, compositions, drawBatch, continuesFrom, CUSTOM_STYLE, isKnownStyle, lockCustomStyle, lockStyle,
-         panelPrompt, previousPanel,
+import { cameraWords, shotClass, compositions, drawBatch, CUSTOM_STYLE, isKnownStyle, lockCustomStyle, lockStyle,
+         panelPrompt,
          panelReferences, panelSeed, placeKey, placePrompt, placeSeed,
          reviveLock, sheetPrompt, shotBackground, styleHasMoved, styleWords,
          STYLES } from "./board";
@@ -344,107 +344,14 @@ describe("sheetPrompt", () => {
   });
 });
 
-describe("continuity between panels", () => {
-  const scene = (n: number): Panel => panel({ scene: n });
-
-  it("carries the previous panel forward inside a scene", () => {
-    // The board had no continuity at all: every panel was drawn from the
-    // sheet and the room, so the light, the weather and the state of the
-    // character's clothes reset between one panel and the next.
-    const panels = [scene(1), scene(1), scene(1)];
-    expect(previousPanel(1, panels, ["a", null, null])).toBe("a");
-  });
-
-  it("does not carry when the place changes inside a scene", () => {
-    // A scene number is too coarse. One scene moves between rooms, and a
-    // reference carrying the wrong room tells the drawer to continue it.
-    const a = panel({ scene: 1, setting: "a narrow hallway" });
-    const b = panel({ scene: 1, setting: "a bright kitchen" });
-    expect(continuesFrom(a, b)).toBe(false);
-    expect(previousPanel(1, [a, b], ["a", null])).toBeNull();
-  });
-
-  it("does not carry when the people change", () => {
-    const a = panel({ scene: 1, setting: "a hall", characters: ["Mira"] });
-    const b = panel({ scene: 1, setting: "a hall", characters: ["Tomas"] });
-    expect(continuesFrom(a, b)).toBe(false);
-  });
-
-  it("carries when the cast overlaps", () => {
-    const a = panel({ scene: 1, setting: "a hall", characters: ["Mira"] });
-    const b = panel({ scene: 1, setting: "a hall", characters: ["Mira", "Tomas"] });
-    expect(continuesFrom(a, b)).toBe(true);
-  });
-
-  it("does not lead a frame she is out of with one she is in", () => {
-    // The same failure the character sheet is already withheld to avoid:
-    // handing a panel a picture containing her puts her back in it.
-    const a = panel({ scene: 1, setting: "a hall", character_in_frame: true });
-    const b = panel({ scene: 1, setting: "a hall", character_in_frame: false });
-    expect(continuesFrom(a, b)).toBe(false);
-    expect(continuesFrom(b, a)).toBe(true);
-  });
-
-  it("does not carry when the light or weather moves", () => {
-    const a = panel({ scene: 1, setting: "a street", description: "morning sun" });
-    const b = panel({ scene: 1, setting: "a street", description: "night, raining" });
-    expect(continuesFrom(a, b)).toBe(false);
-  });
-
-  it("carries when the conditions agree", () => {
-    const a = panel({ scene: 1, setting: "a street", description: "night, wet road" });
-    const b = panel({ scene: 1, setting: "a street", description: "night, a lit window" });
-    expect(continuesFrom(a, b)).toBe(true);
-  });
-
-  it("carries when neither panel says anything about conditions", () => {
-    const a = panel({ scene: 1, setting: "a hall" });
-    const b = panel({ scene: 1, setting: "a hall" });
-    expect(continuesFrom(a, b)).toBe(true);
-  });
-
-  it("does not carry across a scene change", () => {
-    // The panel before a scene change is the wrong room.
-    const panels = [scene(1), scene(2)];
-    expect(previousPanel(1, panels, ["a", null])).toBeNull();
-  });
-
-  it("re-anchors to the sheet at the chain limit", () => {
-    // Every generation is a lossy copy. Chained without limit, the character
-    // is N copies from the sheet that defined her by panel N.
-    const panels = Array.from({ length: 9 }, () => scene(1));
-    const drawn = panels.map((_, i) => `p${i}`);
-    expect(previousPanel(CHAIN_LIMIT, panels, drawn)).toBeNull();
-    expect(previousPanel(CHAIN_LIMIT + 1, panels, drawn)).toBe(`p${CHAIN_LIMIT}`);
-  });
-
-  it("skips a panel that has not been drawn", () => {
-    const panels = [scene(1), scene(1), scene(1)];
-    expect(previousPanel(2, panels, ["a", null, null])).toBe("a");
-  });
-
-  it("identity wins when only one reference fits", () => {
-    // Most models in the catalogue take exactly one. A character whose face
-    // changes between panels is the failure everyone sees first.
-    const refs = panelReferences(panel(), "sheet", "room", "previous", 1);
-    expect(refs).toEqual(["sheet"]);
-  });
-
-  it("orders identity, then continuity, and holds the room back", () => {
-    // The room picture is not handed to a frame with somebody in it -- see
-    // the A/B in panelReferences. Identity and continuity still lead.
-    const refs = panelReferences(panel(), "sheet", "room", "previous", 3);
-    expect(refs).toEqual(["sheet", "previous"]);
-  });
-
-  it("gives a panel without the character its continuity instead", () => {
-    const refs = panelReferences(
-      panel({ character_in_frame: false }), "sheet", "room", "previous", 1);
-    expect(refs).toEqual(["previous"]);
-  });
-});
-
 describe("panelReferences", () => {
+  it("never hands a panel a previous frame, which it would edit into a copy", () => {
+    // A one-reference model was given the last frame in place of the sheet,
+    // on the edit route: each panel came back as the one before it.
+    expect(panelReferences(panel(), "sheet", "room", 1)).toEqual(["sheet"]);
+    expect(panelReferences(panel({ character_in_frame: false }), "sheet", "room", 1)).toEqual(["room"]);
+  });
+
   it("hands a frame with somebody in it her sheet, and not the room", () => {
     // This asserted both references, on a measurement that was real but only
     // half the question: two references do keep consecutive panels in the same

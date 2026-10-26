@@ -1134,6 +1134,12 @@ def _load_assistant(req_id: str, repo: str) -> tuple[Any, Any, Any]:
 _WRITER: dict[str, Any] = {"key": None, "model": None, "tokenizer": None}
 
 WRITER_REPO = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
+# Writers that reason before answering unless told not to. Left on, a scene's
+# JSON arrives after thousands of tokens of thinking, or not at all.
+THINKING_WRITERS = {
+    "mlx-community/Qwen3-8B-4bit", "mlx-community/Qwen3-14B-4bit",
+    "mlx-community/Qwen3.5-9B-MLX-4bit",
+}
 
 
 def _load_writer(req_id: str, repo: str | None = None) -> tuple[Any, Any]:
@@ -1192,8 +1198,7 @@ def _write(req_id: str, system: str, user: str, max_tokens: int = 160,
         [{"role": "system", "content": system},
          {"role": "user", "content": user}],
         add_generation_prompt=True,
-        **({"enable_thinking": False} if (repo or WRITER_REPO) in {
-            "mlx-community/Qwen3-8B-4bit", "mlx-community/Qwen3-14B-4bit"} else {}),
+        **({"enable_thinking": False} if (repo or WRITER_REPO) in THINKING_WRITERS else {}),
     )
     pieces: list[str] = []
     last = 0.0

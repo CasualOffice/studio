@@ -131,6 +131,28 @@ pub const CATALOG: &[ModelEntry] = &[
         backend: None,
     },
     ModelEntry {
+        id: "qwen3.5-9b-story-4bit",
+        repo: "mlx-community/Qwen3.5-9B-MLX-4bit",
+        name: "Story analyst (Qwen3.5 9B)",
+        family: None,
+        tasks: &[Task::Assist],
+        quantize: Some(4),
+        package_gib: 5.55,
+        peak_gib: 7.5,
+        peak_estimated: true,
+        steps_default: 0,
+        max_edit_images: 0,
+        gated: false,
+        video_from_image: false,
+        guidance_default: 1.0,
+        guidance_max: 1.0,
+        notes: "The recommended story analyst for Board and Audiobook: tells who is \
+                who, who speaks and what each scene is about more reliably than the \
+                smaller writers. Fits a 16 GB Mac. Runs one model at a time.",
+        broken: None,
+        backend: None,
+    },
+    ModelEntry {
         id: "qwen3-8b-story-4bit",
         repo: "mlx-community/Qwen3-8B-4bit",
         name: "Story analyst (Qwen3 8B)",

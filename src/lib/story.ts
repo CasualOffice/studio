@@ -114,7 +114,7 @@ export interface StoryLibrary {
   audio?: Record<string, AudioSettings>;
 }
 export const EMPTY_LIBRARY: StoryLibrary = { version: 1, books: [], activeBookId: null };
-export const ANALYST_IDS = ["qwen3-14b-story-4bit", "qwen3-8b-story-4bit", "qwen3-4b-instruct-4bit"];
+export const ANALYST_IDS = ["qwen3.5-9b-story-4bit", "qwen3-14b-story-4bit", "qwen3-8b-story-4bit", "qwen3-4b-instruct-4bit"];
 
 export interface StoryAnalysisResult {
   book: StoryBook;

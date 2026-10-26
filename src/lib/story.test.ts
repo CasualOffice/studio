@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { castFromBook, EMPTY_LIBRARY, keepBook, voiceGroups, voiceLabel, voiceLanguage, type StoryBook, type StoryLibrary } from "./story";
-import { CHAIN_LIMIT, lockStyle, panelPrompt, identityPrompt, storyContinuityReference, storyPanelReferences } from "./board";
+import { lockStyle, panelPrompt, identityPrompt } from "./board";
 import { staleness } from "./boardDoc";
 import type { Panel } from "./types";
 
@@ -72,32 +72,6 @@ describe("story appearance continuity", () => {
     chapter_id: "chapter", scene: 1, character_in_frame: true, caption: "", location_state,
     cast: [{ character_id: "mira", name: "Mira", visual: "curly black hair", appearance,
       expression: "calm", body_language: "walking" }],
-  });
-  it("carries a finished frame only while outfit and location conditions match", () => {
-    const before = panel("red dress");
-    expect(storyContinuityReference(1, [before, panel("red dress")], ["frame", null])).toBe("frame");
-    expect(storyContinuityReference(1, [before, panel("blue dress")], ["frame", null])).toBeNull();
-    expect(storyContinuityReference(1, [before, panel("red dress", "wet floor; night")], ["frame", null])).toBeNull();
-    expect(storyContinuityReference(1, [before, { ...panel("red dress"), cast: [] }], ["frame", null])).toBeNull();
-  });
-  it("never hands a new camera the previous frame, which it would copy", () => {
-    const before = { ...panel("red dress"), shot: "WS" as const, angle: "eye" };
-    expect(storyContinuityReference(1, [before, { ...panel("red dress"), shot: "CU" as const, angle: "eye" }], ["frame", null])).toBeNull();
-    expect(storyContinuityReference(1, [before, { ...panel("red dress"), shot: "WS" as const, angle: "low" }], ["frame", null])).toBeNull();
-    expect(storyContinuityReference(1, [before, { ...panel("red dress"), shot: "WS" as const, angle: "eye" }], ["frame", null])).toBe("frame");
-  });
-  it("re-anchors to the sheet instead of chaining copies through a whole scene", () => {
-    const run = Array.from({ length: 2 * CHAIN_LIMIT + 1 }, () => panel("red dress"));
-    const drawn = run.map((_, i) => `frame${i}`);
-    expect(storyContinuityReference(CHAIN_LIMIT, run, drawn)).toBeNull();
-    expect(storyContinuityReference(CHAIN_LIMIT + 1, run, drawn)).toBe(`frame${CHAIN_LIMIT}`);
-    const gap = [panel("red dress"), ...Array.from({ length: CHAIN_LIMIT }, () => panel("blue dress")), panel("red dress")];
-    expect(storyContinuityReference(CHAIN_LIMIT + 1, gap, gap.map((_, i) => `f${i}`))).toBeNull();
-  });
-  it("keeps the identity sheet beside the previous frame when the model takes both", () => {
-    expect(storyPanelReferences(panel("red dress"), "sheet", "frame", null, 3)).toEqual(["sheet", "frame"]);
-    expect(storyPanelReferences(panel("red dress"), "sheet", "frame", null, 1)).toEqual(["frame"]);
-    expect(storyPanelReferences(panel("red dress"), "sheet", null, null, 1)).toEqual(["sheet"]);
   });
   it("uses story clothing as a replacement and separates the identity reference", () => {
     const prompt = panelPrompt(panel("blue dress"), lockStyle("ink"), "");

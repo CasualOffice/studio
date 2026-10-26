@@ -495,56 +495,22 @@ export function placePrompt(style: StyleLock, place: string): string {
 }
 
 /**
- * How often a panel is re-anchored to the character sheet alone.
+ * Which reference images a panel is drawn against: who is in it, and for a
+ * frame with nobody in it, the room.
  *
- * Chaining each panel to the one before it carries continuity forward, and
- * carries error forward with it: every generation is a lossy copy, so by the
- * tenth panel the character is ten copies from the sheet that defined her.
- * The sheet is the fixed point and cannot drift, so the chain is broken at
- * intervals and re-anchored to it.
+ * Never a previous panel. Every panel is drawn on the edit route, and handed
+ * a finished frame the drawer edits that frame: the same composition, the
+ * same pose, a moment that does not move. With a one-reference model the
+ * last frame also displaced the character sheet, so a chained run was a copy
+ * of a copy with the identity anchor gone. Outfit, light and the state of the
+ * room carry between panels in the brief -- `appearance` and `location_state`
+ * -- where they describe the moment instead of dictating its picture.
  */
-export const CHAIN_LIMIT = 4;
-
-/**
- * Which reference images a panel is drawn against.
- *
- * Three anchors, in falling order of what they cost to lose:
- *
- *   the character sheet, which holds who this is and never drifts
- *   the previous panel, which holds what the last moment looked like
- *   the location sheet, which holds the room
- *
- * The previous panel is the continuity that was missing: within a scene it
- * carries the time of day, the weather, the state of the clothes and where
- * the light is coming from -- none of which the sheet or the room knows, and
- * all of which reset between panels without it. It is passed only inside a
- * scene, because the panel before a scene change is the wrong room.
- *
- * Order matters beyond taste: most models in the catalogue take exactly one
- * reference, so this list is trimmed to `budget` and the first entry is the
- * one that survives. Identity wins, because a character who changes face
- * between panels is the failure everyone sees first.
- */
-export function storyPanelReferences(
-  panel: Panel, identity: string | null, continuation: string | null,
-  place: string | null, budget: number
-): string[] {
-  // The sheet holds who this is; the previous frame holds what they wear and
-  // where the light is. With room for both, both go -- the sheet first so it
-  // survives trimming. With room for one, the continuation is kept (outfits
-  // reset without it) and the chain re-anchors to the sheet on its interval.
-  return budget > 1
-    ? panelReferences(panel, identity, place, continuation, budget)
-    : panelReferences(panel, continuation ?? identity, place, null, budget);
-}
-
 export function panelReferences(
-  panel: Panel, sheet: string | null, place: string | null,
-  previous: string | null = null, budget = 3
+  panel: Panel, sheet: string | null, place: string | null, budget = 3
 ): string[] {
   const refs: string[] = [];
   if (panel.character_in_frame && sheet) refs.push(sheet);
-  if (previous) refs.push(previous);
   // The room picture goes to the frames that are about the room.
   //
   // Handing it to a panel with somebody in it does not place them in the room;
@@ -585,116 +551,6 @@ export function identityPrompt(style: StyleLock, character: string): string {
 consistent facial proportions, hair, skin and distinguishing features. Neutral expression,
 plain background, simple neutral neckline. No full-body outfit, props, scenery or lettering.
 ${character.trim()}.`;
-}
-
-/**
- * Structured continuity requires the exact visible cast and current state.
- *
- * Bounded like `previousPanel`: it used to search the whole chapter, so every
- * panel of a scene was a copy of a copy of its first frame and the face
- * drifted further with each one. On the interval boundary nothing is returned
- * and the panel goes back to the character sheet alone.
- */
-export function storyContinuityReference(index: number, panels: Panel[], drawn: (string | null)[]): string | null {
-  const next = panels[index];
-  if (!next?.cast || index % CHAIN_LIMIT === 0) return null;
-  const signature = (p: Panel) => JSON.stringify((p.cast ?? []).map((a) =>
-    [a.character_id, a.appearance ?? ""]).sort((a, b) => a[0].localeCompare(b[0])));
-  for (let i = index - 1; i >= 0 && index - i <= CHAIN_LIMIT; i--) {
-    const prev = panels[i];
-    if (prev.chapter_id !== next.chapter_id) break;
-    // Only the same camera continues a frame. Handed a previous picture, the
-    // drawer copies its composition, so a new shot or angle anchored to the
-    // last frame came back as the last frame again -- the repeats people saw.
-    const sameCamera = shotClass(prev) === shotClass(next) && (prev.framing ?? "") === (next.framing ?? "")
-      && (prev.angle ?? "eye") === (next.angle ?? "eye");
-    if (sameCamera && placeKey(prev) === placeKey(next) && signature(prev) === signature(next)
-        && (prev.location_state ?? "") === (next.location_state ?? "")
-        && continuesFrom({ ...prev, scene: next.scene }, next) && drawn[i]) return drawn[i];
-  }
-  return null;
-}
-
-/**
- * Conditions in a frame that a later frame either shares or does not.
- *
- * A scene number is too coarse to decide continuity. One scene runs from
- * morning to night, moves between rooms and changes who is present, and a
- * reference carrying the wrong one of those is worse than no reference: the
- * drawer is being shown a picture and told to continue it.
- */
-const CONDITIONS = [
-  "dawn", "sunrise", "morning", "noon", "midday", "afternoon", "dusk",
-  "sunset", "evening", "night", "midnight",
-  "rain", "raining", "snow", "snowing", "fog", "foggy", "mist", "storm",
-  "sunny", "overcast", "cloudy", "dark", "candlelit", "firelight",
-];
-
-function conditionsOf(panel: Panel): Set<string> {
-  const text = `${panel.setting ?? ""} ${panel.description ?? ""} `
-    + `${panel.action ?? ""}`.toLowerCase();
-  return new Set(CONDITIONS.filter((c) => new RegExp(`\\b${c}\\b`).test(text)));
-}
-
-/**
- * Whether `next` can be drawn as a continuation of `prev`.
- *
- * A reference is an instruction. Handing the drawer the last frame says "this,
- * a moment later", and that is only true when the moment after really is the
- * same place, the same people and the same conditions. Four ways it is not:
- *
- *   the place changed -- a different room inside one scene
- *   the people changed -- a frame of someone else entirely
- *   the character left the frame -- carrying a picture she is in puts her back
- *     in, which is the failure the character sheet was already withheld to
- *     avoid
- *   the light or weather changed -- morning to night, dry to raining
- */
-export function continuesFrom(prev: Panel, next: Panel): boolean {
-  if ((prev.scene ?? 1) !== (next.scene ?? 1)) return false;
-  if (placeKey(prev) !== placeKey(next)) return false;
-  // A frame she is in cannot lead a frame she must be out of.
-  if (prev.character_in_frame && !next.character_in_frame) return false;
-
-  const before = new Set((prev.characters ?? []).map((n) => n.toLowerCase()));
-  const after = new Set((next.characters ?? []).map((n) => n.toLowerCase()));
-  if (before.size > 0 && after.size > 0) {
-    const shared = [...after].some((n) => before.has(n));
-    if (!shared) return false;
-  }
-
-  const was = conditionsOf(prev);
-  const now = conditionsOf(next);
-  if (was.size > 0 && now.size > 0) {
-    const same = [...now].some((c) => was.has(c));
-    if (!same) return false;
-  }
-  return true;
-}
-
-/**
- * The panel to carry forward from, if any.
- *
- * `drawn` holds one id per panel, null where nothing has been drawn yet, so a
- * redrawn panel in the middle of a batch is followed correctly rather than
- * skipped. The chain is broken at intervals so error cannot accumulate, and
- * broken immediately whenever the conditions move.
- */
-export function previousPanel(
-  index: number, panels: Panel[], drawn: (string | null)[]
-): string | null {
-  const here = panels[index];
-  if (!here) return null;
-  let back = 0;
-  for (let i = index - 1; i >= 0 && back < CHAIN_LIMIT; i--, back++) {
-    if (!continuesFrom(panels[i], here)) return null;
-    if (drawn[i]) {
-      // Re-anchor on the interval boundary: this panel is far enough from the
-      // sheet that another copy of a copy is worth less than going back to it.
-      return index % CHAIN_LIMIT === 0 ? null : drawn[i];
-    }
-  }
-  return null;
 }
 
 /**
