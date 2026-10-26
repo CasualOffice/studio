@@ -3134,7 +3134,11 @@ pub async fn generate_audiobook(
         (Some(book), Some(chapter_id)) => Some(
             book["chapters"]
                 .as_array()
-                .and_then(|chapters| chapters.iter().find(|c| c["id"].as_str() == Some(chapter_id)))
+                .and_then(|chapters| {
+                    chapters
+                        .iter()
+                        .find(|c| c["id"].as_str() == Some(chapter_id))
+                })
                 .ok_or_else(|| AppError::msg("choose an analyzed chapter"))?,
         ),
         _ => None,
@@ -3242,7 +3246,9 @@ pub async fn revoice_audiobook(
     state.require_unlocked()?;
     let old = state.vault.get_item(&args.item_id)?;
     if old.kind != "audiobook" || args.index >= old.spans.len() {
-        return Err(AppError::msg("this recording has no such sentence to read again"));
+        return Err(AppError::msg(
+            "this recording has no such sentence to read again",
+        ));
     }
     let model_name = speech_model_name(&state, args.model_id.as_deref())?;
     let (in_fid, in_key, in_path) = state.vault.input_key(&old.id)?;
@@ -3260,7 +3266,9 @@ pub async fn revoice_audiobook(
         Ok(r) if r["sealed"] == true && r["sizes"][0].as_u64().unwrap_or(0) > 0 => r,
         Ok(_) => {
             state.vault.discard_slots(std::slice::from_ref(&id));
-            return Err(AppError::msg("the speech engine returned no audio for this sentence"));
+            return Err(AppError::msg(
+                "the speech engine returned no audio for this sentence",
+            ));
         }
         Err(e) => {
             state.vault.discard_slots(std::slice::from_ref(&id));
@@ -3298,12 +3306,22 @@ mod audiobook_tests {
 
     #[test]
     fn pasted_text_is_named_by_its_opening_words() {
-        assert_eq!(audiobook_title(Some("The train"), Some("x"), Some("a b")), "The train");
         assert_eq!(
-            audiobook_title(None, Some("  "), Some("Yaar, main kal office gaya tha, but boss")),
+            audiobook_title(Some("The train"), Some("x"), Some("a b")),
+            "The train"
+        );
+        assert_eq!(
+            audiobook_title(
+                None,
+                Some("  "),
+                Some("Yaar, main kal office gaya tha, but boss")
+            ),
             "Yaar, main kal office gaya tha,…"
         );
-        assert_eq!(audiobook_title(None, None, Some("Short text.")), "Short text.");
+        assert_eq!(
+            audiobook_title(None, None, Some("Short text.")),
+            "Short text."
+        );
         assert_eq!(audiobook_title(None, None, Some("   ")), "Narration");
     }
 
