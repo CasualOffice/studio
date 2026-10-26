@@ -6981,15 +6981,66 @@ def req_format(req):
     return fmt if fmt in ("manga", "webtoon", "comic", "picture") else "manga"
 
 
+def req_pages(req):
+    """The pages the board is planned for: four unless asked, at most 200."""
+    try:
+        return max(1, min(200, int(req.get("pages") or 4)))
+    except (TypeError, ValueError):
+        return 4
+
+
+def _brief_writer(req_id, req):
+    """Writer and progress for the briefs the director's rules left weak.
+
+    One batch of panels per call, so a chapter costs a handful of short
+    replies rather than one per scene; Stop keeps the briefs done so far."""
+    import director
+    started = time.monotonic()
+    where = {"label": "Writing panel briefs", "fraction": None}
+    def progress(i, total):
+        label = f"Writing panel briefs {i + 1} of {total}"
+        if i:
+            label += f" · about {max(1, round((time.monotonic() - started) / i * (total - i) / 60))} min left"
+        where.update(label=label, fraction=i / total)
+        emit({"id": req_id, "type": "progress", "phase": "denoise", "progress": i / total, "message": label})
+    def write(system, user):
+        if is_cancelled(req_id):
+            raise director.Stop()
+        try:
+            return _write(req_id, system, user, max_tokens=1200, temperature=0.3, repo=req.get("writer"),
+                          label=where["label"], fraction=where["fraction"])
+        except Cancelled:
+            raise director.Stop()
+    return write, progress
+
+
+def _directed(req_id, req, book, chapter_id, refine):
+    """The chapter's panels and what of the story they carry.
+
+    The coverage is measured, sentence by sentence: the board used to report
+    100% whatever the plan had left out."""
+    import director
+    fmt, pages = req_format(req), req_pages(req)
+    if refine and req.get("writer"):
+        write, progress = _brief_writer(req_id, req)
+        panels = director.direct(book, chapter_id, fmt, write=write, progress=progress, pages=pages)
+    else:
+        panels = director.plan(book, chapter_id, fmt, pages)
+    return panels, director.coverage(director.script(book, chapter_id), panels)
+
+
 def _story_result(req_id, book, chapter_id, req=None):
     import story as story_model
-    book = story_model.ensure_narrator(book)
+    req = req or {}
+    book = story_model.ensure_cast(book)
     chapter = next(c for c in book["chapters"] if c["id"] == chapter_id)
     left = sum(1 for s in chapter["scenes"] if s.get("unanalysed"))
-    import director
-    return {"book": book, "chapter_id": chapter_id,
-            "panels": director.plan(book, chapter_id, req_format(req or {})),
-            "stopped": is_cancelled(req_id), "unanalysed": left}
+    stopped = is_cancelled(req_id)
+    # The briefs are part of the one automatic pass, while the writer is
+    # still loaded -- unless the analysis itself was stopped.
+    panels, covered = _directed(req_id, req, book, chapter_id, refine=not stopped)
+    return {"book": book, "chapter_id": chapter_id, "panels": panels, "coverage": covered,
+            "stopped": stopped, "unanalysed": left}
 
 
 def op_story_analyze(req_id, req):
@@ -7016,36 +7067,17 @@ def op_story_resume(req_id, req):
 
 
 def op_direct_story(req_id, req):
-    """The shot list for a chapter: the director's rules, refined scene by
-    scene by the story model when one is named. A refinement that fails or is
-    stopped keeps the rules' plan for the scenes it did not reach."""
-    import director
+    """The shot list for a chapter at the page count asked for: the
+    director's rules, with weak briefs rewritten by the story model when one
+    is named. A rewrite that fails or is stopped keeps the rules' briefs."""
     import story as story_model
-    fmt = req_format(req)
-    # A book analysed before a first-person narrator was a character gains
-    # them here; the book goes back so the board can draw their cast sheet.
-    book = story_model.ensure_narrator(req["book"])
+    # A book analysed before a self-named narrator was merged, or before a
+    # speaking role was a person, is put right here; the book goes back so
+    # the board can save it and cast the people it gained.
+    book = story_model.ensure_cast(req["book"])
     extra = {"book": book} if book is not req["book"] else {}
-    if not req.get("writer"):
-        return {"panels": director.plan(book, req["chapter_id"], fmt), **extra}
-    started = time.monotonic()
-    def progress(i, total):
-        label = f"Directing scene {i + 1} of {total}"
-        if i:
-            label += f" · about {max(1, round((time.monotonic() - started) / i * (total - i) / 60))} min left"
-        emit({"id": req_id, "type": "progress", "phase": "denoise", "progress": i / total, "message": label})
-        where.update(label=label, fraction=i / total)
-    where = {"label": "Directing", "fraction": None}
-    def write(system, user):
-        if is_cancelled(req_id):
-            raise director.Stop()
-        try:
-            return _write(req_id, system, user, max_tokens=1600, temperature=0.4, repo=req.get("writer"),
-                          label=where["label"], fraction=where["fraction"])
-        except Cancelled:
-            raise director.Stop()
-    panels = director.direct(book, req["chapter_id"], fmt, write=write, progress=progress)
-    return {"panels": panels, "stopped": is_cancelled(req_id), **extra}
+    panels, covered = _directed(req_id, req, book, req["chapter_id"], refine=True)
+    return {"panels": panels, "coverage": covered, "stopped": is_cancelled(req_id), **extra}
 
 
 def op_narration_script(req_id, req):
