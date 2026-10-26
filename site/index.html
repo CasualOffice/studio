@@ -1,88 +1,332 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Model Studio — Private creative AI for Mac</title>
-  <link rel="icon" href="img/logo.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="img/logo.svg">
-  <meta name="theme-color" content="#12141c">
-<meta name="description" content="Private creative AI for stories, characters and images. Runs locally on Apple Silicon." />
-<style>
-:root{
-  --bg:#09090b;--surface:#101014;--surface-2:#15151a;--text:#f5f5f1;--muted:#9898a2;
-  --faint:#64646d;--line:rgba(255,255,255,.09);--accent:#c8ff5a;--accent-ink:#11130b;
-  --max:1240px;--r:24px;--r-sm:16px;
-}
-*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter",system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow-x:hidden}
-a{color:inherit;text-decoration:none}img{display:block;max-width:100%}.shell{width:min(var(--max),calc(100% - 48px));margin:auto}
-.nav{position:sticky;top:0;z-index:50;height:72px;border-bottom:1px solid var(--line);background:rgba(9,9,11,.78);backdrop-filter:blur(20px)}.navin{height:100%;display:flex;align-items:center;gap:28px}.brand{display:flex;align-items:center;gap:11px;font-weight:700;letter-spacing:-.02em}.logo{width:30px;height:30px;border-radius:9px;overflow:hidden;background:#17171c}.logo img{width:100%;height:100%;object-fit:cover}.navlinks{margin-left:auto;display:flex;align-items:center;gap:26px;color:var(--muted);font-size:14px}.navlinks a:hover{color:var(--text)}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;border:1px solid var(--line);border-radius:999px;padding:12px 18px;font-weight:650;font-size:14px;transition:.2s ease}.btn:hover{transform:translateY(-1px);border-color:rgba(255,255,255,.2)}.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}.btn.big{padding:15px 23px;font-size:15px}
-.hero{position:relative;padding:88px 0 70px;min-height:760px;border-bottom:1px solid var(--line);overflow:hidden}.hero:before{content:"";position:absolute;left:58%;top:10%;width:650px;height:650px;background:radial-gradient(circle,rgba(200,255,90,.12),transparent 66%);filter:blur(20px);pointer-events:none}.hero-grid{display:grid;grid-template-columns:.95fr 1.05fr;gap:52px;align-items:center}.eyebrow{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);font-weight:750;margin-bottom:22px}.hero h1{font-size:clamp(4.4rem,8vw,7.6rem);line-height:.88;letter-spacing:-.075em;margin:0 0 30px;max-width:8.6ch;font-weight:740}.lede{font-size:20px;line-height:1.55;color:var(--muted);max-width:48ch;margin:0 0 30px}.actions{display:flex;gap:12px;flex-wrap:wrap}.fine{font-size:13px;color:var(--faint);margin-top:17px}
-.artboard{position:relative;min-height:590px;perspective:1600px}.art{position:absolute;border:1px solid var(--line);border-radius:20px;background:var(--surface);box-shadow:0 45px 90px rgba(0,0,0,.42);overflow:hidden}.art img{width:100%;height:100%;object-fit:cover}.art.a{width:52%;aspect-ratio:.75;right:1%;top:8%;transform:rotate(5deg) translateZ(55px)}.art.b{width:40%;aspect-ratio:1;left:4%;top:8%;transform:rotate(-5deg)}.art.c{width:44%;aspect-ratio:1;left:2%;bottom:4%;transform:rotate(3deg) translateZ(20px)}.art.d{width:49%;aspect-ratio:.76;right:12%;bottom:-7%;transform:rotate(-4deg) translateZ(75px)}.tag{position:absolute;z-index:5;padding:8px 12px;border:1px solid rgba(255,255,255,.11);background:rgba(15,15,19,.88);backdrop-filter:blur(14px);border-radius:999px;color:#e9e9e3;font-size:12px;font-weight:650}.tag.one{left:23%;top:2%}.tag.two{right:0;top:45%}.tag.three{left:24%;bottom:0}.tag:before{content:"";width:7px;height:7px;border-radius:50%;display:inline-block;background:var(--accent);margin-right:7px}
-.trust{border-bottom:1px solid var(--line)}.trustrow{min-height:92px;display:grid;grid-template-columns:repeat(4,1fr);align-items:center}.trustitem{display:flex;gap:11px;align-items:center;justify-content:center;color:var(--muted);font-size:14px;border-right:1px solid var(--line);height:34px}.trustitem:last-child{border:0}.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 24px rgba(200,255,90,.5)}
-.section{padding:120px 0;border-bottom:1px solid var(--line)}.section-head{display:grid;grid-template-columns:1fr 1fr;gap:70px;align-items:end;margin-bottom:62px}.kicker{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);font-weight:750;margin-bottom:16px}.section h2{font-size:clamp(2.5rem,5vw,5.2rem);letter-spacing:-.055em;line-height:.95;margin:0;font-weight:690;max-width:12ch}.section-head p{color:var(--muted);font-size:18px;line-height:1.65;margin:0;max-width:50ch}
-.story-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px}.story-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;min-height:500px;position:relative}.story-card.large{grid-column:span 2;display:grid;grid-template-columns:.8fr 1.2fr;min-height:560px}.copy{padding:38px}.stepno{font-size:12px;letter-spacing:.15em;color:var(--accent);font-weight:800}.copy h3{font-size:32px;letter-spacing:-.04em;margin:12px 0 12px}.copy p{color:var(--muted);font-size:16px;line-height:1.65;margin:0}.visual{min-height:330px;background:#0c0c0f;display:grid;place-items:center;overflow:hidden;position:relative}.visual img{width:100%;height:100%;object-fit:cover}.prose{padding:36px;align-content:center;background:linear-gradient(180deg,#0c0c10,#111116)}.quote{font-family:Georgia,serif;font-size:26px;line-height:1.5;color:#e9e7df;max-width:28ch}.quote em{color:var(--accent);font-style:normal}.detect{display:flex;flex-wrap:wrap;gap:8px;margin-top:25px}.chip{border:1px solid var(--line);background:#17171c;border-radius:999px;padding:8px 12px;font-size:12px;color:#b8b8bf}
-.consistency{display:grid;grid-template-columns:.78fr 1.22fr;gap:70px;align-items:center}.consistency h2{max-width:8ch}.panels{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.panel{overflow:hidden;border:1px solid var(--line);border-radius:20px;background:var(--surface);aspect-ratio:1.18}.panel img{width:100%;height:100%;object-fit:cover}.panel:nth-child(2){transform:translateY(28px)}.panel:nth-child(4){transform:translateY(28px)}.captionline{margin-top:28px;color:var(--muted);font-size:14px}.captionline strong{color:var(--text)}
-.feature{display:grid;grid-template-columns:1fr 1fr;gap:70px;align-items:center;margin:90px 0}.feature:first-of-type{margin-top:0}.feature:last-child{margin-bottom:0}.feature.reverse .feature-copy{order:2}.feature h3{font-size:44px;line-height:1.02;letter-spacing:-.05em;margin:0 0 18px}.feature p{font-size:17px;line-height:1.65;color:var(--muted);max-width:44ch}.shot{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.28)}.shot img{width:100%;aspect-ratio:1.28;object-fit:cover}.prompt{padding:16px 18px;border-top:1px solid var(--line);display:flex;align-items:center;gap:10px;color:#d8d8d4;font-size:13px}.prompt code{color:var(--accent);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.privacy{background:#0c0c0f}.privacy-grid{display:grid;grid-template-columns:.9fr 1.1fr;gap:80px;align-items:center}.diagram{border:1px solid var(--line);border-radius:28px;background:#111116;padding:34px;min-height:460px;display:flex;align-items:center;justify-content:center}.machine{border:1px solid rgba(200,255,90,.27);border-radius:24px;padding:30px;width:100%;max-width:520px;background:linear-gradient(180deg,rgba(200,255,90,.035),rgba(255,255,255,.01))}.machine-label{font-size:12px;letter-spacing:.16em;color:var(--accent);text-transform:uppercase;margin-bottom:26px;font-weight:800}.flowline{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;gap:10px}.node{border:1px solid var(--line);border-radius:14px;padding:16px;text-align:center;background:#15151a;font-size:13px;color:#cfcfd2}.arrow{color:var(--faint)}.cross{text-align:center;margin-top:30px;color:#777780;font-size:13px}.privacy-list{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:32px}.privacy-list div{border-top:1px solid var(--line);padding-top:14px;color:var(--muted);font-size:14px}.privacy-list strong{display:block;color:var(--text);font-size:15px;margin-bottom:5px}
-.hardware-card{border:1px solid var(--line);border-radius:28px;background:var(--surface);overflow:hidden}.hw-top{padding:30px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}.hw-title strong{font-size:20px}.hw-title span{display:block;color:var(--muted);margin-top:5px;font-size:13px}.ram{font-size:13px;color:var(--muted)}.models{padding:14px}.model{display:grid;grid-template-columns:18px 1fr auto;gap:12px;align-items:center;padding:16px;border-radius:15px}.model:hover{background:#17171c}.status{width:8px;height:8px;border-radius:50%}.ok{background:var(--accent)}.lim{background:#f4c75b}.no{background:#5b5b65}.model small{display:block;color:var(--muted);font-size:12px;margin-top:3px}.badge{padding:6px 9px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--muted)}
-.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}.metric{padding:28px;border:1px solid var(--line);border-radius:20px;background:var(--surface)}.metric strong{font-size:34px;letter-spacing:-.04em;display:block}.metric span{color:var(--muted);font-size:13px}
-.cta{padding:140px 0}.cta-box{border:1px solid var(--line);border-radius:32px;padding:72px;background:radial-gradient(circle at 80% 0%,rgba(200,255,90,.12),transparent 36%),var(--surface);position:relative;overflow:hidden}.cta h2{font-size:clamp(3rem,6vw,6.5rem);max-width:8ch;margin:0 0 28px;letter-spacing:-.065em;line-height:.91}.cta p{color:var(--muted);font-size:18px;margin:0 0 30px}.foot{height:100px;display:flex;align-items:center;gap:24px;color:var(--faint);font-size:13px;border-top:1px solid var(--line)}.foot .push{margin-left:auto}
-@media(max-width:900px){.navlinks a:not(.btn){display:none}.hero{padding-top:60px}.hero-grid,.section-head,.consistency,.privacy-grid,.feature,.story-card.large{grid-template-columns:1fr}.hero h1{font-size:clamp(4rem,17vw,6.5rem)}.artboard{min-height:510px}.section{padding:88px 0}.story-card.large{grid-column:span 1}.story-grid{grid-template-columns:1fr}.feature.reverse .feature-copy{order:0}.trustrow{grid-template-columns:1fr 1fr}.trustitem:nth-child(2){border-right:0}.metrics{grid-template-columns:1fr 1fr}.section-head{gap:24px}.consistency,.privacy-grid,.feature{gap:38px}.cta-box{padding:44px 28px}}
-@media(max-width:600px){.shell{width:min(var(--max),calc(100% - 28px))}.nav{height:64px}.navlinks{gap:10px}.nav .btn{padding:9px 12px}.hero{min-height:auto;padding-bottom:40px}.hero-grid{gap:18px}.lede{font-size:17px}.artboard{min-height:410px;transform:scale(.96)}.tag{display:none}.trustrow{grid-template-columns:1fr}.trustitem{border-right:0;border-bottom:1px solid var(--line);height:64px}.trustitem:last-child{border:0}.story-card{min-height:auto}.copy{padding:26px}.feature h3{font-size:36px}.privacy-list,.metrics{grid-template-columns:1fr}.flowline{grid-template-columns:1fr}.arrow{transform:rotate(90deg);text-align:center}.cta{padding:90px 0}.foot{height:auto;padding:30px 0;flex-wrap:wrap}.foot .push{margin-left:0;width:100%}}
-
-@media (prefers-reduced-motion: reduce){
-  *,*::before,*::after{animation:none!important;transition:none!important;
-                       scroll-behavior:auto!important}
-  .art .a,.art .b,.art .c,.art .d{transform:none!important}
-}
-</style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Model Studio — your story, drawn and read aloud, on your Mac</title>
+<meta name="description" content="Paste a story and get comic pages and a narrated chapter, made by models running entirely on your Mac. No account, no upload, no credits.">
+<meta name="theme-color" content="#f3eee4">
+<link rel="icon" href="img/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="img/logo.svg">
+<meta property="og:title" content="Model Studio">
+<meta property="og:description" content="Your story, drawn and read aloud — by models that run on your Mac and nothing else.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="img/page-one.webp">
+<link rel="preload" href="fonts/bricolage.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
-<nav class="nav"><div class="shell navin">
-  <a class="brand" href="#top"><span class="logo"><img src="img/logo.svg" alt=""></span>Model Studio</a>
-  <div class="navlinks"><a href="#story">Story</a><a href="#create">Create</a><a href="#privacy">Privacy</a><a href="install.html">Install</a><a href="#hardware">Models</a><a href="https://github.com/CasualOffice/studio">GitHub</a><a class="btn primary" href="https://github.com/CasualOffice/studio/releases/latest">Download for Mac</a></div>
+<a class="skip" href="#main">Skip to content</a>
+
+<nav class="nav" aria-label="Main"><div class="shell nav-in">
+  <a class="brand" href="#top"><img src="img/logo.svg" alt="">Model Studio</a>
+  <div class="nav-links">
+    <a href="#pages">Comics</a><a href="#listen">Audiobook</a><a href="#prompt" class="hide-sm">Prompt help</a>
+    <a href="#privacy" class="hide-sm">Privacy</a><a href="install.html">Install</a>
+    <a class="btn primary" href="https://github.com/CasualOffice/studio/releases/latest">Download</a>
+  </div>
 </div></nav>
 
+<main id="main">
+<!-- ===================================================== hero ========== -->
 <header class="hero" id="top"><div class="shell hero-grid">
-  <div><div class="eyebrow">Private creative AI · Apple Silicon</div><h1>Bring your story to life.</h1><p class="lede">Create characters, illustrations and complete visual stories with models running entirely on your Mac. No uploads. No credits. No cloud.</p><div class="actions"><a class="btn primary big" href="https://github.com/CasualOffice/studio/releases/latest">Download for Mac ↓</a>
-        <a class="btn" href="install.html">Installing &amp; requirements</a><a class="btn big" href="#story">See what it can make →</a></div><div class="fine">Free & open source · Apple Silicon · macOS 13+</div></div>
-  <div class="artboard">
-    <div class="art b"><img src="img/character-sheet.webp" alt="Character reference sheet"></div>
-    <div class="art a"><img src="img/sheet-a.webp" alt="Finished comic page"></div>
-    <div class="art c"><img src="img/room-sheet.webp" alt="Location reference"></div>
-    <div class="art d"><img src="img/page-one.webp" alt="Comic page"></div>
-    <div class="tag one">Character</div><div class="tag two">Scene</div><div class="tag three">Finished page</div>
+  <div>
+    <span class="kicker"><i></i>Runs on your Mac · nothing leaves it</span>
+    <h1>Your story, <span class="scribble">drawn<svg viewBox="0 0 220 24" preserveAspectRatio="none" aria-hidden="true"><path d="M4 16 C 50 6, 120 4, 216 12"/></svg></span> and <span class="accent">read aloud.</span></h1>
+    <p class="lede">Paste a chapter. Model Studio finds who is in it, draws them the same way on every page, and narrates it in a voice you pick — all with models running on Apple Silicon, offline, encrypted.</p>
+    <div class="actions">
+      <a class="btn primary big" href="https://github.com/CasualOffice/studio/releases/latest">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v12m0 0-5-5m5 5 5-5M5 20h14"/></svg>Download for Mac</a>
+      <a class="btn plain" href="#pages">See how it works →</a>
+    </div>
+    <p class="fine">Free and open source · Apple Silicon · macOS 13 or later</p>
+  </div>
+
+  <div>
+    <div class="stage s1" id="stage" aria-label="Model Studio turning a story into a comic page and a narration" role="img">
+      <div class="card ms">
+        <div class="ms-head"><span class="ms-dots"><span></span><span></span><span></span></span><b>The Story of an Hour</b>· Kate Chopin</div>
+        <div class="ms-text" id="msText"></div>
+      </div>
+      <div class="card page" aria-hidden="true">
+        <div class="pane wide"><img src="img/panel-window.webp" alt=""><span class="sketch">panel 1</span></div>
+        <div class="pane"><img src="img/panel-rain.webp" alt=""><span class="sketch">panel 2</span></div>
+        <div class="pane"><img src="img/panel-face.webp" alt=""><span class="sketch">panel 3</span></div>
+      </div>
+      <div class="card cast" aria-hidden="true">
+        <div class="cast-title"><span>Cast · read from the story</span><span>3</span></div>
+        <div class="who"><span class="face"><img src="img/panel-face.webp" alt=""></span><span><strong>Louise Mallard</strong><small>lead · 9 mentions</small></span><span class="stamp">OK</span></div>
+        <div class="who"><span class="face" style="background:var(--sage)"><img src="img/character-sheet.webp" alt="" style="object-position:12% 6%"></span><span><strong>Josephine</strong><small>her sister · speaks 2 lines</small></span></div>
+        <div class="who"><span class="face" style="background:var(--butter);display:grid;place-items:center;font:700 15px var(--display)">R</span><span><strong>Richards</strong><small>a friend · no description yet</small></span></div>
+      </div>
+      <div class="card player" aria-hidden="true">
+        <span class="first-sound">first sound 3.1 s</span>
+        <div class="player-top"><span class="play"><svg viewBox="0 0 10 12"><path d="M0 0l10 6-10 6z"/></svg></span>
+          <span><strong>Chapter 1 · narrated</strong><small>Kokoro · “Heart”</small></span></div>
+        <div class="bars" id="heroBars"></div>
+        <div class="player-line">She said it over and over under her breath: “Free, free, free!”</div>
+      </div>
+    </div>
+    <div class="steps-mini" role="group" aria-label="Show a step">
+      <button type="button" data-step="1">1 · Read</button><button type="button" data-step="2">2 · Cast</button>
+      <button type="button" data-step="3">3 · Draw</button><button type="button" data-step="4">4 · Listen</button>
+    </div>
   </div>
 </div></header>
 
-<section class="trust"><div class="shell trustrow"><div class="trustitem"><i class="dot"></i>Runs entirely on device</div><div class="trustitem"><i class="dot"></i>Works offline</div><div class="trustitem"><i class="dot"></i>Encrypted at rest</div><div class="trustitem"><i class="dot"></i>Open source</div></div></section>
+<div class="band" aria-hidden="true"><div class="band-track">
+  <span>No account</span><span>No upload</span><span>No credits</span><span>Encrypted at rest</span><span>Works offline</span><span>Open source</span><span>Built for Apple Silicon</span>
+  <span>No account</span><span>No upload</span><span>No credits</span><span>Encrypted at rest</span><span>Works offline</span><span>Open source</span><span>Built for Apple Silicon</span>
+</div></div>
 
-<section class="section" id="story"><div class="shell"><div class="section-head"><div><div class="kicker">From prose to page</div><h2>One story. One visual world.</h2></div><p>Studio does more than generate pictures. It turns the source material into characters, places and scenes first—then uses those references to build a coherent visual story.</p></div>
-  <div class="story-grid">
-    <article class="story-card large"><div class="prose"><div class="stepno">01 · READ</div><div class="quote">“The last train pulled into Marseille just after midnight. Elena stepped down into the rain, still wearing <em>the green coat</em> her father had given her.”</div><div class="detect"><span class="chip">Elena · character</span><span class="chip">Green coat · appearance</span><span class="chip">Marseille station · location</span><span class="chip">Rain · scene detail</span></div></div><div class="visual"><img src="img/character-panel.webp" alt="Generated story scene"></div></article>
-    <article class="story-card"><div class="visual"><img src="img/character-sheet.webp" alt="Character sheet"></div><div class="copy"><div class="stepno">02 · CAST</div><h3>Read the story.</h3><p>The cast is read out of your own prose and checked against it &mdash; a name your text never uses is dropped rather than drawn. Character references are then established before anything is rendered, so identity is deliberate instead of rediscovered panel by panel.</p></div></article>
-    <article class="story-card"><div class="visual"><img src="img/room-sheet.webp" alt="Location reference"></div><div class="copy"><div class="stepno">03 · BUILD</div><h3>Remember the places.</h3><p>Locations become reusable visual references. When the story returns to the same room, it should still feel like the same room.</p></div></article>
-    <article class="story-card large"><div class="copy"><div class="stepno">04 · DRAW</div><h3>Turn the plan into pages.</h3><p>Scenes become panels, panels become pages, and each result stays connected to the characters, locations and decisions that produced it. Panels are drawn a few at a time, and a frame that comes out wrong is fixed by writing what is wrong with it rather than rolling again.</p></div><div class="visual"><img src="img/page-two.webp" alt="Finished comic page"></div></article>
+<!-- ===================================================== comics ======== -->
+<section class="section" id="pages"><div class="shell">
+  <div class="head reveal">
+    <div><span class="kicker"><i></i>Board · prose to pages</span><h2>From a pasted chapter to a page you can read.</h2></div>
+    <p>Four steps, and only one of them asks anything of you. The rest is the story model reading carefully and the image model drawing what it was told.</p>
+  </div>
+
+  <div class="story">
+    <div class="story-visual" id="storyVisual" aria-hidden="true">
+      <div class="frame f-read on" data-frame="1">
+        <span class="frame-label">Read</span>
+        <p>Knowing that <span class="ent"><small>character</small>Mrs. Mallard</span> was afflicted with a heart trouble, great care was taken to break to her as gently as possible the news of her husband’s death.</p>
+        <p>She went away to <span class="ent place"><small>place</small>her room</span> alone. She would have no one follow her. <span class="ent line"><small>Josephine speaks</small>“Louise, open the door!”</span></p>
+        <div class="legend"><span style="background:var(--sky)">3 people</span><span style="background:var(--sage)">2 places</span><span style="background:var(--blush)">4 spoken lines</span><span>100% of sentences on a panel</span></div>
+      </div>
+      <div class="frame f-cast" data-frame="2">
+        <span class="frame-label">Cast</span>
+        <img src="img/character-sheet.webp" alt="">
+        <div class="cast-side">
+          <h4>Louise Mallard</h4><p>The lead: she is in 9 of 12 panels.</p>
+          <div class="field"><b>Appearance</b>Young, dark hair pinned up, slight build</div>
+          <div class="field"><b>Costume this chapter</b>High-necked grey day dress</div>
+          <span class="btn approve">Approve cast</span>
+        </div>
+        <span class="big-stamp">APPROVED</span>
+      </div>
+      <div class="frame f-page" data-frame="3">
+        <span class="frame-label">Draw</span>
+        <div class="sheet">
+          <img class="wide" src="img/panel-window.webp" alt="">
+          <img src="img/panel-rain.webp" alt="">
+          <img src="img/panel-face.webp" alt="">
+        </div>
+        <span class="page-tag">Page 1 of 4 — drawn first</span>
+      </div>
+      <div class="frame f-fix" data-frame="4">
+        <span class="frame-label">Fix</span>
+        <div class="fix-main">
+          <img src="img/panel-face.webp" alt="">
+          <svg viewBox="0 0 400 400" preserveAspectRatio="none"><path class="brush" d="M300 270 C 340 260, 360 300, 345 340 S 300 380, 290 330 S 330 290, 350 300"/></svg>
+          <span class="fix-note">“Make the jug a teacup. Leave her alone.”</span>
+        </div>
+        <div class="fix-bar"><span>Only this panel changes</span><span class="chip">A</span><span class="chip on">B</span><span class="chip">C</span></div>
+      </div>
+    </div>
+
+    <div class="story-steps">
+      <article class="step on" data-step="1">
+        <div class="step-no">01</div><h3>Paste the chapter. Pick a length.</h3>
+        <p>Choose how many pages you want and a style. The story model reads who is in each scene, who says every line, and where it happens — and every name is checked against your own words, so nobody is invented. Coverage is real: a sentence that didn’t make it onto a panel is listed, not hidden.</p>
+        <div class="mobile-visual" data-clone="1"></div>
+      </article>
+      <article class="step" data-step="2">
+        <div class="step-no">02</div><h3>Approve the cast — the only question it asks.</h3>
+        <p>Every recurring character gets a full-length reference, costume included, before a single panel is drawn. Change a description, redraw one person, pick the lead. Then approve, and those references hold every face for the rest of the book.</p>
+        <div class="mobile-visual" data-clone="2"></div>
+      </article>
+      <article class="step" data-step="3">
+        <div class="step-no">03</div><h3>Page one arrives first.</h3>
+        <p>You see a finished, lettered page within minutes instead of after the whole chapter. The rest draws page by page while you read. Balloons point at whoever is speaking, and each panel is drawn in the shape of the cell it sits in.</p>
+        <div class="mobile-visual" data-clone="3"></div>
+      </article>
+      <article class="step" data-step="4">
+        <div class="step-no">04</div><h3>Fix the panel, not the page.</h3>
+        <p>Click a panel for a few variants and keep the best, or paint over the part that is wrong and say what it should be. Editing the words in a balloon never redraws the picture.</p>
+        <div class="mobile-visual" data-clone="4"></div>
+      </article>
+    </div>
   </div>
 </div></section>
 
-<section class="section"><div class="shell consistency"><div><div class="kicker">Continuity</div><h2>The same character. Not a similar one.</h2><p class="lede" style="margin-top:24px">The hard part of visual storytelling is not making one good image. It is carrying the same person, clothes and world across the next twenty.</p><div class="captionline"><strong>Character + location references</strong> stay part of the work instead of disappearing after each prompt.</div></div><div class="panels"><div class="panel"><img src="img/character-panel.webp"></div><div class="panel"><img src="img/room-panel.webp"></div><div class="panel"><img src="img/photoreal-panel.webp"></div><div class="panel"><img src="img/sheet-b.webp"></div></div></div></section>
-
-<section class="section" id="create"><div class="shell"><div class="section-head"><div><div class="kicker">Creative tools</div><h2>Make it. Then keep working on it.</h2></div><p>Generation is only the beginning. Move from a first image to correction, expansion and restoration without uploading the work anywhere.</p></div>
-  <div class="feature"><div class="feature-copy"><h3>Create from words.</h3><p>Describe what you see. Studio shows models that actually fit your Mac and runs the selected one locally, with live progress while it forms.</p></div><div class="shot"><img src="img/character-panel.webp"><div class="prompt">Prompt <code>cinematic rain, green coat, night platform…</code></div></div></div>
-  <div class="feature reverse"><div class="feature-copy"><h3>Change what you mean. Not everything else.</h3><p>Instruction editing, masks, outpainting and reference-guided changes let you correct the image instead of endlessly re-rolling it.</p></div><div class="shot"><img src="img/photoreal-panel.webp"><div class="prompt">Edit <code>keep the scene, change only the jacket</code></div></div></div>
-  <div class="feature"><div class="feature-copy"><h3>Restore the detail.</h3><p>Upscale locally when a small source needs to become useful again. No file transfer, no external processing queue.</p></div><div class="shot"><img src="img/upscale.webp"><div class="prompt">SeedVR2 <code>2× to 1024px, about 90s</code></div></div></div>
+<!-- ===================================================== audiobook ===== -->
+<section class="section alt" id="listen"><div class="shell listen">
+  <div class="reveal">
+    <div class="deck" id="deck">
+      <div class="deck-top">
+        <button class="deck-play" id="deckPlay" type="button" aria-label="Play the narration">
+          <svg viewBox="0 0 20 20" id="deckIcon"><path d="M5 3l12 7-12 7z"/></svg></button>
+        <div class="deck-title"><strong>The Story of an Hour</strong><small>Kate Chopin · read by Kokoro “Heart”</small></div>
+        <span class="deck-time" id="deckTime">0:00 / 0:28</span>
+      </div>
+      <div class="deck-wave" id="deckWave" role="slider" aria-label="Position in the narration" aria-valuemin="0" aria-valuemax="28" aria-valuenow="0" tabindex="0"></div>
+      <div class="transcript" id="transcript"></div>
+      <div class="deck-foot"><span>This is the real output, unedited.</span><span>Rendered on an <b>M4 Mac</b> in <b>11 s</b> for <b>28 s</b> of speech.</span></div>
+      <audio id="narration" preload="metadata" src="media/story-of-an-hour.m4a"></audio>
+    </div>
+  </div>
+  <div>
+    <div class="reveal"><span class="kicker"><i></i>Audiobook</span>
+      <h2 style="font-size:clamp(2.6rem,5vw,4.4rem);margin-top:18px">Paste it. Press Listen. Hear it in seconds.</h2>
+      <p class="lede" style="margin-top:22px">No setup screen and no waiting for the whole chapter. Each sentence is read as soon as it is ready, and the next one is already being read behind it.</p>
+    </div>
+    <div class="facts">
+      <div class="fact reveal d1"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12h2l2-6 3 12 3-9 2 5 2-2h2"/></svg></span>
+        <div><strong>First sound in about three seconds</strong><span>Measured from a cold start with the fast local voice. Under a second once it is warm.</span></div></div>
+      <div class="fact reveal d2"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h10M4 17h7"/><path d="M17 15l3 3-3 3"/></svg></span>
+        <div><strong>Redo one sentence, not the chapter</strong><span>Click any line to jump there. Re-read it, fix a word or give it another voice, and it is spliced back in.</span></div></div>
+      <div class="fact reveal d3"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M3 20c.8-3 2.8-5 5-5s4.2 2 5 5m-2-5c.8-.5 1.8-.8 3-.8 2.2 0 4.2 2 5 5"/></svg></span>
+        <div><strong>One storyteller, or a voice for everyone</strong><span>Start with one narrator. Cast character voices later, from the same people the Board found.</span></div></div>
+    </div>
+    <div class="chat reveal" aria-label="A Hinglish chat read aloud">
+      <div class="bubble"><em>Riya</em>yaar tum kahan ho? 😅</div>
+      <div class="bubble me"><em>Aman</em>bas 5 min, traffic bahut hai</div>
+      <div class="said"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 5 6 9H3v6h3l5 4zM15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+        read as “Riya. यार तुम कहाँ हो?” — names, a breath, “five minutes”, no emoji</div>
+    </div>
+  </div>
 </div></section>
 
-<section class="section privacy" id="privacy"><div class="shell privacy-grid"><div><div class="kicker">Private by architecture</div><h2>Your ideas don't need an API.</h2><p class="lede" style="margin-top:24px">The prompt, source images, generated work and project history stay on your machine. The network is for getting a model when you ask for one—not for inference.</p><div class="privacy-list"><div><strong>No account</strong>Open the app and work.</div><div><strong>No telemetry</strong>Your creative activity is not analytics data.</div><div><strong>No per-image billing</strong>Your hardware does the work.</div><div><strong>Encrypted library</strong>Outputs and metadata are sealed at rest.</div></div></div><div class="diagram"><div class="machine"><div class="machine-label">Your Mac</div><div class="flowline"><div class="node">Prompt<br>+ source</div><div class="arrow">→</div><div class="node">Local<br>model</div><div class="arrow">→</div><div class="node">Encrypted<br>library</div></div><div class="cross">✕ no cloud inference · ✕ no remote project storage</div></div></div></div></section>
+<!-- ===================================================== prompt help === -->
+<section class="section" id="prompt"><div class="shell">
+  <div class="head reveal">
+    <div><span class="kicker"><i></i>Prompt help</span><h2>Say it your way. Keep every detail you meant.</h2></div>
+    <p>Prompt help rewrites for the model you picked, and it checks the result: the counts, colours, positions and any words in quotes you asked for must all still be there, or it tells you which one went missing.</p>
+  </div>
+  <div class="ph">
+    <div class="reveal">
+      <div class="facts" style="margin-top:0">
+        <div class="fact"><span class="ico" style="background:var(--butter)"><b>E</b></span><div><strong>Enhance</strong><span>Turns a line into a full scene: setting, light, camera. No style you didn’t imply.</span></div></div>
+        <div class="fact"><span class="ico" style="background:var(--sky)"><b>T</b></span><div><strong>Tighten</strong><span>Fixes clarity and spelling and adds nothing. A clear prompt is left alone.</span></div></div>
+        <div class="fact"><span class="ico" style="background:var(--blush)"><b>S</b></span><div><strong>Style</strong><span>The same picture in three different looks, side by side, so you can choose.</span></div></div>
+      </div>
+      <p class="source" style="margin-top:28px">Outputs on the right are real, from Qwen3.5 9B running on an M4, with nothing edited.</p>
+    </div>
+    <div class="ph-console reveal d1">
+      <div class="ph-in"><small>You wrote</small><p>Mira gives Jonas a brass key. Mira wears red; Jonas wears blue.</p></div>
+      <div class="goals" role="group" aria-label="Goal">
+        <button type="button" aria-pressed="true" data-goal="enhance">Enhance</button>
+        <button type="button" aria-pressed="false" data-goal="tighten">Tighten</button>
+        <button type="button" aria-pressed="false" data-goal="style">Style</button>
+        <span class="hint" id="phHint"></span>
+      </div>
+      <div class="ph-out" aria-live="polite"><small id="phLabel">Enriched · for FLUX.2</small><p id="phText"></p></div>
+      <div class="kept"><span>Mira in red</span><span>Jonas in blue</span><span>brass key</span><span>Mira gives, Jonas receives</span></div>
+      <div class="ph-meta"><span>Highlighted words were added. Toggle each one in the app.</span><span id="phTime"></span></div>
+    </div>
+  </div>
+</div></section>
 
-<section class="section" id="hardware"><div class="shell privacy-grid"><div><div class="kicker">Hardware aware</div><h2>Built around your Mac, not a requirements spreadsheet.</h2><p class="lede" style="margin-top:24px">Model Studio checks the machine you are actually using and separates what fits, what needs low-memory mode and what simply should not be offered.</p></div><div class="hardware-card"><div class="hw-top"><div class="hw-title"><strong>Your Mac</strong><span>Apple M4 · 16 GB unified memory</span></div><div class="ram">12.0 GB available for models</div></div><div class="models"><div class="model"><i class="status ok"></i><div><strong>FLUX.2 Klein 4B</strong><small>Recommended · image generation</small></div><span class="badge">Fast</span></div><div class="model"><i class="status ok"></i><div><strong>Qwen Image</strong><small>Fits in memory; 27.5 GB download</small></div><span class="badge">Fits</span></div><div class="model"><i class="status ok"></i><div><strong>SeedVR2 3B</strong><small>Upscaling &middot; tiles when one pass will not fit</small></div><span class="badge">Fits</span></div><div class="model"><i class="status no"></i><div><strong>Qwen Image Edit Q8</strong><small>Resident weights exceed this machine</small></div><span class="badge">Unavailable</span></div></div></div></div></section>
+<!-- ===================================================== tools ========= -->
+<section class="section alt" id="create"><div class="shell">
+  <div class="head reveal">
+    <div><span class="kicker"><i></i>The rest of the studio</span><h2>Make a picture. Then keep working on it.</h2></div>
+    <p>The comic and the audiobook are built from the same tools you can use on their own: generate, edit with a reference, upscale and animate.</p>
+  </div>
+  <div class="bento">
+    <article class="tile t-gen reveal"><img src="img/character-panel.webp" alt="An anime-style young woman in a green jacket and red scarf on a wet neon street at night" loading="lazy">
+      <div class="tx"><h3>Generate</h3><p>Words to picture, with a live preview as it forms. <code>wet neon street, green jacket</code></p></div></article>
+    <article class="tile t-edit reveal d1">
+      <div class="pair"><img src="img/photoreal-sheet.webp" alt="A reference photo of a woman in a green jacket and red scarf on a grey backdrop" loading="lazy"><img src="img/photoreal-panel.webp" alt="The same woman walking a rainy street at night" loading="lazy"></div>
+      <div class="tx"><h3>Edit with a reference</h3><p>Instruction edits, painted masks, outpainting — and keeping a person the same while the scene changes. <code>same woman, wet street at night</code></p></div></article>
+    <article class="tile t-up reveal"><img src="img/upscale.webp" alt="A panel enlarged naively on the left and restored by the upscaler on the right" loading="lazy">
+      <div class="tx"><h3>Upscale</h3><p>SeedVR2 restoration. Too big for one pass? It works in overlapping tiles instead of running out of memory.</p></div></article>
+    <article class="tile t-vid reveal d1"><div class="reel" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      <div class="tx"><h3>Video</h3><p>Text to video, or set a still picture in motion, at 640×368 and up.</p></div></article>
+  </div>
+</div></section>
 
-<section class="section"><div class="shell"><div class="section-head"><div><div class="kicker">Measured, not guessed</div><h2>Real numbers from real hardware.</h2></div><p>Performance claims should come from the machine, not a marketing benchmark. Studio publishes measured timings and model-fit information.</p></div><div class="metrics"><div class="metric"><strong>0 B</strong><span>uploaded during inference</span></div><div class="metric"><strong>~51s</strong><span>512×512 image on M4*</span></div><div class="metric"><strong>27</strong><span>curated model entries*</span></div><div class="metric"><strong>16 GB</strong><span>tested baseline machine</span></div></div><div class="fine">*Sample values based on the current project measurements/catalog; see the repository for the latest numbers.</div></div></section>
+<!-- ===================================================== privacy ======= -->
+<section class="section" id="privacy"><div class="shell priv">
+  <div class="reveal">
+    <span class="kicker"><i></i>Private by design, not by policy</span>
+    <h2 style="font-size:clamp(2.6rem,5vw,4.4rem);margin-top:18px">Your unpublished work never meets a server.</h2>
+    <p class="lede" style="margin-top:22px">An unreleased script, a client brief under NDA, a diary. The models run on the Mac in front of you, and everything they make is sealed with ChaCha20-Poly1305 before it touches the disk.</p>
+    <div class="no-list">
+      <div><strong>No account</strong><span>Open the app and start.</span></div>
+      <div><strong>No telemetry</strong><span>What you make is not analytics.</span></div>
+      <div><strong>No credits</strong><span>Your hardware does the work.</span></div>
+      <div><strong>Encrypted library</strong><span>Pictures, audio and drafts, all sealed.</span></div>
+    </div>
+  </div>
+  <div class="priv-art reveal d1" aria-hidden="true">
+    <svg viewBox="0 0 560 430" fill="none" stroke="#1b1815" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <g transform="translate(450 70)"><path d="M-62 30c-20 0-30-26-8-36 2-26 38-34 52-14 18-16 48-2 44 22 22 4 20 28 0 28z" fill="#fff"/>
+        <path d="M-30 -2l26 26M-4 -2l-26 26" stroke="#cf412d" stroke-width="5"/></g>
+      <rect x="40" y="120" width="390" height="250" rx="18" fill="#fbf8f2"/>
+      <path d="M10 380h450l-24 26H34z" fill="#ebe4d6"/>
+      <text x="64" y="156" font-family="Geist, sans-serif" font-size="15" font-weight="600" fill="#7b7367" stroke="none">your Mac</text>
+      <rect x="68" y="196" width="96" height="70" rx="12" fill="#cfe0ea"/>
+      <rect x="196" y="196" width="96" height="70" rx="12" fill="#f3e0a8"/>
+      <rect x="324" y="196" width="80" height="70" rx="12" fill="#d6e4c9"/>
+      <g font-family="Geist, sans-serif" font-size="14" font-weight="600" fill="#1b1815" stroke="none" text-anchor="middle">
+        <text x="116" y="236">your story</text><text x="244" y="236">local model</text><text x="364" y="228">sealed</text><text x="364" y="246">library</text></g>
+      <path class="flow" d="M166 231h28M294 231h28" stroke="#cf412d"/>
+      <path d="M244 268v34c0 14-10 20-24 20h-76" class="flow" stroke="#7b7367"/>
+      <text x="96" y="336" font-family="Patrick Hand, cursive" font-size="20" fill="#4b453d" stroke="none">pages · audio · drafts</text>
+      <circle class="bounce" cx="300" cy="150" r="9" fill="#cf412d" stroke="none"/>
+      <path d="M326 108l40-30" stroke-dasharray="4 8" stroke="#7b7367"/>
+    </svg>
+  </div>
+</div></section>
 
-<section class="cta"><div class="shell"><div class="cta-box"><div class="kicker">Model Studio</div><h2>Your next project can stay yours.</h2><p>Free, open source and local once the models are installed.</p><div class="actions"><a class="btn primary big" href="https://github.com/CasualOffice/studio/releases/latest">Download for Mac ↓</a><a class="btn big" href="https://github.com/CasualOffice/studio">View source →</a></div></div></div></section>
+<!-- ===================================================== fit + numbers = -->
+<section class="section alt" id="models"><div class="shell">
+  <div class="priv" style="align-items:start">
+    <div class="reveal">
+      <span class="kicker"><i></i>Fits your Mac</span>
+      <h2 style="font-size:clamp(2.4rem,4.6vw,4rem);margin-top:18px">It knows what your Mac can run before you download anything.</h2>
+      <p class="lede" style="margin-top:22px">Model Studio checks the memory you actually have and sorts the catalogue into what fits, what needs low-memory mode, and what it simply won’t offer.</p>
+    </div>
+    <div class="fit reveal d1" id="fit">
+      <div class="fit-top"><div><strong>This Mac</strong><span>Apple M4 · 16 GB unified memory</span></div><div class="meter" title="12 GB available for models"><i></i></div></div>
+      <div class="row"><i class="ok"></i><div><strong>FLUX.2 Klein 4B</strong><small>Pictures and edits · recommended</small></div><em>Fast</em></div>
+      <div class="row"><i class="ok"></i><div><strong>Qwen3.5 9B story analyst</strong><small>Reads the cast, the lines and the scenes · 5.6 GB</small></div><em>Fits</em></div>
+      <div class="row"><i class="ok"></i><div><strong>Kokoro voices</strong><small>Audiobook narration · English and Hindi</small></div><em>Fits</em></div>
+      <div class="row"><i class="ok"></i><div><strong>SeedVR2 3B</strong><small>Upscaling, in tiles when needed</small></div><em>Fits</em></div>
+      <div class="row"><i class="no"></i><div><strong>Qwen Image Edit 8-bit</strong><small>Needs more memory than this Mac has</small></div><em>Not offered</em></div>
+    </div>
+  </div>
 
-<footer><div class="shell foot"><strong style="color:var(--text)">Model Studio</strong><span>GPL-3.0-or-later</span><span class="push"></span><a href="https://github.com/CasualOffice/studio">GitHub</a><a href="https://github.com/CasualOffice/studio/releases">Releases</a><a href="https://github.com/CasualOffice/studio/blob/main/docs/measurements.md">Measurements</a></div></footer>
-</body></html>
+  <div class="nums" style="margin-top:90px">
+    <div class="num reveal"><strong data-count="3.1" data-dec="1" data-suffix=" s">3.1 s</strong><span>to the first spoken word, from a cold start</span></div>
+    <div class="num reveal d1"><strong data-count="28" data-suffix=" s">28 s</strong><span>of narration rendered in 11 seconds</span></div>
+    <div class="num reveal d2"><strong data-count="0" data-suffix=" bytes">0 bytes</strong><span>sent anywhere while it works</span></div>
+    <div class="num reveal d3"><strong data-count="16" data-suffix=" GB">16 GB</strong><span>the Mac it is built and measured on</span></div>
+  </div>
+  <p class="source">Measured on an Apple M4 with 16 GB. Every timing in the project is published in <a href="https://github.com/CasualOffice/studio/blob/main/docs/measurements.md">docs/measurements.md</a>.</p>
+</div></section>
+
+<!-- ===================================================== cta =========== -->
+<section class="cta"><div class="shell">
+  <div class="cta-box reveal">
+    <h2>Your next chapter can stay yours.</h2>
+    <p>Free, open source, and fully offline once the models are on your Mac.</p>
+    <div class="actions">
+      <a class="btn big" href="https://github.com/CasualOffice/studio/releases/latest">Download for Mac</a>
+      <a class="btn plain" href="install.html">What it needs →</a>
+    </div>
+    <svg class="cta-art" viewBox="0 0 380 300" fill="none" stroke="#1b1815" stroke-width="3" stroke-linejoin="round" aria-hidden="true">
+      <rect x="150" y="40" width="170" height="220" rx="6" fill="#fbf8f2" transform="rotate(8 235 150)"/>
+      <rect x="120" y="50" width="170" height="220" rx="6" fill="#fff" transform="rotate(-4 205 160)"/>
+      <g transform="rotate(-4 205 160)"><rect x="134" y="64" width="142" height="80" fill="#cfe0ea"/><rect x="134" y="152" width="68" height="104" fill="#f3e0a8"/><rect x="208" y="152" width="68" height="104" fill="#d6e4c9"/></g>
+      <path d="M40 120c0-26 26-44 58-44s58 18 58 44-26 44-58 44c-8 0-15-1-22-3l-24 15 6-22c-11-9-18-21-18-34z" fill="#fff"/>
+      <path d="M70 120h6m10-12v24m10-18v12m10-20v28m10-16v4" stroke="#cf412d" stroke-linecap="round"/>
+    </svg>
+  </div>
+</div></section>
+</main>
+
+<footer><div class="shell foot">
+  <strong style="color:var(--ink)">Model Studio</strong><span>GPL-3.0-or-later</span>
+  <span class="push"></span>
+  <a href="install.html">Install</a><a href="https://github.com/CasualOffice/studio">Source</a>
+  <a href="https://github.com/CasualOffice/studio/releases">Releases</a>
+  <a href="https://github.com/CasualOffice/studio/blob/main/docs/measurements.md">Measurements</a>
+  <a href="https://github.com/CasualOffice/studio/blob/main/SECURITY.md">Security</a>
+</div></footer>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>
