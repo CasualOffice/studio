@@ -5,6 +5,10 @@ Optional: --live-writer /absolute/path/to/installed/model/snapshot runs the real
 text writer on synthetic prompts, with network disabled. It does not generate
 images. JSON lines are observations, NOT a passing acceptance test suite.
 Exit zero means diagnostics executed, not that the enhancer is correct.
+
+The PD numbering is kept from the 2026-09 audit so observations can be
+compared across versions; the internals each one probes moved to
+engine/prompt_assist.py when the enhancer was rebuilt around constraints.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "engine"))
 original_stdout = sys.stdout
 import worker  # noqa: E402
+import prompt_assist as pa  # noqa: E402
 
 # The worker normally reserves stdout for its protocol. This standalone report
 # owns stdout, while inference progress/logs are suppressed below.
@@ -35,41 +40,42 @@ def report(identifier: str, **data: object) -> None:
 
 def stubbed_assist(prompt: str, reply: str, *, mode: str = "generate",
                    image: bool = False, reader: bool = False,
-                   semantic_same: bool = False) -> tuple[dict, list[str]]:
-    vlm = ModuleType("mlx_vlm")
-    vlm.generate = lambda *a, **k: "SUBJECT: a green field jacket"
-    template = ModuleType("mlx_vlm.prompt_utils")
-    template.apply_chat_template = lambda *a, **k: "stubbed image question"
-    systems: list[str] = []
+                   semantic_same: bool = False,
+                   regions: str = "") -> tuple[dict, list[dict]]:
+    """op_assist with the writer and reader answered by fixed text."""
+    calls: list[dict] = []
 
-    def write(_id, system, _user, **_kwargs):
-        systems.append(
-            "image_direction" if system == worker.SCENE_DIRECTION_SYSTEM else
-            "video_direction" if system == worker.MOTION_DIRECTION_SYSTEM else
-            "edit_clarification" if system == worker.EDIT_CLARIFY_SYSTEM else
-            "other")
+    def write(_id, system, user, **kwargs):
+        if system == worker.SAME_REQUEST_SYSTEM:
+            calls.append({"kind": "same"})
+            return "SAME" if semantic_same else "DIFFERENT"
+        calls.append({"kind": "write", "temperature": kwargs.get("temperature"),
+                      "blind": "You cannot see the picture" in system,
+                      "edit": "image editor" in system})
         return reply
 
+    req = {"prompt": prompt, "mode": mode, "goal": "enhance",
+           "target": {"id": "flux2-klein-4b-4bit", "family": "flux2"}}
+    if not reader:
+        req["assistant"] = None
     with ExitStack() as stack:
-        stack.enter_context(patch.dict(sys.modules, {
-            "mlx_vlm": vlm, "mlx_vlm.prompt_utils": template,
-        }))
         for name, value in {
             "_write": write,
-            "_same_request": lambda *a, **k: semantic_same,
+            "_read_picture": lambda *a: regions,
             "_stage_vault_inputs": lambda _inputs: ["synthetic.png"] if image else [],
             "_downscale_for_assist": lambda paths: paths,
             "_discard_staged": lambda paths: None,
-            "_load_assistant": lambda *a: (None, None, None),
             "emit": lambda *a, **k: None,
             "log": lambda *a, **k: None,
         }.items():
             stack.enter_context(patch.object(worker, name, value))
-        result = worker.op_assist("audit", {
-            "prompt": prompt, "mode": mode,
-            "assistant": "stub-reader" if reader else None,
-        })
-    return result, systems
+        result = worker.op_assist("audit", req)
+    return result, calls
+
+
+def flagged(original: str, candidate: str) -> list[str]:
+    return [c["text"] for c in pa.extract_constraints(original)
+            if not pa.satisfied(c, candidate)]
 
 
 def deterministic() -> None:
@@ -85,9 +91,8 @@ def deterministic() -> None:
         ("PD-06", "motion", "a cat walking through a forest", "a cat sitting in a forest"),
     ]
     for identifier, dimension, original, candidate in pairs:
-        result, reason = worker._clarified_with_reason(original, candidate)
         report(identifier, dimension=dimension, original=original,
-               candidate=candidate, accepted=result is not None, reason=reason,
+               candidate=candidate, flagged=flagged(original, candidate),
                desired="Reject or prominently flag the changed explicit constraint")
 
     for identifier, prompt in [
@@ -95,39 +100,48 @@ def deterministic() -> None:
         ("PD-08", "a masterpiece hanging in a gallery"),
         ("PD-09", "Unreal Engine editor interface"),
     ]:
-        cleaned, removed = worker._clean_prompt_request(prompt)
+        cleaned, removed = pa.clean_request(prompt)
         report(identifier, original=prompt, cleaned=cleaned, removed=removed,
                desired="Preserve literal text and meaningful subject/tool names")
 
     raw = "A red car.\nNo people. Keep the background plain."
-    result, reason = worker._clarified_with_reason("a red car", raw)
-    report("PD-10", raw=raw, result=result, reason=reason,
+    parsed, how = pa.parse_reply(raw)
+    report("PD-10", raw=raw, result=parsed and parsed["prompt"], how=how,
            desired="Preserve all candidate constraints or reject incomplete parsing")
 
-    result, systems = stubbed_assist(
-        "make the jacket red", "a red jacket on a mannequin in an ornate room",
+    result, calls = stubbed_assist(
+        "make the jacket red",
+        json.dumps({"prompt": "Make the jacket red, keeping everything else unchanged."}),
         mode="edit", image=True, reader=False)
-    report("PD-11", systems=systems, result=result,
+    report("PD-11", calls=calls, outcome=result["outcome"], note=result["note"],
+           saw_image=result["saw_image"],
            desired="Text-only edit policy, not image scene expansion; visible blind-mode notice")
 
-    result, systems = stubbed_assist(
-        "make green field jacket red",
-        "change green field coat to red, leave everything else unchanged.",
-        mode="edit", image=True, reader=True)
-    report("PD-12", systems=systems, result=result,
+    result, calls = stubbed_assist(
+        "make it red",
+        json.dumps({"prompt": "Change the green field jacket in the centre to red, "
+                              "leaving the wall unchanged."}),
+        mode="edit", image=True, reader=True,
+        regions="green field jacket | centre, foreground | green\n"
+                "brick wall | background | brown")
+    report("PD-12", calls=calls, outcome=result["outcome"],
+           target_region=result["target_region"], regions=result["regions"],
            desired="Consistent edit-validator outcome and actionable constraint warning")
 
-    result, systems = stubbed_assist(
+    result, calls = stubbed_assist(
         "my dog but make him look like a king",
-        "A golden retriever in a velvet robe and a gold crown.",
+        json.dumps({"subject": "dog",
+                    "prompt": "A golden retriever in a velvet robe and a gold crown."}),
         semantic_same=True)
-    report("PD-13", systems=systems, result=result,
+    report("PD-13", calls=calls, outcome=result["outcome"], dropped=result["dropped"],
            desired="One consistent decision after semantic adjudication, not a later lexical veto")
 
     with patch.object(worker, "_write", side_effect=worker.Cancelled()), \
-            patch.object(worker, "log", lambda *a, **k: None):
+            patch.object(worker, "log", lambda *a, **k: None), \
+            patch.object(worker, "emit", lambda *a, **k: None):
         try:
-            result = worker._clarify_edit("audit", "make it red", {"SUBJECT": "jacket"})
+            result = worker.op_assist("audit", {"prompt": "make it red", "mode": "edit",
+                                                "assistant": None})
             report("PD-14", cancellation_propagated=False, fallback=result,
                    desired="Propagate Cancelled; do not return a successful fallback")
         except worker.Cancelled:
@@ -153,14 +167,15 @@ def deterministic() -> None:
                writer_resident=worker._WRITER["model"] is not None,
                desired="Honor declared one-helper-resident policy during reader/writer transition")
 
-    result, systems = stubbed_assist("a red car", "a red car", image=True, reader=True)
-    report("PD-17", systems=systems, saw_image=result.get("saw_image"),
+    result, calls = stubbed_assist("a red car", json.dumps({"prompt": "A red car."}),
+                                   image=True, reader=True)
+    report("PD-17", calls=calls, saw_image=result.get("saw_image"),
            description=result.get("description"),
            desired="saw_image reports actual vision execution, not merely supplied inputs")
 
-    result, reason = worker._clarified_with_reason("a cat on a chair", "a hat on a chair")
-    report("PD-18", positive_control="unrelated main subject rejected",
-           accepted=result is not None, reason=reason)
+    checks = pa.checks_for([], {"subject": "a cat"}, "a cat on a chair")
+    report("PD-18", positive_control="unrelated main subject flagged",
+           flagged=[c["text"] for c in checks if not pa.satisfied(c, "a hat on a chair")])
 
 
 LIVE_PROMPTS = [
@@ -178,8 +193,16 @@ LIVE_PROMPTS = [
     ("PL-12", "generate", "my dog but make him look like a king"),
 ]
 
+# What each mode's prompt is written for in the live run. Edits go to Kontext
+# and clips to Wan, the two the studio offers for those modes on 16 GB.
+LIVE_TARGETS = {
+    "generate": {"id": "flux2-klein-4b-4bit", "family": "flux2"},
+    "edit": {"id": "flux1-kontext-4bit", "family": "flux"},
+    "video": {"id": "wan22-ti2v-5b-8bit", "family": "wan"},
+}
 
-def live(snapshot: str) -> None:
+
+def live(snapshot: str, goal: str, thinking_off: bool) -> None:
     model_path = Path(snapshot).resolve(strict=True)
     if not model_path.is_dir() or not (model_path / "config.json").is_file():
         raise ValueError("Pass an existing installed model snapshot containing config.json")
@@ -187,16 +210,20 @@ def live(snapshot: str) -> None:
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     import mlx.core as mx
 
+    # The worker turns reasoning off by repo name; a snapshot path is not one,
+    # so a reasoning writer (Qwen3.5 9B, Qwen3 8B/14B) needs it said here.
+    if thinking_off:
+        worker.THINKING_WRITERS.add(str(model_path))
     with patch.object(worker, "emit", lambda *a, **k: None), \
             patch.object(worker, "log", lambda *a, **k: None):
         for index, (identifier, mode, prompt) in enumerate(LIVE_PROMPTS):
             mx.random.seed(100 + index)
             started = time.monotonic()
             result = worker.op_assist(identifier, {
-                "prompt": prompt, "mode": mode, "assistant": None,
-                "writer": str(model_path),
+                "prompt": prompt, "mode": mode, "assistant": None, "goal": goal,
+                "target": LIVE_TARGETS[mode], "writer": str(model_path),
             })
-            report(identifier, mode=mode, source=prompt,
+            report(identifier, mode=mode, goal=goal, source=prompt,
                    seconds=round(time.monotonic() - started, 3), result=result)
         worker._unload_writer()
 
@@ -204,8 +231,11 @@ def live(snapshot: str) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live-writer", help="Existing local snapshot; no download or image generation")
+    parser.add_argument("--goal", default="enhance", choices=pa.GOALS)
+    parser.add_argument("--thinking-off", action="store_true",
+                        help="The snapshot is a reasoning writer; turn reasoning off")
     args = parser.parse_args()
     if args.live_writer:
-        live(args.live_writer)
+        live(args.live_writer, args.goal, args.thinking_off)
     else:
         deterministic()

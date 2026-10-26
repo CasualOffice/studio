@@ -40,6 +40,14 @@ class TheCleanerNeverTouchesQuotes(unittest.TestCase):
         self.assertEqual(removed, ["4k"])
         self.assertEqual(cleaned, "the cat's toy and the dog's bowl")
 
+    def test_pd08_pd09_a_folklore_word_that_is_the_subject_stays(self):
+        for text in ("a masterpiece hanging in a gallery",
+                     "Unreal Engine editor interface on a laptop"):
+            with self.subTest(text=text):
+                self.assertEqual(pa.clean_request(text), (text, []))
+        # ... while the same word as a tag still goes.
+        self.assertEqual(pa.clean_request("a masterpiece 8k cat")[0], "a cat")
+
     def test_a_request_of_nothing_but_folklore_is_empty(self):
         self.assertEqual(pa.clean_request("masterpiece, best quality, 8k")[0], "")
 
@@ -88,8 +96,17 @@ class WhatTheRequestFixes(unittest.TestCase):
         self.assertIn(("camera", "locked camera"), got)
 
     def test_quoted_text_is_not_read_as_a_negation(self):
-        got = self.kinds('a sign reading "NO PARKING"')
+        got = self.kinds('a sign that says "NO PARKING"')
         self.assertEqual(got, {("quoted", '"NO PARKING"')})
+
+    def test_pd06_what_the_subject_does_is_held_softly(self):
+        got = {(c["kind"], c["text"], c["hard"])
+               for c in pa.extract_constraints("a cat walking through a forest")}
+        self.assertIn(("action", "walking", False), got)
+        self.assertEqual(missing("a cat walking through a forest",
+                                 "a cat sitting in a forest"), ["walking"])
+        self.assertEqual(missing("a cat walking through a forest",
+                                 "a cat walks through a forest"), [])
 
     def test_a_plain_request_fixes_nothing(self):
         self.assertEqual(pa.extract_constraints("a hous at nite"), [])
@@ -108,6 +125,12 @@ class TheChecksSeeTheLosses(unittest.TestCase):
     def test_pd03_a_position_swapped(self):
         self.assertIn("left of", missing("a red cube left of a blue sphere",
                                          "a red cube right of a blue sphere"))
+
+    def test_pd04_giver_and_receiver_swapped(self):
+        self.assertEqual(missing("Mira gives Jonas the key", "Jonas gives Mira the key"),
+                         ["Mira before Jonas"])
+        self.assertEqual(missing("Mira gives Jonas the key",
+                                 "Mira hands Jonas a small brass key"), [])
 
     def test_pd05_colours_swapped_between_objects(self):
         lost = missing("a red cube and a blue sphere", "a blue cube and a red sphere")

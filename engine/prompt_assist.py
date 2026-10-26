@@ -283,6 +283,19 @@ FOLKLORE = (
 )
 
 
+# A folklore word used as a thing in the picture is not folklore: "a
+# masterpiece hanging in a gallery" is a painting, "an Unreal Engine editor
+# window" is software on a screen. A determiner in front with a verb or a
+# preposition after, or a screen word after, says it is the subject rather
+# than a quality tag -- while "a masterpiece 8k cat" is still a tag on a cat.
+_AS_A_THING_BEFORE = re.compile(r"\b(?:a|an|the|this|that|my|your|his|her|their)\s+$",
+                                re.IGNORECASE)
+_THING_FOLLOWS = re.compile(r"^\s*(?:$|[,.;:!?]|(?:in|on|at|of|by|from|with|is|was|"
+                            r"that|which|hangs|sits|stands|\w+ing)\b)", re.IGNORECASE)
+_AS_A_THING_AFTER = re.compile(r"^\s+(?:editor|interface|ui|window|screen|screenshot|"
+                               r"project|logo|scene\s+graph|viewport)\b", re.IGNORECASE)
+
+
 def clean_request(text: str) -> tuple[str, list[str]]:
     """Remove prompt folklore outside quotes. Quoted text is never touched."""
     removed: list[str] = []
@@ -294,10 +307,17 @@ def clean_request(text: str) -> tuple[str, list[str]]:
         for phrase in sorted(FOLKLORE, key=len, reverse=True):
             pattern = re.compile(r"(?<![\w-])" + re.escape(phrase) + r"(?![\w-])",
                                  re.IGNORECASE)
-            if pattern.search(piece):
+
+            def drop(m: re.Match[str], piece: str = piece) -> str:
+                before, after = piece[:m.start()], piece[m.end():]
+                if ((_AS_A_THING_BEFORE.search(before) and _THING_FOLLOWS.match(after))
+                        or _AS_A_THING_AFTER.match(after)):
+                    return m.group(0)
                 if phrase not in removed:
                     removed.append(phrase)
-                piece = pattern.sub("", piece)
+                return ""
+
+            piece = pattern.sub(drop, piece)
         pieces.append(piece)
     cleaned = "".join(pieces)
     if removed:
@@ -348,6 +368,15 @@ _CAMERA = (
     "orbit", "orbits", "crane", "tilt", "tilts", "push in", "pull back",
     "slow motion", "time-lapse",
 )
+# Words ending in -ing that name a thing or a time, not an action.
+_ING_NOUNS = {
+    "painting", "drawing", "building", "clothing", "ceiling", "evening",
+    "morning", "wedding", "ring", "string", "king", "wing", "spring",
+    "lighting", "something", "anything", "nothing", "everything", "thing",
+    "railing", "awning", "landing", "opening", "ending", "setting", "sibling",
+    "pudding", "stuffing", "frosting", "icing", "dumpling", "earring",
+    "sapling", "lightning", "ceiling", "shading", "sling", "swing",
+}
 _RELATION_RE = re.compile(
     r"\b(?:(?:to|on|at) the (?:left|right)|(?:left|right) of|in front of|"
     r"on top of|above|below|behind|beneath|underneath|between)\b",
@@ -464,6 +493,28 @@ def extract_constraints(request: str) -> list[dict[str, Any]]:
         if w in _PACE and not any(c["kind"] == "pace" and c["word"] == w for c in out):
             out.append(_constraint("pace", w, True, word=w))
 
+    # Who does what to whom, for two named people: "Mira gives Jonas the key"
+    # is not "Jonas gives Mira the key", and no vocabulary check can tell.
+    # Soft, since "Jonas takes the key from Mira" keeps it in other words;
+    # the giver named first is what most rewrites keep, and a miss is judged.
+    for m in re.finditer(
+            r"\b([A-Z][a-z]+)\s+(?:gives|hands|passes|shows|hugs|kisses|pushes|"
+            r"pulls|follows|chases|helps|teaches|feeds|carries|holds|hits|tells|"
+            r"sends|throws|leads|meets|watches|grabs|greets|thanks)\s+([A-Z][a-z]+)\b",
+            plain):
+        doer, done_to = m.group(1).lower(), m.group(2).lower()
+        out.append(_constraint("roles", f"{m.group(1)} before {m.group(2)}", False,
+                               order=(doer, done_to)))
+
+    # What the subject is doing. Soft: "walking" against "strolling" is a
+    # paraphrase the writer may judge, but "walking" against "sitting" is a
+    # different picture, and with no check at all it went through unseen.
+    for w in words:
+        if (w.endswith("ing") and len(w) > 5 and w not in _ING_NOUNS
+                and w not in _PACE and w not in _MODIFIERS
+                and not any(c["kind"] == "action" and c["text"] == w for c in out)):
+            out.append(_constraint("action", w, False, words=[w]))
+
     low = " ".join(words)
     for phrase in _CAMERA:
         key = " ".join(_tokens(phrase))
@@ -554,7 +605,10 @@ def satisfied(c: dict[str, Any], text: str) -> bool:
         # Any of its words: "a golden retriever" is still said by "the
         # retriever", and the colour of a target may be what is changing.
         return any(any(near_word(w, x) for x in words) for w in c["words"])
-    if kind in ("camera", "listed"):
+    if kind == "roles":
+        first, second = (_positions(words, n) for n in c["order"])
+        return bool(first and second) and first[0] < second[0]
+    if kind in ("camera", "listed", "action"):
         return all(any(same_word(w, x) or near_word(w, x) for x in words)
                    for w in c["words"])
     return True

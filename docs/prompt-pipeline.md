@@ -16,30 +16,47 @@ prompt.
 
 ## Inputs and outputs
 
-- Input: the user's prompt and the mode it was written in. The wire values are
-  `generate`, `edit` and `video` — not `image`, which this file said for a
-  while and no code has ever sent. The selected model's constraints are *not*
-  passed today: the host sends the job id, the prompt, the mode and the staged
-  images, and nothing else. A rewrite that depends on what the model supports
-  cannot be written against the request as it stands.
-- Output: one shape, stamped with a `version`, carrying every field on every
-  reply — `prompt`, `original`, `outcome`, `changed`, `added`, `dropped`,
-  `corrected`, `removed`, `attempt`, `rejected_because`, `saw_image`,
-  `description`, `unclear` and `note`. There were five reply shapes with five
-  different key sets before this, and a field's absence was something the
-  interface had to interpret.
+- Input: the user's prompt, the mode (`generate`, `edit` or `video`), the goal
+  (`enhance`, `tighten` or `style`) and the selected model. The host looks the
+  model up and sends its id, family and name as `target`; the engine picks a
+  template from it (`engine/prompt_assist.py`, `PROFILES`). The writer is the
+  best installed one, chosen by the same `story_writer` the story analysts
+  use: Qwen3.5 9B first, the Qwen3 4B as the floor.
+- Output (version 2): one shape, stamped with a `version`, carrying every field
+  on every reply — `prompt`, `original`, `outcome`, `changed`, `added`,
+  `dropped`, `corrected`, `removed`, `attempt`, `rejected_because`,
+  `saw_image`, `description`, `unclear`, `note`, and since version 2 `goal`,
+  `mode`, `target_label`, `variants`, `locked`, `regions`, `target_region` and
+  `released`. Each variant (faithful, enriched, stylistic) carries its prompt,
+  the phrases it added (each verbatim, so the interface can leave it out), and
+  any constraint it no longer satisfies.
+- What must survive is extracted from the request, not taken from the writer:
+  quoted text, counts, negations, colour-object bindings, positions and pace
+  are hard; the subject, an action, who acts on whom, camera words and the
+  writer's own list are soft. A soft miss is put to the writer once as a SAME
+  question; a hard miss is retried once, cooler, and otherwise offered with
+  the loss named rather than discarded.
 - `removed` is on rejections too. A rejected rewrite hands back the original
   prompt, and without it there was no sign that a cleaned version had ever been
   judged — which is the one fact explaining why a rewrite was attempted.
-- `dropped` is diffed against the cleaned prompt, not the typed one, so it
-  cannot name a word `removed` has already named. They are different facts and
-  the interface draws them as the same red chip under different labels.
+- `dropped` is the primary variant's missing constraints, so it cannot name a
+  word `removed` has already named. They are different facts and the
+  interface draws them under different labels.
 - If the request is too unclear to edit safely, it returns the original prompt
   with `outcome: "unclear"` and a reason.
 - Empty modifiers such as “masterpiece”, “best quality”, resolution labels,
-  and stock-art-site boilerplate are removed before the local writer runs.
-- The interface shows whether the prompt changed and exactly which phrases
-  were removed; the user remains free to edit the result.
+  and stock-art-site boilerplate are removed before the local writer runs —
+  never inside quotes, and not when the word is the subject (“a masterpiece
+  hanging in a gallery”).
+- An edit names its target region when the picture reader is installed: the
+  reader lists things with positions and colours, and “it” resolves to the
+  most plausible one. Without the reader the reply says the picture was not
+  looked at.
+- The interface shows the variants as tabs against the user's own words —
+  added words marked, lost ones named — with each added phrase a switch that
+  rebuilds the prompt. The writer and the image model are never resident
+  together, so `released` names the model that will load again on the next
+  run.
 
 ## Board prompt stages
 
