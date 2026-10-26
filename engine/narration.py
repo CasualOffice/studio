@@ -197,8 +197,21 @@ def _opening(text, words=6):
 
 
 def _sentences(text):
-    """Sentence texts, stripped, keeping quoted dialogue whole."""
-    return [u["text"].strip() for u in story.units(text) if any(c.isalnum() for c in u["text"])]
+    """Sentence texts, stripped, keeping quoted dialogue whole.
+
+    A unit that starts in lower case continues the one before it: the story
+    model's units cut '"Jonas?" she called.' at the quote, and read as two
+    clips the tag came out as a separate, flat little sentence."""
+    out = []
+    for u in story.units(text):
+        piece = u["text"].strip()
+        if not any(c.isalnum() for c in piece):
+            continue
+        if out and piece[0].islower():
+            out[-1] = f"{out[-1]} {piece}"
+        else:
+            out.append(piece)
+    return out
 
 
 def segments(script_text):

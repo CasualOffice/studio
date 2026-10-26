@@ -74,6 +74,10 @@ class Segments(unittest.TestCase):
     def test_quotes_are_not_split_from_their_sentence_for_one_voice(self):
         segs = narration.segments('“Wait,” she said. “Don\'t go.”')
         self.assertEqual([s["text"] for s in segs], ['“Wait,” she said.', '“Don\'t go.”'])
+        # Found in a real Kokoro run: a question mark ends the quote's unit.
+        segs = narration.segments('She took the key. "Jonas?" she called. Nobody answered.')
+        self.assertEqual([s["text"] for s in segs],
+                         ['She took the key.', '"Jonas?" she called.', 'Nobody answered.'])
 
     def test_a_chat_line_is_the_name_a_pause_then_the_message(self):
         segs = narration.segments("[10:42] Arjun: kahan ho?? 😤\nMira: 5 min")
