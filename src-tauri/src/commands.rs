@@ -1548,6 +1548,7 @@ async fn run_job(
             // or a one-off generation is not a member of anything.
             composition: None,
             markers: Vec::new(),
+            spans: Vec::new(),
             // Everything needed to run this again and get this picture. All of
             // it was already resolved above and thrown away, which is why
             // "use these settings" restored the prompt and the seed and
@@ -3136,40 +3137,66 @@ pub struct AudiobookArgs {
     language: Option<String>,
     delivery: Option<String>,
     directions: Option<serde_json::Value>,
-    book: serde_json::Value,
-    chapter_id: String,
+    /// The analysed book and chapter, for character voices or to file the
+    /// recording under. Neither is needed to listen to pasted text.
+    #[serde(default)]
+    book: Option<serde_json::Value>,
+    #[serde(default)]
+    chapter_id: Option<String>,
     narrator: String,
+    #[serde(default)]
     voices: serde_json::Value,
     rate: u32,
     /// A prepared narration script; when present it is what is read, by the
     /// narrator alone.
     #[serde(default)]
     script: Option<String>,
+    /// Text to read as it is, by the narrator alone: the first listen, with
+    /// no analysis and no book.
+    #[serde(default)]
+    source: Option<String>,
+    /// What to call the recording when there is no chapter to name it.
+    #[serde(default)]
+    title: Option<String>,
     /// One voice for everyone, reading the chapter itself.
     #[serde(default)]
     single: bool,
 }
 
-#[tauri::command]
-pub async fn generate_audiobook(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    job_id: String,
-    args: AudiobookArgs,
-) -> Result<String> {
-    let _job = state.job_gate.read().await;
-    state.require_unlocked()?;
-    let chapter = args.book["chapters"]
-        .as_array()
-        .and_then(|chapters| {
-            chapters
-                .iter()
-                .find(|c| c["id"].as_str() == Some(&args.chapter_id))
-        })
-        .ok_or_else(|| AppError::msg("choose an analyzed chapter"))?;
-    let title = chapter["title"].as_str().unwrap_or("Chapter").to_owned();
-    let model_name = if let Some(ref model_id) = args.model_id {
-        if model_id != "macos" {
+/// A narration that finished or was stopped partway; either way it is saved.
+#[derive(serde::Serialize)]
+pub struct AudiobookOutcome {
+    id: String,
+    /// Stop was pressed or the voice failed partway: `id` holds what was read.
+    stopped: bool,
+    /// Why it stopped early, when it was not the Stop button.
+    error: Option<String>,
+    seconds: f64,
+}
+
+/// A recording's name: the chapter's title, the one given, or the text's own
+/// first words -- never "Chapter" for something pasted.
+fn audiobook_title(chapter: Option<&str>, given: Option<&str>, text: Option<&str>) -> String {
+    let named = chapter.or(given).map(str::trim).filter(|t| !t.is_empty());
+    if let Some(name) = named {
+        return name.chars().take(80).collect();
+    }
+    let words: Vec<&str> = text.unwrap_or("").split_whitespace().take(6).collect();
+    if words.is_empty() {
+        return "Narration".into();
+    }
+    let opening: String = words.join(" ").chars().take(60).collect();
+    if text.unwrap_or("").split_whitespace().nth(6).is_some() {
+        format!("{opening}…")
+    } else {
+        opening
+    }
+}
+
+/// The catalogue name of a speech model, checking it is installed and fits.
+fn speech_model_name(state: &AppState, model_id: Option<&str>) -> Result<String> {
+    match model_id {
+        Some(model_id) if model_id != "macos" => {
             let speech = crate::catalog::CATALOG
                 .iter()
                 .any(|m| m.id == model_id && m.tasks.contains(&crate::catalog::Task::Speech));
@@ -3182,13 +3209,40 @@ pub async fn generate_audiobook(
             if !model.installed || model.hopeless {
                 return Err(AppError::msg("Download the audiobook voices model in Models and check its memory requirements."));
             }
-            model.name
-        } else {
-            "macOS installed voices".into()
+            Ok(model.name)
         }
-    } else {
-        "macOS installed voices".into()
+        _ => Ok("macOS installed voices".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn generate_audiobook(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+    args: AudiobookArgs,
+) -> Result<AudiobookOutcome> {
+    let _job = state.job_gate.read().await;
+    state.require_unlocked()?;
+    let has_text = |t: &Option<String>| t.as_deref().is_some_and(|t| !t.trim().is_empty());
+    let chapter = match (&args.book, &args.chapter_id) {
+        (Some(book), Some(chapter_id)) => Some(
+            book["chapters"]
+                .as_array()
+                .and_then(|chapters| chapters.iter().find(|c| c["id"].as_str() == Some(chapter_id)))
+                .ok_or_else(|| AppError::msg("choose an analyzed chapter"))?,
+        ),
+        _ => None,
     };
+    if chapter.is_none() && !has_text(&args.source) && !has_text(&args.script) {
+        return Err(AppError::msg("paste some text to listen to"));
+    }
+    let title = audiobook_title(
+        chapter.and_then(|c| c["title"].as_str()),
+        args.title.as_deref(),
+        args.source.as_deref().or(args.script.as_deref()),
+    );
+    let model_name = speech_model_name(&state, args.model_id.as_deref())?;
     let engine = state.engine(&app).await?;
     let (id, file_id, key, path) = state.vault.reserve_slot()?;
     let started = std::time::Instant::now();
@@ -3197,9 +3251,12 @@ pub async fn generate_audiobook(
         "narrator": args.narrator, "voices": args.voices, "rate": args.rate,
         "model_id": args.model_id, "language": args.language,
         "delivery": args.delivery, "directions": args.directions,
-        "script": args.script, "single": args.single,
+        "script": args.script, "source": args.source, "single": args.single,
         "vault_slots": [{"id": id, "file_id": hex(&file_id), "key": hex(&key), "path": path.to_string_lossy()}],
     })).await;
+    // A stopped or failed narration still returns a result when anything was
+    // read; only a run that produced nothing is an error. The slot used to be
+    // dropped on any stop, and an hour of narration with it.
     let result = match result {
         Ok(result) if result["sealed"] == true && result["sizes"][0].as_u64().unwrap_or(0) > 0 => {
             result
@@ -3228,13 +3285,155 @@ pub async fn generate_audiobook(
         created_at: chrono::Local::now().to_rfc3339(),
         duration_ms: started.elapsed().as_millis() as u64,
         markers: serde_json::from_value(result["markers"].clone()).unwrap_or_default(),
+        spans: serde_json::from_value(result["spans"].clone()).unwrap_or_default(),
         ..Default::default()
     };
     if let Err(error) = state.vault.commit_slot(item) {
         state.vault.discard_slots(std::slice::from_ref(&id));
         return Err(error.into());
     }
+    Ok(AudiobookOutcome {
+        id,
+        stopped: result["stopped"] == true,
+        error: result["error"].as_str().map(str::to_owned),
+        seconds: result["seconds"].as_f64().unwrap_or(0.0),
+    })
+}
+
+#[derive(Deserialize)]
+pub struct Revoice {
+    /// The narration to change; it is replaced by the new recording.
+    item_id: String,
+    /// Which sentence, by its place in the item's spans.
+    index: usize,
+    /// New words for the sentence; its own words when absent.
+    #[serde(default)]
+    text: Option<String>,
+    /// Another voice; the one that read it when absent.
+    #[serde(default)]
+    voice: Option<String>,
+    model_id: Option<String>,
+    rate: u32,
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    delivery: Option<String>,
+}
+
+/// Read one sentence of a narration again and splice it in.
+///
+/// The engine opens the old recording with its own key, writes the spliced
+/// one into a new slot, and the new item takes the old one's place, keeping
+/// its name and chapter markers with every later sentence moved to fit.
+/// Returns the new item's id.
+#[tauri::command]
+pub async fn revoice_audiobook(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+    args: Revoice,
+) -> Result<String> {
+    let _job = state.job_gate.read().await;
+    state.require_unlocked()?;
+    let old = state.vault.get_item(&args.item_id)?;
+    if old.kind != "audiobook" || args.index >= old.spans.len() {
+        return Err(AppError::msg("this recording has no such sentence to read again"));
+    }
+    let model_name = speech_model_name(&state, args.model_id.as_deref())?;
+    let (in_fid, in_key, in_path) = state.vault.input_key(&old.id)?;
+    let engine = state.engine(&app).await?;
+    let (id, file_id, key, path) = state.vault.reserve_slot()?;
+    let result = engine.request(&job_id, "audiobook_revoice", json!({
+        "index": args.index, "text": args.text, "voice": args.voice,
+        "narrator": old.spans[args.index].voice, "model_id": args.model_id,
+        "rate": args.rate, "language": args.language, "delivery": args.delivery,
+        "spans": old.spans, "markers": old.markers,
+        "vault_inputs": [{"id": old.id, "file_id": hex(&in_fid), "key": hex(&in_key), "path": in_path.to_string_lossy()}],
+        "vault_slots": [{"id": id, "file_id": hex(&file_id), "key": hex(&key), "path": path.to_string_lossy()}],
+    })).await;
+    let result = match result {
+        Ok(r) if r["sealed"] == true && r["sizes"][0].as_u64().unwrap_or(0) > 0 => r,
+        Ok(_) => {
+            state.vault.discard_slots(std::slice::from_ref(&id));
+            return Err(AppError::msg("the speech engine returned no audio for this sentence"));
+        }
+        Err(e) => {
+            state.vault.discard_slots(std::slice::from_ref(&id));
+            return Err(e);
+        }
+    };
+    let model = if old.model == model_name {
+        old.model.clone()
+    } else {
+        format!("{} + {}", old.model, model_name)
+    };
+    let item = VaultItem {
+        id: id.clone(),
+        bytes: result["sizes"][0].as_u64().unwrap_or(0),
+        content_hash: None,
+        model,
+        created_at: chrono::Local::now().to_rfc3339(),
+        markers: serde_json::from_value(result["markers"].clone()).unwrap_or_default(),
+        spans: serde_json::from_value(result["spans"].clone()).unwrap_or_default(),
+        ..old.clone()
+    };
+    if let Err(error) = state.vault.commit_slot(item) {
+        state.vault.discard_slots(std::slice::from_ref(&id));
+        return Err(error.into());
+    }
+    // The new recording holds every sentence of the old one; keeping both
+    // would only double the chapter in the Vault.
+    let _ = state.vault.delete(&old.id);
     Ok(id)
+}
+
+#[cfg(test)]
+mod audiobook_tests {
+    use super::*;
+
+    #[test]
+    fn pasted_text_is_named_by_its_opening_words() {
+        assert_eq!(audiobook_title(Some("The train"), Some("x"), Some("a b")), "The train");
+        assert_eq!(
+            audiobook_title(None, Some("  "), Some("Yaar, main kal office gaya tha, but boss")),
+            "Yaar, main kal office gaya tha,…"
+        );
+        assert_eq!(audiobook_title(None, None, Some("Short text.")), "Short text.");
+        assert_eq!(audiobook_title(None, None, Some("   ")), "Narration");
+    }
+
+    #[test]
+    fn listening_needs_no_book() {
+        let args: AudiobookArgs = serde_json::from_value(json!({
+            "narrator": "af_heart", "rate": 160, "source": "Hello there.", "model_id": "kokoro-82m"
+        }))
+        .unwrap();
+        assert!(args.book.is_none() && args.chapter_id.is_none());
+        assert_eq!(args.source.as_deref(), Some("Hello there."));
+    }
+
+    #[test]
+    fn sentence_spans_survive_the_index_round_trip() {
+        let item = VaultItem {
+            id: "a".into(),
+            spans: vec![crate::vault::store::AudioSpan {
+                start: 0,
+                end: 2400,
+                text: "One.".into(),
+                voice: "af_heart".into(),
+            }],
+            ..Default::default()
+        };
+        let back: VaultItem = serde_json::from_str(&serde_json::to_string(&item).unwrap()).unwrap();
+        assert_eq!(back.spans, item.spans);
+        let old: VaultItem = serde_json::from_value(json!({
+            "id": "b", "kind": "audiobook", "name": "x.wav", "mime": "audio/wav", "bytes": 1, "model": "m",
+            "prompt": "", "seed": 0, "width": null, "height": null, "steps": null, "guidance": null,
+            "inputs": [], "created_at": "now", "duration_ms": 0
+        }))
+        .unwrap();
+        assert!(old.spans.is_empty());
+    }
 }
 
 #[tauri::command]

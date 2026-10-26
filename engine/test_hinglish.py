@@ -34,6 +34,14 @@ class Spelling(unittest.TestCase):
         self.assertEqual(hinglish.devanagari("Maine phone use kiya."), "मैंने phone use किया।")
         self.assertEqual(hinglish.devanagari("Maine use dekha."), "मैंने उसे देखा।")
 
+    def test_the_is_the_english_article_unless_it_completes_a_hindi_verb(self):
+        # Regressions: "the" leaned Hindi, so with no English word beside it
+        # every shared word in the clause fell back to Hindi together.
+        self.assertEqual(hinglish.devanagari("The boss ne kaha"), "The boss ने कहा")
+        self.assertEqual(hinglish.devanagari("Use the door, yaar"), "Use the door, यार")
+        self.assertEqual(hinglish.devanagari("Wo log aaye the."), "वो लोग आये थे।")
+        self.assertEqual(hinglish.devanagari("Hum ghar pe the to boss aaya."), "हम घर पे थे तो boss आया।")
+
     def test_the_word_list_corrects_the_lexicons_wrong_favourites(self):
         # Dakshina's most attested spellings of these are a name or a loanword.
         for roman, deva in (("me", "में"), ("tab", "तब"), ("us", "उस"), ("kuch", "कुछ"), ("haan", "हाँ")):

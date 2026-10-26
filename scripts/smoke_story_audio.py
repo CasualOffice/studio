@@ -56,6 +56,7 @@ def run(output):
             events.put({"type": "error", "error": f"Worker exited ({child.poll()})"})
         reader = threading.Thread(target=read, daemon=True)
         reader.start()
+        streamed = {}
         def request(op, **args):
             identifier = secrets.token_hex(8)
             print(f"Live check: {op}", flush=True)
@@ -72,6 +73,8 @@ def run(output):
                     continue
                 if event['type'] == 'result':
                     return event['result']
+                if event['type'] == 'preview' and event.get('kind') == 'audio':
+                    streamed[op] = streamed.get(op, 0) + 1
                 if event['type'] == 'progress' and event.get('message') != last_message:
                     last_message = event.get('message')
                     if last_message: print(last_message, flush=True)
@@ -121,6 +124,16 @@ def run(output):
                 report['audio_seconds'] = wav.getnframes() / 24000
             (output / 'fixture-neural-narration.wav').write_bytes(wav_data)
             report['checks'].append('Real neural character speech, encrypted WAV output and successful decryption')
+            # The first listen: pasted text, no analysis, heard sentence by sentence.
+            streamed.clear()
+            slot = {**slot, "id": "live-listen", "path": str(Path(stage) / 'listen.sealed')}
+            listened = request('audiobook', source='The ferry was late. Mira waited on the pier.\n\nThen it came.',
+                narrator='ryan', rate=160, model_id='qwen3-tts-1.7b-custom-6bit', language='english', vault_slots=[slot])
+            assert listened['sealed'] and not listened['stopped'], 'Pasted text must narrate without analysis'
+            assert len(listened['spans']) == 3 and streamed.get('audiobook') == 3, 'Each sentence must stream as it is read'
+            (output / 'pasted-text-narration.wav').write_bytes(
+                vaultcrypto.open_with_file_key(key, Path(slot['path']).read_bytes()))
+            report['checks'].append('Pasted text narrated without analysis, streamed one sentence at a time')
             report['book'] = book
             report['status'] = 'passed'
             print('Live pipeline checks passed; listen to the fixture WAV to assess delivery.', flush=True)

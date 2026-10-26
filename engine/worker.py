@@ -6277,7 +6277,11 @@ def op_direct_story(req_id, req):
 
 
 def op_narration_script(req_id, req):
-    """Retell a chapter for one storyteller, optionally in Devanagari."""
+    """The story model's suggested retellings, paragraph by paragraph.
+
+    Opt-in: the text is read by rule without it (narration.normalize). Each
+    suggestion names the exact text it replaces so it can be shown and
+    accepted as a diff; `script` is the text with all of them accepted."""
     import narration
     started = time.monotonic()
     where = {"label": "Preparing the narration script", "fraction": None}
@@ -6295,8 +6299,12 @@ def op_narration_script(req_id, req):
                           label=where["label"], fraction=where["fraction"])
         except Cancelled:
             raise narration.Stop()
-    text, stopped = narration.script(req.get("source"), write, bool(req.get("devanagari")), progress)
-    return {"script": text, "stopped": stopped}
+    found, stopped = narration.suggest(req.get("source"), write, progress)
+    text = narration.apply(req.get("source"), found)
+    if req.get("devanagari"):
+        import hinglish
+        text = hinglish.devanagari(text)
+    return {"script": text, "suggestions": found, "stopped": stopped}
 
 
 def op_audio_voices(_req_id, _req):
@@ -6328,7 +6336,9 @@ def _install_kokoro_packages(req_id):
 _VOICE: dict[str, Any] = {"model": None, "id": None}
 
 # Requests that may find the preview voice model loaded and leave it so.
-_KEEPS_VOICE = {"audio_preview", "audio_voices", "ping", "cancel"}
+# Narration and re-reading a sentence use it too: the model loaded to audition
+# a voice is the one that then reads the chapter, and stays to re-read a line.
+_KEEPS_VOICE = {"audio_preview", "audio_voices", "ping", "cancel", "audiobook", "audiobook_revoice"}
 
 
 def op_audio_preview(req_id, req):
@@ -6366,61 +6376,159 @@ def op_audio_preview(req_id, req):
     return {"wav_base64": base64.b64encode(data).decode("ascii")}
 
 
-def op_audiobook(req_id, req):
+def _speech_model(req_id, model_id):
+    """A loader for a neural speech model that keeps it loaded afterwards.
+
+    The model a preview loaded is used rather than loaded a second time, and
+    stays for re-reading a sentence once the chapter is done. `handle` still
+    releases it before any other job, and the idle reaper after a while, so it
+    never sits beside an image model. Everything else is released first."""
     import audiobook
+    kept = _VOICE["model"] if _VOICE.get("id") == model_id else None
+    CACHE.unload()
+    _unload_assistant()
+    if kept is not None:
+        _VOICE.update(model=kept, id=model_id)
+    del kept
+    def load():
+        if _VOICE["model"] is None:
+            neural = model_id == audiobook.NEURAL_MODEL_ID
+            if neural:
+                _apply_policy_once(req_id)
+            emit({"id": req_id, "type": "progress", "phase": "load", "progress": 0.0,
+                  "message": "Loading neural audiobook voices" if neural else "Loading Kokoro voices"})
+            _VOICE.update(model=(audiobook.load_neural_model if neural else audiobook.load_kokoro_model)(),
+                          id=model_id)
+        return _VOICE["model"]
+    return load
+
+
+def _narrate(req_id, req, segments, recording, check, progress, character_directions=None):
+    """Read segments into `recording` with the requested engine and voices."""
+    import audiobook
+    model_id = req.get("model_id") or "macos"
+    voices, rate = req.get("voices") or {}, req.get("rate", 160)
+    if model_id == audiobook.NEURAL_MODEL_ID:
+        audiobook.narrate_neural(segments, req["narrator"], voices, rate, check, recording, progress,
+            language=req.get("language") or "auto", delivery=req.get("delivery") or "",
+            directions=req.get("directions") or {}, character_directions=character_directions or {},
+            load=_speech_model(req_id, model_id))
+    elif model_id == audiobook.KOKORO_MODEL_ID:
+        audiobook.narrate_kokoro(segments, req["narrator"], voices, rate, check, recording, progress,
+                                 load=_speech_model(req_id, model_id))
+    elif model_id == "macos":
+        CACHE.unload()
+        _unload_assistant()
+        audiobook.narrate_system(segments, req["narrator"], voices, rate, _stage_dir(), check,
+                                 recording, progress)
+    else:
+        raise ValueError("unsupported audiobook speech model")
+
+
+def op_audiobook(req_id, req):
+    """Narrate text or an analysed chapter, streaming each sentence as it is read.
+
+    One storyteller reads plain sentences: pasted text, a prepared script, or
+    a chapter when one voice was chosen for everyone. Only character voices
+    need the analysed chapter, cut at its quotes. Each sentence is sent as a
+    `preview` event of 16-bit 24 kHz PCM the moment it exists, so listening
+    starts after one sentence rather than after the chapter. Stop, or a
+    failure partway, keeps what was read: an hour of narration is not thrown
+    away for its last sentence."""
+    import audiobook
+    import base64
+    import narration
     import story as story_model
     import vaultcrypto as vc
     slots = req.get("vault_slots") or []
     if len(slots) != 1:
         raise ValueError("audiobook needs one encrypted output slot")
-    # A prepared narration script is read by one storyteller; so is the
-    # chapter itself when one voice was chosen for everyone.
-    if isinstance(req.get("script"), str) and req["script"].strip():
-        import narration
-        segments = narration.segments(req["script"])
+    text = next((req[k] for k in ("script", "source") if isinstance(req.get(k), str) and req[k].strip()), None)
+    if text is None and req.get("single"):
+        chapter = next((c for c in (req.get("book") or {}).get("chapters", [])
+                        if c.get("id") == req.get("chapter_id")), None)
+        if chapter is None:
+            raise ValueError("choose a chapter or paste text to read")
+        text = chapter.get("source", "")
+    character_directions = {}
+    if text is not None:
+        # One storyteller: no character's voice or direction reaches the narrator.
+        segments = narration.segments(text)
         req = {**req, "voices": {}, "directions": {}}
     else:
-        segments = story_model.narration_segments(req["book"], req["chapter_id"])
-        if req.get("single"):
-            req = {**req, "voices": {}, "directions": {}}
-    import narration as _narration
-    segments = [{**s, "text": _narration.speakable(s["text"])} for s in segments]
-    CACHE.unload()
-    _unload_assistant()
+        segments = narration.refine(story_model.narration_segments(req["book"], req["chapter_id"]))
+        character_directions = {c["id"]: c.get("voice", "") for c in req["book"]["characters"]}
+    if not segments:
+        raise ValueError("there is nothing to read aloud in this text")
     def check():
         if is_cancelled(req_id):
             raise Cancelled()
     def progress(done, total):
         emit({"id": req_id, "type": "progress", "phase": "denoise",
-              "progress": done / total, "message": f"Narrating ({round(100 * done / total)}%)"})
-    model_id = req.get("model_id") or "macos"
-    markers: list[dict[str, Any]] = []
-    if model_id == audiobook.NEURAL_MODEL_ID:
-        _apply_policy_once(req_id)
-        emit({"id": req_id, "type": "progress", "phase": "load", "progress": 0.0,
-              "message": "Loading neural audiobook voices"})
-        data, seconds = audiobook.synthesize_neural(segments, req["narrator"],
-            req.get("voices") or {}, req.get("rate", 160), check, progress,
-            language=req.get("language") or "auto", delivery=req.get("delivery") or "",
-            directions=req.get("directions") or {},
-            character_directions={c["id"]: c.get("voice", "") for c in req["book"]["characters"]},
-            markers=markers)
-    elif model_id == audiobook.KOKORO_MODEL_ID:
-        emit({"id": req_id, "type": "progress", "phase": "load", "progress": 0.0,
-              "message": "Loading Kokoro voices"})
-        data, seconds = audiobook.synthesize_kokoro(segments, req["narrator"],
-            req.get("voices") or {}, req.get("rate", 160), check, progress, markers=markers)
-    elif model_id == "macos":
-        data, seconds = audiobook.synthesize(segments, req["narrator"],
-            req.get("voices") or {}, req.get("rate", 160), _stage_dir(), check, progress, markers=markers)
-    else:
-        raise ValueError("unsupported audiobook speech model")
-    check()
+              "progress": done / total, "message": f"Reading aloud ({round(100 * done / total)}%)"})
+    def stream(pcm, start, span, index):
+        emit({"id": req_id, "type": "preview", "kind": "audio", "index": index, "start": start,
+              "sample_rate": audiobook.SAMPLE_RATE, "span": span,
+              "pcm": base64.b64encode(pcm).decode("ascii")})
+    recording = audiobook.Recording(on_sentence=stream)
+    stopped, failure = False, None
+    try:
+        _narrate(req_id, req, segments, recording, check, progress, character_directions)
+        check()
+    except Cancelled:
+        if not recording.frames:
+            raise
+        stopped = True
+    except Exception as exc:
+        if not recording.frames:
+            raise
+        stopped, failure = True, str(exc)
+        log(req_id, f"narration stopped after {recording.seconds:.0f} s, which are kept: {exc}", "warn")
     slot = slots[0]
     size = vc.write_sealed(slot["path"], bytes.fromhex(slot["key"]),
-                           bytes.fromhex(slot["file_id"]), data)
-    return {"outputs": [slot["id"]], "sizes": [size], "seconds": seconds, "sealed": True,
-            "markers": markers}
+                           bytes.fromhex(slot["file_id"]), recording.chunks())
+    return {"outputs": [slot["id"]], "sizes": [size], "seconds": recording.seconds, "sealed": True,
+            "markers": recording.markers, "spans": recording.spans, "stopped": stopped,
+            "error": failure, "skipped": recording.skipped}
+
+
+def op_audiobook_revoice(req_id, req):
+    """Read one sentence of a recording again and splice it in.
+
+    Optionally with edited words or another voice. The result is a new sealed
+    recording with every later sentence and marker moved by the change in
+    length; the caller replaces the old one."""
+    import audiobook
+    import vaultcrypto as vc
+    inputs, slots = req.get("vault_inputs") or [], req.get("vault_slots") or []
+    if len(inputs) != 1 or len(slots) != 1:
+        raise ValueError("re-reading needs the recording and one encrypted output slot")
+    spans, index = req.get("spans") or [], req.get("index")
+    if type(index) is not int or not 0 <= index < len(spans):
+        raise ValueError("no such sentence in this recording")
+    text = " ".join(str(req.get("text") or spans[index].get("text") or "").split())
+    if not any(c.isalnum() for c in text) or len(text) > 2000:
+        raise ValueError("a sentence to re-read needs words, under 2,000 characters")
+    voice = req.get("voice") or spans[index].get("voice") or req.get("narrator")
+    def check():
+        if is_cancelled(req_id):
+            raise Cancelled()
+    take = audiobook.Recording()
+    _narrate(req_id, {**req, "narrator": voice, "voices": {}, "directions": {}},
+             [{"speaker_id": None, "text": text, "mood": ""}], take, check, lambda *_: None)
+    check()
+    if not take.frames:
+        raise ValueError("the voice produced no audio for this sentence")
+    item = inputs[0]
+    samples = audiobook.read_wav(vc.open_with_file_key(bytes.fromhex(item["key"]), Path(item["path"]).read_bytes()))
+    joined, spans, markers = audiobook.splice(samples, spans, req.get("markers") or [], index,
+                                              take.parts[-1], text, voice)
+    del samples
+    slot = slots[0]
+    size = vc.write_sealed(slot["path"], bytes.fromhex(slot["key"]), bytes.fromhex(slot["file_id"]),
+                           [audiobook.wav_header(joined.size), memoryview(joined).cast("B")])
+    return {"outputs": [slot["id"]], "sizes": [size], "sealed": True,
+            "seconds": joined.size / audiobook.SAMPLE_RATE, "spans": spans, "markers": markers}
 
 
 def op_character_reference(req_id, req):
@@ -6454,6 +6562,7 @@ OPS = {
     "narration_script": op_narration_script,
     "audio_voices": op_audio_voices,
     "audiobook": op_audiobook,
+    "audiobook_revoice": op_audiobook_revoice,
     "audio_preview": op_audio_preview,
     "character_reference": op_character_reference,
     "capabilities": op_capabilities,

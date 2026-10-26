@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, errText, onEngineExit, onEngineProgress } from "./lib/api";
 import { NowPlaying, type Track } from "./lib/nowPlaying";
 import AudioPlayer from "./components/library/AudioPlayer";
+import LivePlayer from "./components/library/LivePlayer";
 import { Bar } from "./components/shared";
 import type { HostInfo, ModelStatus, Recipe, SetupState, VaultItem, VaultStatus } from "./lib/types";
 import Setup from "./components/Setup";
@@ -64,6 +65,13 @@ export default function App() {
   const tabRef = useRef<Tab>("generate");
   const [track, setTrack] = useState<Track | null>(null);
   const nowPlaying = useMemo(() => ({ track, play: setTrack, stop: () => setTrack(null) }), [track]);
+  // A narration heard while it is read plays from its own audio queue, which
+  // would keep sounding with no player on screen: it stops with its track.
+  const liveTrack = useRef<Track["live"]>(undefined);
+  useEffect(() => {
+    if (liveTrack.current && liveTrack.current !== track?.live) liveTrack.current.close();
+    liveTrack.current = track?.live;
+  }, [track]);
   // Owned here so Generate and the Vault can both hand images to the Edit tab.
   const [editImages, setEditImages] = useState<string[]>([]);
   const [videoFrame, setVideoFrame] = useState<string[]>([]);
@@ -700,7 +708,10 @@ export default function App() {
         )}
         {track && (
           <section className="now-playing" aria-label="Now playing">
-            <AudioPlayer key={track.src} src={track.src} title={track.title} markers={track.markers ?? []} autoPlay />
+            {track.live
+              ? <LivePlayer key={track.src} queue={track.live} title={track.title} />
+              : <AudioPlayer key={`${track.src}@${track.start ?? 0}`} src={track.src} title={track.title}
+                  markers={track.markers ?? []} start={track.start} autoPlay follow />}
             <button type="button" className="btn small" aria-label="Close player" onClick={() => setTrack(null)}>
               <span aria-hidden>×</span>
             </button>
