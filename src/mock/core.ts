@@ -62,7 +62,51 @@ const library = {
     rate: 160, outputs: { "ch-1": ["aud-1"] } } },
 };
 
+// A board part-way through: cast approved, page one drawn and composed.
+const actor = (id: string, name: string, expression: string) =>
+  ({ character_id: id, name, visual: "", expression, body_language: "" });
+const boardPanel = (n: number, over: Record<string, unknown>) => ({
+  id: `bp-${n}`, shot: "MS", angle: "eye", framing: "single", subject: "", action: "", setting: "pier",
+  place_key: "pier", caption: "", character_in_frame: true, scene: 1, scene_title: "The pier", mood: "wry",
+  chapter_id: "ch-1", beat_id: "b1", weight: 2, dialogue: [], covers: [], folded: [], ...over,
+});
+const boardDraft = {
+  version: 1, story: source, projectId: "board-1", character: "", sheet: null, ownSheet: [], placeSheets: {},
+  storyBook: library.books[0], chapterId: "ch-1", format: "comic", pageCount: 2, castApproved: true,
+  characterSheets: { a: "sheet-agnes", n: "sheet-narrator" }, pages: ["page-1"], overflow: [],
+  cast: { places: [], words: 34, people: [
+    { id: "n", name: "Narrator", aliases: [], description: "", outfit: "a yellow oilskin", mentions: 3, tier: 1, recurring: true },
+    { id: "a", name: "Agnes Thorne", aliases: ["Agnes"], description: "broad, weathered", outfit: "a navy fisherman's jumper",
+      mentions: 2, tier: 2, recurring: true },
+    { id: "t", name: "Tam", aliases: [], description: "a boy of twelve", outfit: "", mentions: 0, tier: 3, recurring: false }] },
+  panels: [
+    boardPanel(0, { shot: "EWS", angle: "high", framing: "establishing", weight: 3, character_in_frame: false, cast: [],
+      description: "The ferry pier in the rain, the boat already leaving. Nobody in view.",
+      covers: ["The ferry to Hollin Island ran twice a week, and I had missed both."],
+      caption: "The ferry to Hollin Island ran twice a week, and I had missed both." }),
+    boardPanel(1, { shot: "MCU", framing: "ots", focus: "Agnes Thorne", cast: [actor("a", "Agnes Thorne", "amused"), actor("n", "Narrator", "stung")],
+      characters: ["Agnes Thorne", "Narrator"], positions: { "Agnes Thorne": "left third", Narrator: "right third" },
+      description: "Agnes Thorne sizes up the narrator, at the pier.",
+      dialogue: [{ speaker: "Agnes Thorne", speaker_id: "a", text: "You’re the Pell girl," }] }),
+    boardPanel(2, { shot: "MS", framing: "two", cast: [actor("n", "Narrator", "defiant"), actor("a", "Agnes Thorne", "")],
+      characters: ["Narrator", "Agnes Thorne"], positions: { "Agnes Thorne": "left third", Narrator: "right third" },
+      description: "The narrator squares up to Agnes, at the pier.",
+      dialogue: [{ speaker: "Narrator", speaker_id: "n", text: "I’m not late," }, { speaker: "Narrator", speaker_id: "n", text: "The ferry was early." }] }),
+    boardPanel(3, { shot: "CU", cast: [actor("a", "Agnes Thorne", "laughing")], characters: ["Agnes Thorne"],
+      positions: { "Agnes Thorne": "left third" }, description: "Agnes laughs, at the pier." }),
+    boardPanel(4, { scene: 2, shot: "WS", weight: 3, cast: [actor("n", "Narrator", "tired")], characters: ["Narrator"],
+      positions: { Narrator: "right third" }, description: "The narrator alone on the pier as night falls." }),
+  ],
+  drawn: ["art-1", "art-2", "art-3", "art-4", null], redraws: [0, 0, 0, 0, 0], notes: {}, variants: { 1: ["art-old"] },
+  coverage: { covered: 4, total: 5, percent: 80, missing: ["“The ferry was early.”"], missing_total: 1,
+    sentences: ["The ferry to Hollin Island ran twice a week, and I had missed both.", "You’re the Pell girl,",
+                "I’m not late,", "The ferry was early.", "She laughed."] },
+  style: { id: "ink", version: 1, words: "black ink illustration with grey wash, visible brushwork, high contrast",
+           framing: "cropped composition, full bleed artwork, edge to edge" },
+};
+
 const answers: Record<string, unknown> = {
+  board_state_get: JSON.stringify(boardDraft),
   setup_state: { ready: true, python_present: true, venv_present: true, engine_present: true,
     stamp: { python_version: "3.12.14", mlxgen_version: "0.36.0", installed_at: iso(30) }, root: "/mock" },
   host_info: { chip: "Apple M4", arch: "arm64", total_ram_gib: 16, usable_ram_gib: 12, max_params_4bit: 14,
