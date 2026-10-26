@@ -1105,6 +1105,69 @@ class EnhancerFixesSpelling(unittest.TestCase):
         self.assertIn("rainy", fixed)
 
 
+class ComposeFollowsTheBoardsLayout(unittest.TestCase):
+    """The compositor sets pages where the board broke them, each panel in the
+    cell it was drawn for, read in the board's direction."""
+
+    def _sealed(self, tmp, size, colour):
+        import io
+        import secrets
+        import uuid
+
+        from PIL import Image
+
+        import vaultcrypto as vc
+
+        fid, key = secrets.token_bytes(16), secrets.token_bytes(32)
+        sid = str(uuid.uuid4())
+        path = os.path.join(tmp, sid + ".bin")
+        buf = io.BytesIO()
+        Image.new("RGB", size, colour).save(buf, format="PNG")
+        vc.write_sealed(path, key, fid, buf.getvalue())
+        return {"id": sid, "file_id": fid.hex(), "key": key.hex(), "path": path, "ext": "png"}
+
+    def _slot(self, tmp):
+        import secrets
+        import uuid
+        fid, key = secrets.token_bytes(16), secrets.token_bytes(32)
+        sid = str(uuid.uuid4())
+        return {"id": sid, "file_id": fid.hex(), "key": key.hex(), "path": os.path.join(tmp, sid + ".out")}
+
+    def test_pages_cells_and_direction_come_from_the_board(self):
+        import io
+        import tempfile
+
+        from PIL import Image
+
+        import vaultcrypto as vc
+
+        tmp = tempfile.mkdtemp()
+        shots = ["wide", "medium", "close-up", "medium"]
+        rtl = worker._page_cells(shots[:3], rtl=True) + worker._page_cells(shots[3:], rtl=True)
+        colours = [(200, 30, 30), (30, 200, 30), (30, 30, 200), (200, 200, 30)]
+        inputs = [self._sealed(tmp, (768, 768), c) for c in colours]
+        slots = [self._slot(tmp) for _ in range(4)]
+        result = worker.op_compose_board("t", {
+            "vault_inputs": inputs, "vault_slots": slots, "layout": "page",
+            "captions": [""] * 4, "shots": shots, "scenes": [1, 1, 1, 1],
+            "dialogue": [[{"speaker": "Mira", "text": "Gone.", "side": "right"}], [], [], []],
+            "pages": [0, 0, 0, 1], "cells": [list(c) for c in rtl], "direction": "rtl"})
+        self.assertEqual(result["pages"], 2)
+        self.assertEqual(result["overflow"], [])
+        first = Image.open(io.BytesIO(vc.open_with_file_key(bytes.fromhex(slots[0]["key"]),
+                                                           open(slots[0]["path"], "rb").read()))).convert("RGB")
+        style = {"width": first.width, "margin": 34}
+        # Read right to left: the second panel sits to the right of the third.
+        second = worker._cell_px(rtl[1], style)
+        third = worker._cell_px(rtl[2], style)
+        self.assertGreater(second[0], third[0])
+        centre = lambda c: (c[0] + c[2] // 2, c[1] + c[3] // 2)  # noqa: E731
+        self.assertEqual(first.getpixel(centre(second)), colours[1])
+        self.assertEqual(first.getpixel(centre(third)), colours[2])
+        # Every page of the board is the same shape.
+        self.assertEqual(len({tuple(d) for d in result["dimensions"]}), 1)
+
+
 class ComicBindsIntoOneFile(unittest.TestCase):
     """Pages become a PDF, sealed, with the reading order inside the file.
 

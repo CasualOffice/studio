@@ -3066,7 +3066,8 @@ def op_compose_board(req_id: str, req: dict[str, Any]) -> dict[str, Any]:
         "scenes": [_as_scene(x) for x in column("scenes", 1)],
         # The board's own layout: each panel's page and cell, the shape it
         # was drawn at. Without them the pages are laid out here.
-        "pages": [_as_scene(x) if x is not None else None for x in column("pages", None)],
+        "pages": [int(x) if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+                  for x in column("pages", None)],
         "cells": [_as_cell(c) for c in column("cells", None)],
     }
     layout = str(req.get("layout") or "page")
