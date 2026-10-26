@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { loadPref, savePref } from "../../lib/prefs";
 import { clock, markerAt } from "../../lib/library";
+import { playhead } from "../../lib/nowPlaying";
 
 export interface AudioMarker { time: number; label: string }
 
@@ -23,15 +24,21 @@ const SKIP = 15;
  *
  * The speed is remembered across items and launches; a listener who likes
  * 1.25x likes it for every chapter.
+ *
+ * With `follow`, the app-wide player reports where it is and takes seeks
+ * through `playhead`, so a narration's transcript can highlight the sentence
+ * being read and jump to the one clicked. `start` opens partway in.
  */
 export default function AudioPlayer({
-  src, title, markers = [], autoPlay = false, shortcuts = "focus",
+  src, title, markers = [], autoPlay = false, shortcuts = "focus", follow = false, start,
 }: {
   src: string;
   title?: string;
   markers?: AudioMarker[];
   autoPlay?: boolean;
   shortcuts?: "focus" | "global";
+  follow?: boolean;
+  start?: number;
 }) {
   const audio = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -63,6 +70,16 @@ export default function AudioPlayer({
   }, [duration]);
 
   const skip = useCallback((by: number) => seek((audio.current?.currentTime ?? 0) + by), [seek]);
+
+  useEffect(() => {
+    if (!follow) return;
+    return playhead.attach((at, t) => {
+      if (at !== src) return false;
+      seek(t);
+      if (audio.current?.paused) void audio.current.play()?.catch(() => setPlaying(false));
+      return true;
+    });
+  }, [follow, src, seek]);
 
   const stepRate = useCallback((dir: 1 | -1) => {
     setRate((r: number) => {
@@ -116,10 +133,14 @@ export default function AudioPlayer({
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => setPlaying(false)}
-        onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)}
+        onTimeUpdate={(e) => {
+          setTime(e.currentTarget.currentTime);
+          if (follow) playhead.publish(src, e.currentTarget.currentTime);
+        }}
         onLoadedMetadata={(e) => {
           setDuration(e.currentTarget.duration);
           e.currentTarget.playbackRate = rate;
+          if (start) e.currentTarget.currentTime = start;
         }}
         onDurationChange={(e) => {
           if (Number.isFinite(e.currentTarget.duration)) setDuration(e.currentTarget.duration);

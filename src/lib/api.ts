@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { mockVaultUrl } from "../mock/images";
 import type { BookFormat } from "./types";
-import type { AssistResult, CastPlace, EngineProgress, GenerateArgs, HostInfo, Lora, ModelStatus, Orphans, Panel, RepairReport, ResolvedLora, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus } from "./types";
+import type { AssistResult, AudioSpan, CastPlace, EngineProgress, GenerateArgs, HostInfo, Lora, ModelStatus, Orphans, Panel, RepairReport, ResolvedLora, ResolvedModel, SetupProgress, SetupState, StorageInfo, VaultItem, VaultStatus } from "./types";
 
 /** Tauri rejects with our structured error; normalise it to a message. */
 export function errText(e: unknown): string {
@@ -117,15 +117,23 @@ export const api = {
                          delivery?: string; direction?: string; rate: number }) =>
     invoke<{ wav_base64: string }>("audio_preview", { args }),
   audioVoices: (modelId = "macos") => invoke<{ voices: { id: string; language: string }[] }>("audio_voices", { modelId }),
-  generateAudiobook: (jobId: string, book: StoryBook, chapterId: string,
+  /** Narrate pasted text (`source`) with one voice, or an analysed chapter
+   *  with character voices. Each sentence also streams as an audio chunk;
+   *  see `onAudioChunk`. A stopped narration is saved with what was read. */
+  generateAudiobook: (jobId: string, book: StoryBook | null, chapterId: string | null,
                      narrator: string, voices: Record<string, string>, rate: number,
                      options: { model_id: string; language?: string; delivery?: string; directions?: Record<string, string>;
-                                script?: string; single?: boolean } = { model_id: "macos" }) =>
-    invoke<string>("generate_audiobook", { jobId,
+                                script?: string; source?: string; title?: string; single?: boolean } = { model_id: "macos" }) =>
+    invoke<AudiobookOutcome>("generate_audiobook", { jobId,
       args: { book, chapter_id: chapterId, narrator, voices, rate, ...options } }),
-  /** The chapter retold for one storyteller; Devanagari for Hindi voices. */
+  /** Read one sentence of a narration again, optionally with new words or
+   *  another voice. Returns the id of the recording that replaces it. */
+  revoiceAudiobook: (jobId: string, args: { item_id: string; index: number; text?: string; voice?: string;
+                                            model_id: string; rate: number; language?: string; delivery?: string }) =>
+    invoke<string>("revoice_audiobook", { jobId, args }),
+  /** The story model's suggested retellings, paragraph by paragraph. */
   narrationScript: (jobId: string, source: string, devanagari: boolean, modelId: string | null = null) =>
-    invoke<{ script: string; stopped: boolean }>("narration_script", { jobId, source, devanagari, modelId }),
+    invoke<{ script: string; stopped: boolean; suggestions?: ScriptSuggestion[] }>("narration_script", { jobId, source, devanagari, modelId }),
   characterReference: (jobId: string, images: string[]) =>
     invoke<string>("character_reference", { jobId, images }),
   /** Who is in the story and where it happens. Free of picture time. */
@@ -309,6 +317,36 @@ export const onEnginePreview = (cb: (f: PreviewFrame) => void): Promise<Unlisten
       step: e.payload.step,
       totalSteps: e.payload.total_steps,
     })
+  );
+
+export interface AudiobookOutcome { id: string; stopped: boolean; error: string | null; seconds: number }
+export interface ScriptSuggestion { index: number; original: string; suggestion: string }
+
+/** One narrated sentence as it is read: 16-bit 24 kHz mono PCM, the pause
+ *  before it included, starting at sample `start` of the recording. */
+export interface AudioChunk {
+  jobId: string;
+  index: number;
+  start: number;
+  sampleRate: number;
+  pcm: Int16Array;
+  span: AudioSpan;
+}
+
+export function decodePcm(base64: string): Int16Array {
+  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  return new Int16Array(bytes.buffer, 0, bytes.length >> 1);
+}
+
+/** Narration sentences, on the engine's preview channel beside image frames. */
+export const onAudioChunk = (cb: (c: AudioChunk) => void): Promise<UnlistenFn> =>
+  listen<{ id: string; kind?: string; index: number; start: number; sample_rate: number; pcm: string; span: AudioSpan }>(
+    "engine://preview",
+    (e) => {
+      if (e.payload.kind !== "audio") return;
+      cb({ jobId: e.payload.id, index: e.payload.index, start: e.payload.start,
+           sampleRate: e.payload.sample_rate, pcm: decodePcm(e.payload.pcm), span: e.payload.span });
+    }
   );
 
 export const onEngineExit = (cb: () => void): Promise<UnlistenFn> =>

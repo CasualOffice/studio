@@ -113,6 +113,9 @@ export interface VaultStatus {
   root: string;
 }
 
+/** One narrated sentence: samples `start..end` at 24 kHz. */
+export interface AudioSpan { start: number; end: number; text: string; voice: string }
+
 export interface VaultItem {
   id: string;
   kind: string;
@@ -147,6 +150,8 @@ export interface VaultItem {
   composition?: string | null;
   /** Where each scene begins in a narrated chapter. */
   markers?: { time: number; label: string }[];
+  /** Each narrated sentence, in samples at 24 kHz, with the voice that read it. */
+  spans?: AudioSpan[];
 
   /**
    * How this was actually made.

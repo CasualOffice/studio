@@ -1317,6 +1317,43 @@ label:has(> input[type="checkbox"]) {
   border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-input);
 }
 .audiobook-workspace details { margin: var(--sp-2) 0 var(--sp-3); }
+
+/* Listen: one text box and one button; everything else folds away below. */
+.ab-listen-row { margin: 0 0 var(--sp-3); flex-wrap: wrap; }
+.ab-listen-row > .t-meta { flex: 1; min-width: 0; text-align: right; }
+.ab-listen { min-width: 8.5em; }
+.ab-opened { margin: 0 0 var(--sp-2); }
+.ab-drawer { border-top: 1px solid var(--border); padding-top: var(--sp-2); }
+.ab-drawer > summary { cursor: pointer; color: var(--text-dim); font-size: var(--fs-small); }
+.ab-drawer[open] > summary { margin-bottom: var(--sp-3); }
+.ab-book { margin: 0 0 var(--sp-3); display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+.ab-book > .t-meta { flex-basis: 100%; }
+.audio-result.recording.on { border-color: var(--accent); }
+.ab-recording-name {
+  flex: 1; min-width: 0; text-align: left; background: none; border: 0; padding: 0;
+  font: inherit; color: var(--text); cursor: pointer; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* The transcript is the player: the sentence being read stands out, any
+   sentence plays from where it starts, and its tools appear on hover. */
+.ab-transcript ol { list-style: none; margin: 0; padding: 0; max-height: 60vh; overflow-y: auto; }
+.ab-transcript li { position: relative; display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--sp-1);
+  border-radius: var(--r-sm); }
+.ab-transcript li.on { background: var(--accent-tint); }
+.ab-sentence {
+  flex: 1; min-width: 0; text-align: left; background: none; border: 0; padding: 4px 6px;
+  font: inherit; line-height: 1.55; color: var(--text-dim); cursor: pointer; border-radius: var(--r-sm);
+}
+.ab-sentence:hover { color: var(--text); background: var(--bg-hover); }
+.ab-transcript li.on .ab-sentence { color: var(--text); }
+.ab-sentence-tools { display: flex; gap: 2px; opacity: 0; padding-top: 2px; }
+.ab-transcript li:hover .ab-sentence-tools, .ab-sentence-tools:focus-within { opacity: 1; }
+.ab-edit { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: var(--sp-2); padding: var(--sp-2) 6px var(--sp-3); }
+.ab-edit > input { flex: 1 1 100%; }
+.ab-suggestion { margin: var(--sp-3) 0; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-md); }
+.ab-diff { white-space: pre-wrap; line-height: 1.55; margin: 0 0 var(--sp-2); }
+.ab-diff del { color: var(--text-faint); text-decoration: line-through; }
+.ab-diff ins { text-decoration: none; background: var(--accent-tint); color: var(--text); }
 .run-footer { position: static; box-shadow: none; }
 
 /* ---------- narrow windows: the sidebar becomes an icon rail ----------
