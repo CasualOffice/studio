@@ -962,6 +962,50 @@ def preview(raw: str) -> str:
 # Variants
 # --------------------------------------------------------------------------
 
+# What the writer adds that the instruction already forbids. Measured on the
+# 9B: one enhanced prompt in three ended "rendered in a photorealistic style",
+# and a king-dog came back "with 8k resolution". Told twice not to, it still
+# does, so the description is tidied here rather than asked again.
+_WRITTEN_FOLKLORE = re.compile(
+    r"(?:\s+(?:with|in|at)\s+(?:an?\s+)?)?(?<![\w-])(?:8k|4k|uhd|ultra[- ]hd|"
+    r"high[- ]definition|high[- ]resolution)(?:\s+(?:resolution|quality|detail))?(?![\w-])",
+    re.IGNORECASE)
+_STYLE_SENTENCE = re.compile(
+    r"(?:^|(?<=[.!?]))\s*(?:(?:the|this)\s+(?:image|scene|picture|illustration|photo|style)"
+    r"\s+is\s+[^.!?]*?|rendered\s+in\s+[^.!?]*?)\bstyle\b[^.!?]*[.!?]?",
+    re.IGNORECASE)
+_STYLE_CLAUSE = re.compile(
+    r",?\s*(?:and\s+)?rendered\s+in\s+(?:an?\s+)?[^.,;]*?\bstyle\b(?:\s+with\s+[^.,;]*)?",
+    re.IGNORECASE)
+# Words that mean the person did ask for a look; then the style stays.
+_ASKED_STYLE = re.compile(
+    r"\b(?:style|styled|photo\w*|realistic|painting|painted|oil|watercolou?r|ink|"
+    r"drawing|drawn|sketch\w*|anime|manga|cartoon\w*|illustrat\w*|3d|render\w*|"
+    r"pixel|cinematic|film|vector|line art|pencil|charcoal|comic|poster)\b",
+    re.IGNORECASE)
+
+
+def tidy_description(text: str, request: str) -> str:
+    """The writer's description without folklore or a style nobody asked for.
+
+    Quoted text is never touched, and a term the request itself used stays."""
+    asked = request.lower()
+    keep_style = bool(_ASKED_STYLE.search(request))
+    pieces: list[str] = []
+    for is_quote, piece in _outside_quotes(text):
+        if not is_quote:
+            piece = _WRITTEN_FOLKLORE.sub(
+                lambda m: m.group(0) if m.group(0).strip().lower() in asked else "", piece)
+            if not keep_style:
+                piece = _STYLE_SENTENCE.sub("", piece)
+                piece = _STYLE_CLAUSE.sub("", piece)
+        pieces.append(piece)
+    tidied = "".join(pieces)
+    tidied = re.sub(r"\s+([,.;!?])", r"\1", tidied)
+    tidied = re.sub(r"([,;])\s*([.!?])", r"\2", tidied)
+    return re.sub(r"\s{2,}", " ", tidied).strip()
+
+
 def with_style(text: str, style: str) -> tuple[str, str]:
     """The prompt with a style sentence after it, and that sentence's phrase.
 
@@ -1115,6 +1159,8 @@ def propose(write: Callable[[float], str], same: Callable[[str], bool],
         if parsed["unclear"] and not (parsed["prompt"] or parsed["faithful"]):
             return {"unclear": True, "variants": [], "parsed": parsed,
                     "calls": calls, "how": how}
+        if goal != "style" and parsed.get("prompt"):
+            parsed["prompt"] = tidy_description(parsed["prompt"], request)
         variants = build_variants(parsed, goal, mode)
         if not variants:
             log(f"writer reply had no prompt ({how})")

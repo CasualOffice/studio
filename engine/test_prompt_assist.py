@@ -217,6 +217,29 @@ class ReadingTheWriter(unittest.TestCase):
         self.assertEqual(pa.preview('{"subject": "x"'), "")
 
 
+class TheDescriptionIsTidied(unittest.TestCase):
+    # Real Qwen3.5-9B endings, from the live audit run.
+    def test_folklore_the_writer_adds_comes_out(self):
+        self.assertEqual(pa.tidy_description(
+            "A dog dressed as a king. Rendered in a photorealistic style with 8k resolution.",
+            "my dog but make him look like a king"), "A dog dressed as a king.")
+
+    def test_an_unasked_style_comes_out_as_a_sentence_or_a_clause(self):
+        self.assertEqual(pa.tidy_description(
+            "A cat sits on a chair. The image is rendered in a photorealistic style with sharp focus.",
+            "a cat on a chair"), "A cat sits on a chair.")
+        self.assertEqual(pa.tidy_description(
+            "Framed close on the key, rendered in a realistic photographic style.",
+            "Mira gives Jonas a brass key."), "Framed close on the key.")
+
+    def test_quotes_and_asked_for_styles_stay(self):
+        self.assertEqual(pa.tidy_description(
+            "A sign reading 'BEST QUALITY 4K', rendered in a clean style with high definition.",
+            'A sign reading exactly "BEST QUALITY 4K"'), "A sign reading 'BEST QUALITY 4K'.")
+        kept = "A cat in black ink, a clean vector-style line drawing, rendered in an ink style."
+        self.assertEqual(pa.tidy_description(kept, "Black ink line drawing of a cat"), kept)
+
+
 class Variants(unittest.TestCase):
     PARSED = {"faithful": "A cat on a chair.",
               "prompt": "A grey cat sits on a chair by a window.",
